@@ -93,7 +93,7 @@ uniform vec2 u_res; uniform float u_time;
 uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
 uniform float u_count,u_twist,u_r0,u_r1,u_thick,u_bulge,u_hub,u_spin;
 uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
-uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux;
+uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
@@ -112,7 +112,7 @@ float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<3;i++){v+=a*n3(p);p*=2.03;a*=.5;
 // ---- interesting, irregular, audio-reactive forms ----
 float mStar(vec3 p){                                   // ORGANIC bloom (living blob)
   float d=length(p)-0.82;
-  d+=(fbm(p*1.7+u_time*0.25)-0.5)*(0.5+u_energy*0.3);
+  d+=(fbm(p*1.7+u_time*0.2)-0.5)*(0.35+u_energy*0.2);
   for(int i=0;i<4;i++){ float fi=float(i);
     float aa=u_time*(0.5+fi*0.13)+fi*1.6;
     vec3 c=vec3(cos(aa),sin(aa*0.9),sin(aa*1.1))*(0.85+0.25*sin(u_time*0.3+fi));
@@ -142,8 +142,8 @@ float mSwarm(vec3 p){                                  // SHARDS (broken facets,
 }
 float mMono(vec3 p){                                   // FLOW (melting liquid)
   float d=length(p)-0.95;
-  d+=(fbm(p*1.4+vec3(0.,u_time*0.35,0.))-0.5)*(0.75+u_energy*0.3);
-  d+=(fbm(p*3.2-u_time*0.2)-0.5)*0.22;
+  d+=(fbm(p*1.4+vec3(0.,u_time*0.25,0.))-0.5)*(0.5+u_energy*0.2);
+  d+=(fbm(p*3.2-u_time*0.15)-0.5)*0.15;
   return d*0.7;
 }
 float evalMode(vec3 p,float m){
@@ -155,13 +155,13 @@ float evalMode(vec3 p,float m){
 }
 vec2 map(vec3 p){
   p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
-  float s=max(u_reform,0.2)*(1.0+u_energy*0.12+u_pulse*0.22);   // breathe with energy, jump on the beat
+  float s=max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10);   // gentle breathe/beat (smoother)
   p/=s;
   float d=evalMode(p,u_mode);
   if(u_mix>0.001) d=mix(d, evalMode(p,u_mode2), smoothstep(0.,1.,u_mix));  // smooth style melt
-  // living, audio-reactive surface
-  d+=(fbm(p*2.3+u_time*0.4)-0.5)*(u_energy*0.10+u_pulse*0.16+u_flux*0.08+u_wob*0.03);
-  return vec2(d*s*0.5,1.);                             // step-safety for morph + displacement
+  // living surface — kept small + slow so the distance field stays valid (no marching speckle)
+  d+=(fbm(p*2.0+u_time*0.15)-0.5)*(u_energy*0.06+u_pulse*0.07+u_flux*0.04+u_wob*0.03);
+  return vec2(d*s*0.5,1.);
 }
 vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*0.0018;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
@@ -173,15 +173,28 @@ vec3 env(vec3 d){
   e+=vec3(.5,.6,.85)*pow(max(0.,dot(d,normalize(vec3(.5,.1,-.5)))),8.)*.18*u_env;
   return e;
 }
+// fluid, flowing backdrop tied to the shape's palette (domain-warped fbm) — professional depth
+vec3 bg(vec3 rd){
+  vec2 uv=rd.xy*1.4 + vec2(u_time*0.015, u_time*0.010);
+  float warp=fbm(vec3(uv*0.7+u_time*0.03, 0.0));
+  float v =fbm(vec3(uv*1.3 + warp*1.4, u_time*0.02));
+  float v2=fbm(vec3(uv*2.6 - u_time*0.025, 1.7));
+  float fv=clamp(v*0.7+v2*0.3, 0., 1.);
+  vec3 dark=vec3(0.012,0.014,0.020);
+  vec3 col=mix(dark, u_mood*0.34, smoothstep(0.35,0.95,fv)*u_bgAmt);
+  col+=u_mood*0.12*pow(fv,3.0)*u_bgAmt;                     // brighter drifting wisps
+  col*=0.75+0.25*smoothstep(1.1,0.15,length(rd.xy));        // gentle center glow so the form reads
+  return col;
+}
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
   float f=1.0/tan(u_fov*0.5);
   vec3 rd=normalize(uv.x*u_rt+uv.y*u_up+f*u_fw), ro=u_ro;
   float t=0.02,mid=-1.;
-  for(int i=0;i<150;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
-    if(h.x<0.0010*t){mid=1.;break;} t+=h.x*0.6; if(t>18.)break; }
+  for(int i=0;i<180;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
+    if(h.x<0.0012*t){mid=1.;break;} t+=h.x*0.5; if(t>18.)break; }   // smaller steps = fewer artifacts
   vec3 col;
-  if(mid<0.){ col=env(rd); }
+  if(mid<0.){ col=bg(rd); }
   else{
     vec3 p=ro+rd*t, n=calcN(p), v=-rd;
     float NoV=clamp(dot(n,v),1e-4,1.);
@@ -207,8 +220,8 @@ void main(){
     c += vec3(1.)*pow(NoH, mix(10.,220.,1.-u_rough))*(0.35+u_reflect*0.7);
     col=c;
   }
-  // aerial fade + tension adds a faint chromatic unease
-  col=mix(col, env(rd), 1.-exp(-t*t*0.002));
+  // aerial fade: dissolve the form into the fluid background (holistic, professional)
+  col=mix(col, bg(rd), 1.-exp(-t*t*0.0016));
   o=vec4(max(col,0.),1.);
 }`;
 
@@ -329,7 +342,7 @@ const GENRE_MODES={
 };
 const CALM=[2,4], MID=[0], HOT=[1,3];               // low->high energy style intensity
 let mode=0, mode2=0, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
-let pulse=0, prevT=-1;                                // beat-pulse envelope (from Director beats)
+let pulse=0, pulseS=0, prevT=-1;                      // beat pulse (raw + smoothed envelope)
 function genreModes(){ const g=(director&&director.genre&&director.genre.primary)||''; return GENRE_MODES[g]||[0,1,2,3,4]; }
 function chooseMode(energy){
   const allowed=genreModes();
@@ -449,12 +462,13 @@ function frame(){
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
   CM.dist=sm(CM.dist,camTarget.dist,2.0,dt); CM.height=sm(CM.height,camTarget.height,2.0,dt);
   CM.fov=sm(CM.fov,camTarget.fov,2.0,dt); CM.spin=sm(CM.spin,camTarget.spin,2.0,dt);
-  pulse*=Math.exp(-7.0*dt);
-  // organic + reactive motion: layered drift, arousal drives speed, a kick on each beat
-  camAng += (CM.spin*(0.35+arousal*0.9) + 0.022 + 0.03*Math.sin(time*0.09) + pulse*0.16)*dt;
+  pulse*=Math.exp(-6.0*dt);
+  pulseS += (pulse-pulseS)*(1-Math.exp(-16*dt));      // smoothed attack -> no hard beat snap
+  // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
+  camAng += (CM.spin*(0.35+arousal*0.8) + 0.022 + 0.03*Math.sin(time*0.09) + pulseS*0.05)*dt;
   const spin = time*(0.06+arousal*0.10) + 0.12*Math.sin(time*0.11) + 0.08*Math.sin(time*0.043+1.7);
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
-  if(phase===1){ mix+=dt/1.3; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  if(phase===1){ mix+=dt/1.9; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   const prog=(phase===1)?mix:0;
   const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
   flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*Math.sin(prog*Math.PI));  // gentle bloom lift, not a strobe
@@ -486,7 +500,8 @@ function frame(){
   gl.uniform1f(US('u_reform'),reform);
   gl.uniform3f(US('u_mood'),MO[0],MO[1],MO[2]);
   gl.uniform1f(US('u_energy'),energy); gl.uniform1f(US('u_tension'),tension); gl.uniform1f(US('u_arousal'),arousal);
-  gl.uniform1f(US('u_pulse'),pulse); gl.uniform1f(US('u_flux'),flux);
+  gl.uniform1f(US('u_pulse'),pulseS); gl.uniform1f(US('u_flux'),flux);
+  gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
   gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
