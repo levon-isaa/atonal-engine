@@ -53,8 +53,9 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="0" selected>Organic</option><option value="1">Helix</option>
-    <option value="2">Gem</option><option value="3">Petals</option><option value="4">Twist</option></select></div>
+    <option value="1" selected>Julia</option><option value="0">Mandelbulb</option>
+    <option value="2">Menger</option><option value="3">Gyroid</option>
+    <option value="4">Chmutov</option><option value="5">Sierpinski</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
     <option value="pearl" selected>Pearl</option><option value="iridescent">Iridescent</option>
     <option value="chrome">Chrome</option><option value="frosted">Frosted</option>
@@ -117,66 +118,89 @@ uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto;
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
 uniform float u_bLow,u_bMid,u_bHigh,u_bAir;
 uniform float u_shock,u_shockA;
+// emotion -> geometry: these feed the fractal maths directly
+uniform float u_power,u_gfreq,u_gthick,u_ascale;
+uniform vec4 u_jc;                                   // quaternion Julia seed
+uniform float u_valence,u_warmth,u_epic;
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
-float capX(vec3 p,float x0,float x1,float r){ vec3 a=p-vec3(x0,0,0); float L=max(x1-x0,1e-3);
-  float h=clamp(a.x/L,0.,1.); return length(a-vec3(L*h,0,0))-r; }
 float h31(vec3 p){p=fract(p*.1031);p+=dot(p,p.zyx+31.32);return fract((p.x+p.y)*p.z);}
 float n3(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*(3.-2.*f);
   float a=h31(i),b=h31(i+vec3(1,0,0)),c=h31(i+vec3(0,1,0)),d=h31(i+vec3(1,1,0));
   float e=h31(i+vec3(0,0,1)),g=h31(i+vec3(1,0,1)),hh=h31(i+vec3(0,1,1)),k=h31(i+vec3(1,1,1));
   return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,g,f.x),mix(hh,k,f.x),f.y),f.z);}
-float sdRoundBox(vec3 p,vec3 b,float r){vec3 d=abs(p)-b;return length(max(d,0.))+min(max(d.x,max(d.y,d.z)),0.)-r;}
 float sdBox(vec3 p,vec3 b){vec3 d=abs(p)-b;return length(max(d,0.))+min(max(d.x,max(d.y,d.z)),0.);}
-float sdOcta(vec3 p,float s){p=abs(p);return (p.x+p.y+p.z-s)*0.57735;}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}
-// ---- interesting, irregular, audio-reactive forms ----
-float mStar(vec3 p){                                   // ORGANIC bloom (living blob)
-  float d=length(p)-0.62;
-  d+=(fbm(p*1.7+u_time*0.2)-0.5)*(0.26+u_energy*0.16);
-  for(int i=0;i<4;i++){ float fi=float(i);
-    float aa=u_time*(0.5+fi*0.13)+fi*1.6;
-    vec3 c=vec3(cos(aa),sin(aa*0.9),sin(aa*1.1))*(0.58+0.18*sin(u_time*0.3+fi));
-    d=smin(d,length(p-c)-(0.20+u_energy*0.10+u_pulse*0.07),0.38); }
-  return d;
+/* ============ COMPLEX MATHEMATICAL FORMS ============
+   Fractals and minimal surfaces, each rendered from its distance estimator. The emotion
+   curves feed the MATH — power, seed, density, thickness — so the geometry itself is what
+   carries the feeling, not just the colour grade. */
+float mBulb(vec3 p){                                   // MANDELBULB — power from tension/arousal
+  vec3 z=p*1.25; vec3 c=z;
+  float dr=1.0, r=length(z), pw=u_power;
+  for(int i=0;i<6;i++){
+    r=length(z); if(r>2.0) break;
+    float th=acos(clamp(z.z/r,-1.,1.)), ph=atan(z.y,z.x);
+    dr=pow(r,pw-1.0)*pw*dr+1.0;
+    float zr=pow(r,pw); th*=pw; ph*=pw;
+    z=zr*vec3(sin(th)*cos(ph), sin(th)*sin(ph), cos(th))+c;
+  }
+  return 0.5*log(max(r,1e-5))*r/max(dr,1e-5)/1.25;
 }
-float mLattice(vec3 p){                               // HELIX — twin strands
-  float f=3.2, R=0.68+u_pulse*0.04, d=1e9;
-  for(int i=0;i<2;i++){ float off=float(i)*3.14159265;
-    vec3 c=vec3(cos(p.y*f+off)*R, p.y, sin(p.y*f+off)*R);
-    d=min(d, length(p-c)-0.13); }
-  return max(d, abs(p.y)-1.02);
+float mJulia(vec3 p){                                  // QUATERNION JULIA — seed from emotion
+  vec4 z=vec4(p*1.45,0.0), c=u_jc;
+  float md=1.0, r2=dot(z,z);
+  for(int i=0;i<9;i++){
+    md*=4.0*r2;
+    z=vec4(z.x*z.x-dot(z.yzw,z.yzw), 2.0*z.x*z.yzw)+c;   // quaternion square
+    r2=dot(z,z); if(r2>12.0) break;
+  }
+  return 0.25*sqrt(r2/max(md,1e-9))*log(max(r2,1.0001))/1.45;
 }
-float mTorus(vec3 p){                                  // GEM — faceted rounded crystal
-  p*=1.45;                                             // shrink to frame (divide result to keep metric)
-  float o=sdOcta(p,1.2);
-  float b=sdBox(p,vec3(0.82))-0.04;
-  return (max(o,b)-0.04)/1.45;
+float mMenger(vec3 p){                                 // MENGER SPONGE — recursive cube
+  vec3 q=p*1.55;
+  float d=sdBox(q,vec3(1.0)), s=1.0;
+  for(int i=0;i<4;i++){
+    vec3 a=mod(q*s,2.0)-1.0; s*=3.0;
+    vec3 r=abs(1.0-3.0*abs(a));
+    float da=max(r.x,r.y), db=max(r.y,r.z), dc=max(r.z,r.x);
+    d=max(d,(min(da,min(db,dc))-1.0)/s);
+  }
+  return d/1.55;
 }
-float mSwarm(vec3 p){                                  // PETALS — radial lotus
-  float rad=length(p.xz), ang=atan(p.z,p.x);
-  float pet=5.0+floor(u_count*0.4);
-  float prof=0.55+0.45*abs(cos(ang*pet*0.5));
-  float body=length(vec2(rad-prof*0.95, p.y*2.0))-0.16;
-  return smin(body, length(p)-0.34, 0.22);
+float mGyroid(vec3 p){                                 // GYROID — triply periodic minimal surface
+  float f=u_gfreq; vec3 q=p*f;
+  float g=dot(sin(q),cos(q.yzx));                      // sin x cos y + sin y cos z + sin z cos x
+  float d=(abs(g)-u_gthick)/(f*1.6);                   // shell, gradient-normalised
+  return max(d, length(p)-1.05);                       // bound to a sphere
 }
-float mMono(vec3 p){                                   // TWIST — tapered spindle ribbon
-  float k=2.6+u_twist*0.45;                            // ~3/4 turn over the height
-  float c=cos(k*p.y), s=sin(k*p.y);
-  vec2 q=mat2(c,-s,s,c)*p.xz;                          // twist the cross-section about Y
-  float tp=max(0.16, 1.0-0.78*p.y*p.y);                // spindle: broad waist, tapered tips
-  vec2 dd=abs(q)-vec2(0.60*tp, 0.105*tp);              // flat section: wide in x, thin in z
-  float d2=length(max(dd,0.))+min(max(dd.x,dd.y),0.)-0.05*tp;   // rounded, no hard corners
-  float d=max(d2, abs(p.y)-0.94);                      // cap the height
-  return d/2.0;                                        // twist raises the gradient — stay conservative
+float mChmutov(vec3 p){                                // CHMUTOV — algebraic surface, Chebyshev T6
+  vec3 q=p*1.30;
+  vec3 a=q*q, b=a*a, c=b*a;                            // x^2, x^4, x^6
+  vec3 T=32.0*c-48.0*b+18.0*a-1.0;                     // T6(x) per axis
+  vec3 G=(192.0*b-192.0*a+36.0)*q;                     // dT6/dx
+  float f=T.x+T.y+T.z+u_ascale;                        // level set — the constant reshapes it entirely
+  float d=f/max(length(G),1.0)*0.30;                   // first-order DE, damped (not a true distance)
+  return max(d/1.30, length(p)-1.16);
+}
+float mSierp(vec3 p){                                  // SIERPINSKI — tetrahedral fold fractal
+  vec3 q=p*1.25; float sc=2.0;
+  for(int i=0;i<8;i++){
+    if(q.x+q.y<0.0) q.xy=-q.yx;
+    if(q.x+q.z<0.0) q.xz=-q.zx;
+    if(q.y+q.z<0.0) q.zy=-q.yz;
+    q=q*sc-vec3(sc-1.0);
+  }
+  return length(q)*pow(sc,-8.0)/1.25;
 }
 float evalMode(vec3 p,float m){
-  if(m<0.5)       return mStar(p);
-  else if(m<1.5)  return mLattice(p);
-  else if(m<2.5)  return mTorus(p);
-  else if(m<3.5)  return mSwarm(p);
-  else            return mMono(p);
+  if(m<0.5)       return mBulb(p);
+  else if(m<1.5)  return mJulia(p);
+  else if(m<2.5)  return mMenger(p);
+  else if(m<3.5)  return mGyroid(p);
+  else if(m<4.5)  return mChmutov(p);
+  else            return mSierp(p);
 }
 vec2 map(vec3 p){
   p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
@@ -184,13 +208,18 @@ vec2 map(vec3 p){
   // bass hits punch the whole form; sub adds the deep swell
   float s=max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10+u_hLow*0.13+u_hSub*0.09)*0.95;
   p/=s;
+  // bounding sphere: every form lives inside r=1.3, so empty space is skipped without
+  // ever touching a fractal estimator. This is what keeps the heavy modes affordable.
+  float br=length(p)-1.45;
+  if(br>0.10) return vec2(br*s*0.5,1.);
   float d=evalMode(p,u_mode);
   if(u_mix>0.001) d=mix(d, evalMode(p,u_mode2), smoothstep(0.,1.,u_mix));  // smooth style melt
   // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
   // surface chatter. Amplitude is divided back down by the frequency: displacement gradient
   // (freq * amp) must stay bounded or the field stops being a valid SDF and the march creases.
+  // lighter than before: these forms carry their own detail, so the noise only breathes
   float nf=2.0+u_bHigh*1.6+u_hHigh*1.2;                       // 2.0 .. 4.8
-  float na=u_energy*0.05+u_pulse*0.06+u_flux*0.035+u_wob*0.025+u_hHigh*0.04+u_hAir*0.03;
+  float na=u_energy*0.030+u_pulse*0.035+u_flux*0.020+u_wob*0.015+u_hHigh*0.025+u_hAir*0.018;
   d+=(fbm(p*nf+u_time*(0.15+u_hAir*0.5))-0.5)*na*(2.0/nf);
   // mid-band onset -> a shockwave ring travelling out through the surface
   if(u_shockA>0.002){
@@ -223,7 +252,7 @@ vec3 env(vec3 d){
   e+=vec3(1.,.97,.90)*pow(max(0.,dot(d,sun)),50.)*3.0*u_env;    // bright key -> mirror highlight
   e+=vec3(1.,.97,.90)*pow(max(0.,dot(d,sun)),8.)*0.5*u_env;     // soft halo
   e+=vec3(.55,.65,.90)*pow(max(0.,dot(d,normalize(vec3(.5,.1,-.5)))),6.)*.4*u_env;  // cool fill
-  return e;
+  return e*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);   // reflections feel the mood too
 }
 // liquid-ink backdrop: 2-stage domain warp, driven by the selected palette (u_bgA/u_bgB)
 vec3 bg(vec3 rd, vec2 sv){
@@ -262,12 +291,18 @@ void main(){
     float fr=pow(1.-NoV,2.6);
     vec3 base=mix(vec3(0.9), u_mood, 0.45);
     vec3 f0=mix(vec3(0.04), base, u_metal);
-    vec3 L=normalize(vec3(-.4,.8,.4));
+    // EMOTIONAL LIGHT: tension swings the key round to a harder angle, warmth tints it,
+    // valence colours the rim. The scene is lit by how the music feels.
+    vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
+    vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
+    vec3 rimC=mix(vec3(0.28,0.48,1.00), vec3(1.00,0.46,0.28), u_valence);
     float NoL=max(0.,dot(n,L));
     float occ=calcAO(p,n);
     float sha=(NoL>0.001)?calcSha(p,L):1.0;
     // diffuse body (fades out for metals) — occluded + self-shadowed
-    vec3 c=base*(1.-u_metal)*(0.24+0.62*NoL*mix(0.30,1.0,sha))*mix(0.30,1.0,occ);
+    vec3 c=base*keyC*(1.-u_metal)*(0.24+0.62*NoL*mix(0.30,1.0,sha))*mix(0.30,1.0,occ);
+    // emotional rim: swells with epicness/arousal, colour from valence
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
     // environment reflection (fresnel + roughness), strong for chrome — specular occlusion
     vec3 R=reflect(-v,n);
     c += env(R)*f0*(u_reflect*(0.3+0.9*fr))*mix(0.45,1.0,occ);
@@ -280,7 +315,7 @@ void main(){
     c += (base*0.5+irid*0.5)*fr*(u_emis*1.6+u_hHigh*0.30+u_hMid*0.16);
     // specular highlight (sharpness from roughness)
     vec3 Hh=normalize(L+v); float NoH=max(0.,dot(n,Hh));
-    c += vec3(1.)*pow(NoH, mix(10.,220.,1.-u_rough))*(0.35+u_reflect*0.7)*sha;
+    c += keyC*pow(NoH, mix(10.,220.,1.-u_rough))*(0.35+u_reflect*0.7)*sha;
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
@@ -425,7 +460,7 @@ const CAM={
 const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
-let camAng=0, formSpin=0;
+let camAng=0, formSpin=0, rollS=0;
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
 const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
@@ -442,14 +477,15 @@ function rerollVariant(){
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
-// modes: 0 star  1 lattice  2 torus-stack  3 swarm  4 crystal
+// modes: 0 mandelbulb  1 quaternion julia  2 menger  3 gyroid  4 apollonian  5 sierpinski
 const GENRE_MODES={
-  techno:[0,1,3],'melodic techno':[0,2,3],house:[0,1,3],edm:[1,3,0],electronic:[0,1,2,3,4],
-  dance:[0,1,3],trance:[0,2,3],'drum & bass':[1,3,0],dubstep:[1,3],ambient:[2,4,0],
-  cinematic:[2,4,0],classical:[2,4],'hip hop':[4,1,0],pop:[0,2,4],rock:[1,0,4],
+  techno:[2,5,4,3],'melodic techno':[1,3,0],house:[1,3,2],edm:[0,4,5],electronic:[0,1,2,3,4,5],
+  dance:[3,1,4],trance:[1,3,0],'drum & bass':[5,4,0],dubstep:[5,4,2],ambient:[1,3,2],
+  cinematic:[1,0,3],classical:[3,1,2],'hip hop':[2,5,4],pop:[1,3,2],rock:[5,2,0],
 };
-const CALM=[2,4], MID=[0], HOT=[1,3];               // low->high energy style intensity
-let mode=0, mode2=0, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
+// low -> high energy: contemplative lattices, then organic fractals, then aggressive ones
+const CALM=[3,2], MID=[1,3], HOT=[0,4,5];
+let mode=1, mode2=1, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 let pulse=0, pulseS=0, prevT=-1;                      // beat pulse (raw + smoothed envelope)
 /* ---- PER-BAND SOUND REACTION: every distinct sound in the mix gets its own envelope ---- */
 const BANDS=['sub','low','mid','high','air'];
@@ -467,7 +503,7 @@ function resetOnsetCursors(t){                         // after a seek, re-place
     let lo=0,hi=a.length; while(lo<hi){ const m=(lo+hi)>>1; if(a[m][0]<=t) lo=m+1; else hi=m; }
     OCUR[b]=lo; }
 }
-function genreModes(){ const g=(director&&director.genre&&director.genre.primary)||''; return GENRE_MODES[g]||[0,1,2,3,4]; }
+function genreModes(){ const g=(director&&director.genre&&director.genre.primary)||''; return GENRE_MODES[g]||[0,1,2,3,4,5]; }
 function chooseMode(energy){
   const allowed=genreModes();
   const pref = energy<0.38?CALM : energy>0.68?HOT : MID;
@@ -596,12 +632,13 @@ function frame(){
     if(frameAvg>26 && rscale>0.50){ rscale=Math.max(0.50,rscale-0.08); applyScale(); }
     else if(frameAvg<15 && rscale<1.0){ rscale=Math.min(1.0,rscale+0.06); applyScale(); } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
+  let warmth=0.5, epic=0.3;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
   if(director&&isPlaying){
     const t=pos();
     energy=sampleCurve('energy',t); tension=sampleCurve('tension',t); arousal=sampleCurve('arousal',t);
     darkness=sampleCurve('darkness',t); bright=sampleCurve('brightness',t); valence=sampleCurve('valence',t);
-    flux=sampleCurve('flux',t);
+    flux=sampleCurve('flux',t); warmth=sampleCurve('warmth',t); epic=sampleCurve('epicness',t);
     // beat pulse: fire when a Director beat time is crossed, then decay -> active, on-beat motion
     const beats=director.events.beats;
     if(prevT>=0 && t>prevT){ for(let bi=0;bi<beats.length;bi++){ if(beats[bi]>prevT && beats[bi]<=t){ pulse=1.0; break; } } }
@@ -668,8 +705,15 @@ function frame(){
   const ca=camAng, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
   let rx=fz,ry=0,rz=-fx; const rl=Math.hypot(rx,ry,rz)||1; rx/=rl;ry/=rl;rz/=rl;
-  const ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
-  const fovY=2*Math.atan(0.5/Math.max(0.4,CM.fov));
+  let ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
+  // emotional camera: tension leans the horizon (a held lean, never a rocking motion),
+  // epicness opens the lens out so big moments feel wider
+  rollS=sm(rollS,(tension-0.35)*0.26,0.9,dt);
+  const cr=Math.cos(rollS), sr=Math.sin(rollS);
+  const rx2=rx*cr+ux*sr, ry2=ry*cr+uy*sr, rz2=rz*cr+uz*sr;
+  ux=ux*cr-rx*sr; uy=uy*cr-ry*sr; uz=uz*cr-rz*sr;
+  rx=rx2; ry=ry2; rz=rz2;
+  const fovY=2*Math.atan(0.5/Math.max(0.4,CM.fov*(1-epic*0.12)));
   const W=glc.width,H=glc.height;
 
   const target = floatOK?hdrF:null;
@@ -696,6 +740,22 @@ function frame(){
   gl.uniform1f(US('u_bLow'),BND.low); gl.uniform1f(US('u_bMid'),BND.mid);
   gl.uniform1f(US('u_bHigh'),BND.high); gl.uniform1f(US('u_bAir'),BND.air);
   gl.uniform1f(US('u_shock'),shockT); gl.uniform1f(US('u_shockA'),shockA);
+  gl.uniform1f(US('u_valence'),valence); gl.uniform1f(US('u_warmth'),warmth); gl.uniform1f(US('u_epic'),epic);
+  /* ---- EMOTION -> MATHS: the fractal parameters are the expression ---- */
+  // Mandelbulb power: calm reads soft and lobed, tension drives it spiky and aggressive
+  gl.uniform1f(US('u_power'), 3.2+tension*6.4+arousal*2.6);
+  // Gyroid: energy packs the lattice tighter, tension thins the shell until it feels fragile
+  gl.uniform1f(US('u_gfreq'), 2.8+energy*2.4+BND.high*0.8);
+  gl.uniform1f(US('u_gthick'), Math.max(0.06, 0.34-tension*0.16+SH.thick*0.35));
+  // Chmutov level set: shifting the constant reshapes the whole topology — the surface opens
+  // into a lattice or closes into blobs. Valence opens it, tension closes it down.
+  gl.uniform1f(US('u_ascale'), -0.30+valence*1.5-tension*0.9);
+  // Julia seed: blend two known-good quaternion seeds by tension, with a slow drift so the
+  // form keeps evolving. Blending between vetted seeds avoids landing on an empty set.
+  const j0=[-0.55,0.32,0.10,0.05], j1=[-0.21,0.56,0.20,0.18];
+  const jt=Math.min(1,tension*0.85+arousal*0.25), jd=Math.sin(time*0.06)*0.025;
+  gl.uniform4f(US('u_jc'), j0[0]+(j1[0]-j0[0])*jt+jd, j0[1]+(j1[1]-j0[1])*jt,
+                           j0[2]+(j1[2]-j0[2])*jt+warmth*0.09, j0[3]+(j1[3]-j0[3])*jt);
   gl.uniform3f(US('u_bgA'),BGA[0],BGA[1],BGA[2]); gl.uniform3f(US('u_bgB'),BGB[0],BGB[1],BGB[2]);
   gl.uniform1f(US('u_bgAuto'),palAuto?1:0);
   gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
