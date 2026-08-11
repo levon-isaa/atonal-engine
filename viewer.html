@@ -653,7 +653,13 @@ function applyScale(){ RW=Math.max(2,Math.round(glc.width*rscale)); RH=Math.max(
 // of AA or sharpening downstream can undo, because it happens after we are done. Cost is paid by
 // rscale (the raymarch resolution) instead, which is adaptive; the post pass, grade and text
 // always land 1:1 on the panel.
-function resize(){ dpr=Math.min(devicePixelRatio||1,2); glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
+// SECOND-TIER quality. rscale only shrinks the RAYMARCH; the post pass (bloom mip chain, DOF,
+// grade, dither) always runs at full canvas, so on a large window it imposes a frame-time floor
+// that rscale cannot reach — measured here at ~12ms of a 25ms frame, where cutting march pixels
+// 3.4x saved only 10ms. The controller would then pin rscale at its minimum, destroying
+// sharpness AND still missing the target. dprScale lets the CANVAS back off as a last resort.
+let dprScale=1.0;
+function resize(){ dpr=Math.min(devicePixelRatio||1,2)*dprScale; glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
 addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
@@ -880,8 +886,19 @@ function frame(){
     // rscale is now relative to the NATIVE grid, so 1.0 already means one march sample per
     // device pixel. The old 1.45 ceiling was tuned against a 1.25x canvas and would ask for
     // ~8M samples/frame here; past ~1.2 the tent resolve has nothing left to recover.
-    if(frameAvg>24 && rscale>0.55){ rscale=Math.max(0.55,rscale-0.08); applyScale(); }
-    else if(frameAvg<17.2 && rscale<1.20){ rscale=Math.min(1.20,rscale+0.06); applyScale(); } }
+    // Two tiers, degraded in the order that costs the least visible quality. The march goes
+    // first: dropping it keeps the canvas — and so the post pass, the HUD text and every edge
+    // the grade touches — landing 1:1 on the panel. Only once the march is at its floor and the
+    // frame is STILL slow does the canvas itself back off, because at that point the cost is
+    // the full-screen passes and nothing else can reach it. Restoring runs in reverse: get the
+    // canvas back to native before spending anything on extra march samples.
+    if(frameAvg>24){
+      if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
+      else if(dprScale>0.62){ dprScale=Math.max(0.62,dprScale-0.08); resize(); }
+    } else if(frameAvg<17.2){
+      if(dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.05); resize(); }
+      else if(rscale<1.20){ rscale=Math.min(1.20,rscale+0.06); applyScale(); }
+    } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
