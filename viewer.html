@@ -116,7 +116,7 @@ uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
-uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto;
+uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY;
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
 uniform float u_bLow,u_bMid,u_bHigh,u_bAir;
@@ -215,7 +215,8 @@ float evalMode(vec3 p,float m){
   else if(m<4.5)  return mPods(p);
   else            return mAperture(p);
 }
-vec2 map(vec3 p){
+vec2 map(vec3 wp){
+  vec3 p=wp;
   p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
   // 0.95 = global framing scale: keeps the whole silhouette inside frame at the closest camera
   // bass hits punch the whole form; sub adds the deep swell
@@ -224,7 +225,9 @@ vec2 map(vec3 p){
   // bounding sphere: every form lives inside r=1.3, so empty space is skipped without
   // ever touching a fractal estimator. This is what keeps the heavy modes affordable.
   float br=length(p)-1.45;
-  if(br>0.10) return vec2(br*s*0.5,1.);
+  float dObj;
+  if(br>0.10) dObj=br*s*0.5;
+  else{
   float d=evalMode(p,u_mode);
   if(u_mix>0.001) d=mix(d, evalMode(p,u_mode2), smoothstep(0.,1.,u_mix));  // smooth style melt
   // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
@@ -240,7 +243,9 @@ vec2 map(vec3 p){
     float ring=exp(-pow(rr-u_shock*1.15,2.0)*7.0);
     d+=sin((rr-u_shock*1.15)*12.0)*ring*u_shockA*0.013;
   }
-  return vec2(d*s*0.5,1.);
+  dObj=d*s*0.5;
+  }
+  return vec2(dObj,1.0);
 }
 /* ---- MATERIAL TEXTURE ----
    Surface detail in OBJECT space (same transform map() applies) so it sticks to the form
@@ -279,10 +284,10 @@ float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
   return clamp(1.0-1.6*s,0.,1.); }
 // short-range soft shadow — self-shadowing is what separates 'rendered' from 'flat'
 float calcSha(vec3 p,vec3 l){ float r=1.,t=0.09;
-  for(int i=0;i<8;i++){ float h=mapD(p+l*t);
-    if(h<0.004) return 0.06;
-    r=min(r,8.0*h/t); t+=clamp(h,0.06,0.40); if(t>2.6) break; }
-  return clamp(r,0.,1.); }
+  for(int i=0;i<20;i++){ float h=mapD(p+l*t);
+    if(h<0.004) return 0.05;
+    r=min(r,7.0*h/t); t+=clamp(h,0.025,0.18); if(t>3.4) break; }
+  return clamp(smoothstep(0.,1.,r),0.,1.); }
 // A rectangular SOFTBOX projected into direction space. Real studio renders read as
 // "high class" because glossy surfaces reflect structured light sources with clean edges —
 // a single analytic sun gives a chrome ball nothing to show.
@@ -310,29 +315,24 @@ vec3 env(vec3 d,float rough){
   e+=vec3(0.90,0.94,1.00)*softbox(d,normalize(vec3( 0.05,1.00,-0.10)),vec2(0.62,0.10),sf+0.05)*2.2;
   return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
 }
-// liquid-ink backdrop: 2-stage domain warp, driven by the selected palette (u_bgA/u_bgB)
-vec3 bg(vec3 rd, vec2 sv){
-  // screen-space domain (FOV-independent) + slow parallax off the camera heading
-  vec2 uv=sv*2.6 + vec2(u_fw.x,u_fw.z)*0.9;
-  float fl=1.0+u_hMid*0.8+u_bHigh*0.5;                          // sounds stir the ink
-  vec2 q=vec2(fbm(vec3(uv+u_time*0.045*fl,0.)), fbm(vec3(uv+vec2(3.1,6.2)-u_time*0.035*fl,0.)));
-  vec2 r=vec2(fbm(vec3(uv*1.4+q*2.6+u_time*0.02*fl,3.7)), fbm(vec3(uv*1.4+q*2.6+vec2(8.3,2.8),7.1)));
-  float fv=smoothstep(0.10,0.90, clamp(fbm(vec3(uv*1.25+r*2.4,1.0)),0.,1.));
-  vec3 A=u_bgA, B=u_bgB;
-  if(u_bgAuto>0.5){                                          // Auto: take the mood's HUE, force the ink values
-    vec3 m=u_mood; vec3 s=m/max(max(m.r,max(m.g,m.b)),1e-3); // normalise -> pure hue, brightness-independent
-    s=clamp(mix(vec3(dot(s,vec3(.3333))),s,2.2),0.,1.);      // slam the saturation
-    B=s; A=clamp(s.gbr,0.,1.)*0.16; }                        // saturated accent + deep hue-shifted pole
-  vec3 col=mix(A,B,fv);
-  vec3 hot=clamp(B*1.7,0.,1.);                                  // hot core = the accent pushed, NOT white
-  col=mix(col, hot, pow(fv,5.0)*0.7);
-  col*=(0.70+u_bgAmt*0.75+u_hLow*0.35+u_hSub*0.20);             // vibrancy rises with energy, kicks flash it
-  // halo behind the form so it still reads — but back off on light palettes, where a dark
-  // blob in the middle of a bright sweep looks like a mistake rather than a vignette
-  float bl=dot(B,vec3(0.299,0.587,0.114));
-  col*=mix(mix(0.32,0.90,smoothstep(0.25,0.75,bl)),1.0, smoothstep(0.06,0.62,length(sv)));
-  return col;
+void palAB(out vec3 A,out vec3 B){
+  A=u_bgA; B=u_bgB;
+  if(u_bgAuto>0.5){ vec3 m=u_mood; vec3 s=m/max(max(m.r,max(m.g,m.b)),1e-3);
+    s=clamp(mix(vec3(dot(s,vec3(.3333))),s,2.2),0.,1.);
+    B=s; A=clamp(s.gbr,0.,1.)*0.16; }
 }
+// SEAMLESS STUDIO BACKDROP — a lit cyclorama, not a painted picture. The floor below fades
+// into this at distance, which is what makes the space read as one continuous room.
+vec3 bg(vec3 rd, vec2 sv){
+  vec3 A,B; palAB(A,B);
+  float h=clamp(rd.y*0.5+0.5,0.,1.);
+  vec3 lo=mix(vec3(0.90),B,0.12);                          // bright at the horizon
+  vec3 hi=mix(vec3(0.52),B,0.24);                          // deeper up top
+  vec3 col=mix(lo,hi,smoothstep(0.48,1.0,h));
+  col*=mix(1.0,0.68,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
+  return col*(0.80+u_bgAmt*0.30);
+}
+
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
   float f=0.5/tan(u_fov*0.5);        // uv.y spans +/-0.5, so the 0.5 is required or the FOV halves
@@ -340,10 +340,26 @@ void main(){
   float dth=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
   float t=0.02+dth*0.012,mid=-1.;                 // dithered start kills stair-step banding
   for(int i=0;i<112;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
-    if(h.x<0.0015*t){mid=1.;break;} t+=h.x*0.62; if(t>18.)break; }
+    if(h.x<0.0015*t){mid=h.y;break;} t+=h.x*0.62; if(t>18.)break; }
+  // The floor is a PLANE — intersect it analytically. Marching an infinite plane makes
+  // grazing rays converge too slowly, so they hit the step cap at varying distances and
+  // the floor bands into concentric rings around the camera.
+  float tp=(rd.y<-1e-4)?(u_groundY-ro.y)/rd.y:-1.0;
+  if(tp>0.02 && (mid<0.0 || tp<t)){ t=tp; mid=2.0; }
   vec3 back=bg(rd,uv);       // compute the fluid background once, reuse for miss + fog
   vec3 col;
   if(mid<0.){ col=back; }
+  else if(mid>1.5){                                  // ---- STUDIO FLOOR ----
+    vec3 p=ro+rd*t, gn=vec3(0,1,0);
+    vec3 A,B; palAB(A,B);
+    vec3 alb=mix(vec3(0.80),B,0.10);
+    vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
+    vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
+    float sha=calcSha(p,L);                          // the form's cast shadow
+    float occ=calcAO(p,gn);                          // contact darkening where it sits close
+    vec3 amb=env(gn,1.0)*0.95;
+    col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.10,1.0,sha) + amb*mix(0.12,1.0,occ) );
+  }
   else{
     vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
     vec3 op=objP(p);
@@ -369,8 +385,8 @@ void main(){
     // diffuse body (fades out for metals) — occluded + self-shadowed.
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
-    vec3 amb=env(n,1.0)*0.62;
-    vec3 c=base*(1.-u_metal)*( keyC*(0.62*NoL*mix(0.30,1.0,sha))*mix(0.30,1.0,occ)
+    vec3 amb=env(n,1.0)*0.95;
+    vec3 c=base*(1.-u_metal)*( keyC*(0.80*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
                              + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
     c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
@@ -392,7 +408,9 @@ void main(){
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
-  col=mix(col, back, 1.-exp(-t*t*0.0012));
+  // the floor dissolves into the backdrop well beyond the subject: no visible horizon line,
+  // which is what sells a seamless cyclorama rather than 'object on a plane'
+  col=mix(col, back, smoothstep(3.6,15.0,t)*0.96);
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
 }`;
 
@@ -492,7 +510,10 @@ void main(){
   if(u_dither>0.001) col+=bayer(gl_FragCoord.xy)*u_dither*0.13;
   if(u_poster>1.5) col=floor(clamp(col,0.,1.)*u_poster+0.5)/u_poster;
   col=clamp(col,0.,1.);
-  col+=(r2(gl_FragCoord.xy+fract(u_time)*17.)-.5)/255.;
+  // TRIANGULAR dither (difference of two hashes), ~1.5 LSB. A flat 1-LSB rectangular dither
+  // does not fully break banding on very gradual gradients — the floor-to-backdrop blend was
+  // contouring into concentric rings around the camera's nadir.
+  col+=(r2(gl_FragCoord.xy+fract(u_time)*17.)-r2(gl_FragCoord.xy*1.31+fract(u_time)*53.))*(1.5/255.);
   col+=(r2(gl_FragCoord.xy*1.7+fract(u_time)*91.)-.5)*.032*u_grain;
   col*=mix(1.,smoothstep(1.5,.3,length(c2)*.95),u_vig);
   o=vec4(max(col,0.),1.);
@@ -852,7 +873,7 @@ function frame(){
   // aperture size — valence opens the shell up, darkness closes it in
   gl.uniform1f(US('u_gCut'), Math.max(0.0, 0.25+valence*0.8-darkness*0.35));
   gl.uniform3f(US('u_bgA'),BGA[0],BGA[1],BGA[2]); gl.uniform3f(US('u_bgB'),BGB[0],BGB[1],BGB[2]);
-  gl.uniform1f(US('u_bgAuto'),palAuto?1:0);
+  gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_groundY'),-1.28);
   gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
