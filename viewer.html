@@ -344,11 +344,14 @@ vec3 bg(vec3 rd, vec2 sv){
   // even where the form is hit), so each fbm here costs a full-screen pass — two rounds drove
   // rscale to its floor and cost more resolution than the extra detail was worth. A single warp
   // with a stronger coefficient folds the field convincingly at 3 fbm calls instead of 5.
-  vec2 uv=sv*1.25;
-  float tt=u_time*(0.020+u_arousal*0.045);
+  // The field turns WITH the form (u_spin) and its feature size tracks the form's scale, so the
+  // backdrop belongs to the subject instead of being a texture the subject happens to sit on.
+  vec2 uv=sv*1.25*(1.0+u_energy*0.12); uv*=rot(u_spin*0.16+u_tilt*0.25);
+  // the beat breathes the flow forward — motion on the downbeat, not just colour
+  float tt=u_time*(0.020+u_arousal*0.055)+u_pulse*0.045+u_bLow*0.03;
   vec2 w1=vec2(fbm(vec3(uv*1.20, tt)), fbm(vec3(uv*1.20+11.7, tt)));
   float f=fbm(vec3(uv*1.60+w1*2.6, tt*0.75));
-  f=clamp(f*1.7+0.16,0.,1.);
+  f=clamp(f*1.8+0.14,0.,1.);
   // ---- EMOTION COLOUR. valence swings the field warm/cool, tension pushes it toward the
   // palette accent, darkness pulls the whole thing down. The base sweep still comes from the
   // section palette, so the backdrop and the duotone inks stay on one colourway.
@@ -362,7 +365,15 @@ vec3 bg(vec3 rd, vec2 sv){
   // noise texture pasted behind the subject. Weighted to stay legible at IDLE too — at the flat
   // default curves (arousal .3, tension .2) the emotion terms contribute almost nothing, so a
   // mix driven purely by them reads as no effect at all until a track is actually playing.
-  col=mix(col, ink, f*(0.44+u_tension*0.26+u_epic*0.16));
+  col=mix(col, ink, f*(0.62+u_tension*0.30+u_epic*0.20));
+  // AURA — a pool of the section's own mood sitting directly behind the subject, breathing on
+  // the low band. This is the piece that makes the backdrop read as belonging to the FORM: it
+  // is anchored to where the form actually is on screen, not to the frame, and it carries the
+  // same colour the material is picking up from u_mood.
+  float aur=exp(-dot(sv,sv)*(2.6-u_bLow*1.0-u_energy*0.5));
+  col=mix(col, mix(ink,u_mood,0.55), aur*(0.20+u_bLow*0.20+u_pulse*0.14));
+  // air band lifts a fine sheen across the whole field — hats/shimmer read in the backdrop too
+  col+=vec3(0.9,0.95,1.0)*f*u_bAir*0.05;
   col*=mix(1.0,0.68,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
   col*=1.0-u_darkness*0.28;
   return col*(0.80+u_bgAmt*0.30);
@@ -674,6 +685,17 @@ const GENRE_MODES={
 // low -> high energy: contemplative lattices, then organic fractals, then aggressive ones
 const CALM=[3,2], MID=[1,3], HOT=[0,4,5];
 let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
+// Object-space reach per mode — the radius that actually sets the silhouette, read off each
+// SDF's own constants:
+//   0 ribbon  sweep 0.92 + half-width up to 0.35        1 tower   y +/-1.0, w 0.66
+//   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
+//   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
+const REACH=[1.27,1.20,1.03,1.15,1.00,0.90];
+function frameReach(){                                 // blended across a morph, as the shader does
+  const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
+  const k=(phase===1)?(mix*mix*(3-2*mix)):0;           // same smoothstep the melt uses
+  return r0+(r1-r0)*k;
+}
 let pulse=0, pulseS=0, prevT=-1;                      // beat pulse (raw + smoothed envelope)
 /* ---- PER-BAND SOUND REACTION: every distinct sound in the mix gets its own envelope ---- */
 const BANDS=['sub','low','mid','high','air'];
@@ -911,8 +933,25 @@ function frame(){
     $('tc').textContent=fmt(c)+' / '+fmt(d); $('tlF').style.width=(d?c/d*100:0)+'%'; }
 
   // camera basis
-  // kick/sub dolly the camera in a touch — the push you feel rather than see
-  const dolly=CM.dist*(1-HITS.low*0.055-HITS.sub*0.045);
+  // FRAMING. CM.dist used to be the literal camera distance, which meant the same section
+  // framed one shape well and left the next either clipped or postage-stamp sized — the modes
+  // differ by ~1.4x in object-space reach (Shell lives inside r=0.90, Ribbon sweeps to 1.27),
+  // and fov swings 1.35..1.66 on top of that. Distance is now DERIVED so the silhouette always
+  // subtends the same share of the frame, and CM.dist keeps its meaning as framing intent
+  // (tight vs wide) rather than as a number of units.
+  //   a form of radius R at distance d covers  2*f*R/d  of the frame height
+  //   => d = 2*f*R / fill
+  // NB f here is CM.fov itself, which is a FOCAL factor and not an angle — the shader takes
+  // fovY = 2*atan(0.5/f), so tan(fovY/2) = 0.5/f. Treating it as an angle puts the camera 2.4x
+  // too close and the form bursts out of frame.
+  const reach=frameReach();
+  const fEff=Math.max(0.4,CM.fov*(1-epic*0.12));       // must match the fovY sent to the shader
+  const fill=Math.max(0.50,Math.min(0.80,0.78-(CM.dist-3.4)*0.081));
+  // base scale only — the beat's punch on u_reform/u_pulse must stay VISIBLE, so it is
+  // deliberately left out of the compensation instead of being cancelled by the camera
+  const sBase=Math.max(reform,0.2)*(1.0+energy*0.10)*0.95;
+  const framed=2.0*fEff*reach*sBase/fill;
+  const dolly=framed*(1-HITS.low*0.055-HITS.sub*0.045);
   const ca=camAng+camKick, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
   let rx=fz,ry=0,rz=-fx; const rl=Math.hypot(rx,ry,rz)||1; rx/=rl;ry/=rl;rz/=rl;
