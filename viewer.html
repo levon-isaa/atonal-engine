@@ -365,6 +365,15 @@ void main(){
     vec3 op=objP(p);
     vec3 n=texNormal(op,gn);                       // textured shading normal
     float rgh=texRough(op,u_rough);                // spatially varying roughness
+    // GEOMETRIC SPECULAR AA. A narrow GGX lobe over a high-frequency normal map aliases into
+    // crawling white sparkle along every silhouette — one pixel catches the lobe, its neighbour
+    // misses it entirely. Widen roughness by how fast the shading normal turns across this
+    // pixel (Toksvig-style): sub-pixel normal variance is mathematically the same thing as
+    // extra microfacet spread, so folding it into roughness removes the sparkle without
+    // softening surfaces that are genuinely flat. Chrome (rough 0.06) is unusable without it.
+    vec3 dnx=dFdx(n), dny=dFdy(n);
+    float kvar=min(0.030, 0.5*(dot(dnx,dnx)+dot(dny,dny)));
+    rgh=min(1.0, sqrt(rgh*rgh+kvar));
     float NoV=clamp(dot(n,v),1e-4,1.);
     float fr=pow(1.-NoV,2.6);
     // albedo carries the same grain, so the body is not one flat colour
@@ -393,7 +402,12 @@ void main(){
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     vec3 refl=env(R,rgh);
-    c += refl*f0*(u_reflect*(0.3+0.9*fr))*mix(0.45,1.0,occ);
+    // Schlick-with-roughness: the standard IBL Fresnel. The old pow(1-NoV,2.6) ramp ignored
+    // roughness entirely, so a matte surface still lit a bright reflective rim and a polished
+    // one never reached full grazing reflectance. Edge-on, smooth materials now go fully
+    // mirror-like — that grazing sweep is most of what reads as "glossy" rather than "chalky".
+    vec3 Fr=f0+(max(vec3(1.0-rgh),f0)-f0)*pow(1.0-NoV,5.0);
+    c += refl*Fr*u_reflect*mix(0.45,1.0,occ);
     // Thin film TINTS THE REFLECTION — it does not add light. Adding it emissively is what
     // painted a saturated rim (green whenever the section's random hue landed there); a real
     // pearl shows its colour in what it reflects.
@@ -402,9 +416,23 @@ void main(){
     c += base*max(0.,dot(n,-L))*0.18*u_transl;
     // emissive glow (neon) — high-band stabs flare it, desaturated so it cannot band
     c += base*fr*(u_emis*1.6+u_hHigh*0.30+u_hMid*0.16);
-    // specular highlight (sharpness from the TEXTURED roughness -> broken-up, not plastic)
-    vec3 Hh=normalize(L+v); float NoH=max(0.,dot(n,Hh));
-    c += keyC*pow(NoH, mix(10.,220.,1.-rgh))*(0.35+u_reflect*0.7)*sha;
+    // Direct specular: Cook-Torrance GGX (roughness still comes from the TEXTURED field, so the
+    // lobe breaks up instead of reading as plastic). Blinn-Phong's pow(NoH,k) was the single
+    // biggest "not a real render" cue here — its lobe has the wrong falloff and no geometry
+    // term, so grazing angles under-brighten and the highlight never stretches the way a real
+    // microfacet surface does. D*G/(4*NoV*NoL) * NoL collapses to D*G/(4*NoV).
+    vec3 Hh=normalize(L+v);
+    float NoH=max(0.,dot(n,Hh)), VoH=max(1e-4,dot(v,Hh));
+    float a=max(1e-3,rgh*rgh), a2=a*a;
+    float dnm=NoH*NoH*(a2-1.0)+1.0;
+    float D=a2/(3.14159265*dnm*dnm);
+    float kg=a*0.5;                                  // Smith height-correlated, Schlick-GGX form
+    float G=(NoV/(NoV*(1.0-kg)+kg))*(NoL/(NoL*(1.0-kg)+kg));
+    vec3  Fs=f0+(1.0-f0)*pow(1.0-VoH,5.0);
+    // D explodes as roughness -> 0 (a mirror lit by a point light is a singularity). Clamp the
+    // lobe, or a smooth material fires single-pixel white sparks that bloom into blown blobs.
+    vec3 spec=min(Fs*(D*G/(4.0*NoV)), vec3(24.0));
+    c += keyC*spec*(0.35+u_reflect*0.7)*sha*mix(0.5,1.0,occ);
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
@@ -544,9 +572,14 @@ function initTargets(w,h){
   hdrF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,hdrF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,hdrT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 }
-let dpr=1, rscale=0.82, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
+let dpr=1, rscale=0.90, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
 function applyScale(){ RW=Math.max(2,Math.round(glc.width*rscale)); RH=Math.max(2,Math.round(glc.height*rscale)); initTargets(RW,RH); }
-function resize(){ dpr=Math.min(devicePixelRatio||1,1.25); glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
+// The CANVAS must be the display's native pixel grid. Capping dpr below devicePixelRatio makes
+// the browser rescale the finished frame — a 1.6x bilinear smear on a 2x screen that no amount
+// of AA or sharpening downstream can undo, because it happens after we are done. Cost is paid by
+// rscale (the raymarch resolution) instead, which is adaptive; the post pass, grade and text
+// always land 1:1 on the panel.
+function resize(){ dpr=Math.min(devicePixelRatio||1,2); glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
 addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
@@ -751,8 +784,11 @@ function frame(){
     // Threshold must sit ABOVE the vsync interval (16.7ms @60Hz) or quality can never rise:
     // a vsync-locked frame reads ~16.7ms no matter how much GPU headroom is left. Holding
     // 60fps IS the signal that there is room, so push resolution until we stop holding it.
-    if(frameAvg>24 && rscale>0.50){ rscale=Math.max(0.50,rscale-0.08); applyScale(); }
-    else if(frameAvg<17.2 && rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); } }
+    // rscale is now relative to the NATIVE grid, so 1.0 already means one march sample per
+    // device pixel. The old 1.45 ceiling was tuned against a 1.25x canvas and would ask for
+    // ~8M samples/frame here; past ~1.2 the tent resolve has nothing left to recover.
+    if(frameAvg>24 && rscale>0.55){ rscale=Math.max(0.55,rscale-0.08); applyScale(); }
+    else if(frameAvg<17.2 && rscale<1.20){ rscale=Math.min(1.20,rscale+0.06); applyScale(); } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
