@@ -115,6 +115,7 @@ uniform float u_count,u_twist,u_r0,u_r1,u_thick,u_bulge,u_hub,u_spin;
 uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
+uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto;
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
@@ -241,6 +242,32 @@ vec2 map(vec3 p){
   }
   return vec2(d*s*0.5,1.);
 }
+/* ---- MATERIAL TEXTURE ----
+   Surface detail in OBJECT space (same transform map() applies) so it sticks to the form
+   as it turns instead of sliding through it. Two channels do most of the work: a micro
+   normal that breaks up the specular, and a roughness field that stops every highlight
+   reading as one flat plastic sheen. u_txAniso stretches the noise for brushed metal. */
+vec3 objP(vec3 p){
+  p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
+  return p;
+}
+vec3 texNormal(vec3 op,vec3 n){
+  if(u_txAmp<0.0005) return n;
+  vec3 sc=vec3(u_txScale,u_txScale*u_txAniso,u_txScale);
+  float e=0.35;
+  float f0=fbm(op*sc);
+  vec3 g=vec3(fbm(op*sc+vec3(e,0,0))-f0, fbm(op*sc+vec3(0,e,0))-f0, fbm(op*sc+vec3(0,0,e))-f0);
+  g-=n*dot(g,n);                                  // tangential only -> a bump, not a dent
+  float gl=length(g); if(gl<1e-5) return n;
+  // use the gradient DIRECTION and let u_txAmp be the tilt in radians. Scaling by the raw
+  // gradient magnitude instead swamps the surface normal and the material reads as grime.
+  return normalize(n-(g/gl)*u_txAmp*6.0);
+}
+float texRough(vec3 op,float base){
+  if(u_txRough<0.001) return base;
+  float v=fbm(op*vec3(u_txScale,u_txScale*u_txAniso,u_txScale)*0.42);
+  return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
+}
 vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*0.0018;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
 // map() returns a 0.5-scaled (deliberately conservative) field — undo that for ratio-based lighting
@@ -318,18 +345,26 @@ void main(){
   vec3 col;
   if(mid<0.){ col=back; }
   else{
-    vec3 p=ro+rd*t, n=calcN(p), v=-rd;
+    vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
+    vec3 op=objP(p);
+    vec3 n=texNormal(op,gn);                       // textured shading normal
+    float rgh=texRough(op,u_rough);                // spatially varying roughness
     float NoV=clamp(dot(n,v),1e-4,1.);
     float fr=pow(1.-NoV,2.6);
-    vec3 base=mix(vec3(0.9), u_mood, 0.68);   // let the colourway actually read on the object
+    // albedo carries the same grain, so the body is not one flat colour
+    float av=fbm(op*u_txScale*0.30);
+    vec3 base=mix(vec3(0.9), u_mood, 0.68)*(1.0+(av-0.5)*u_txRough*0.16);
     vec3 f0=mix(vec3(0.04), base, u_metal);
+    // thin-film colour, shifted by the micro surface so it mottles like real pearl
+    vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+av*0.7+u_time*0.03+u_iridHue+u_hAir*0.25)
+                          + vec3(0.,2.1,4.2));
     // EMOTIONAL LIGHT: tension swings the key round to a harder angle, warmth tints it,
     // valence colours the rim. The scene is lit by how the music feels.
     vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
     vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
     vec3 rimC=mix(vec3(0.28,0.48,1.00), vec3(1.00,0.46,0.28), u_valence);
     float NoL=max(0.,dot(n,L));
-    float occ=calcAO(p,n);
+    float occ=calcAO(p,gn);
     float sha=(NoL>0.001)?calcSha(p,L):1.0;
     // diffuse body (fades out for metals) — occluded + self-shadowed.
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
@@ -339,21 +374,21 @@ void main(){
                              + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
     c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
-    // environment reflection (fresnel + roughness), strong for chrome — specular occlusion
+    // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
-    c += env(R,u_rough)*f0*(u_reflect*(0.3+0.9*fr))*mix(0.45,1.0,occ);
-    // thin-film iridescence (pearl / holo) — air/hats make it shimmer and shift
-    vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+u_time*0.03+u_iridHue+u_hAir*0.25) + vec3(0.,2.1,4.2));
-    // keep the sheen; the old fresnel weight painted a hard rainbow along every silhouette
-    irid=mix(vec3(dot(irid,vec3(.3333))), irid, 0.62);
-    c += irid*(0.07+0.11*fr)*u_iridAmt*(1.0+u_hAir*0.7+u_bAir*0.3);
+    vec3 refl=env(R,rgh);
+    c += refl*f0*(u_reflect*(0.3+0.9*fr))*mix(0.45,1.0,occ);
+    // Thin film TINTS THE REFLECTION — it does not add light. Adding it emissively is what
+    // painted a saturated rim (green whenever the section's random hue landed there); a real
+    // pearl shows its colour in what it reflects.
+    c += (irid-vec3(0.5))*refl*f0*u_reflect*u_iridAmt*0.55*(1.0+u_hAir*0.5)*mix(0.45,1.0,occ);
     // translucent backlight (frosted)
     c += base*max(0.,dot(n,-L))*0.18*u_transl;
-    // emissive rim glow (neon) — high-band stabs flare the rim
-    c += (base*0.5+irid*0.5)*fr*(u_emis*1.6+u_hHigh*0.30+u_hMid*0.16);
-    // specular highlight (sharpness from roughness)
+    // emissive glow (neon) — high-band stabs flare it, desaturated so it cannot band
+    c += base*fr*(u_emis*1.6+u_hHigh*0.30+u_hMid*0.16);
+    // specular highlight (sharpness from the TEXTURED roughness -> broken-up, not plastic)
     vec3 Hh=normalize(L+v); float NoH=max(0.,dot(n,Hh));
-    c += keyC*pow(NoH, mix(10.,220.,1.-u_rough))*(0.35+u_reflect*0.7)*sha;
+    c += keyC*pow(NoH, mix(10.,220.,1.-rgh))*(0.35+u_reflect*0.7)*sha;
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
@@ -422,12 +457,14 @@ void main(){
     // behind it falls away. Blurring the subject reads as a soft render, not a shallow lens.
     float coc=clamp((abs(z-u_focus)-0.55)*u_dof,0.,1.);
     coc*=coc;
-    col=mix(col, textureLod(u_tex,uv,coc*4.5).rgb, clamp(coc*1.35,0.,1.));
+    col=mix(col, textureLod(u_tex,uv,coc*3.2).rgb, clamp(coc*1.25,0.,1.));
   }
   if(u_chroma>0.001){                            // misregistration / lens split
     vec2 d=uv-0.5; float k=u_chroma*0.007*(0.25+dot(d,d)*3.0);
     col.r=texture(u_tex,uv+d*k).r; col.b=texture(u_tex,uv-d*k).b; }
-  if(u_sharpen>0.001){                           // recover crispness lost to the reduced-res march
+  if(u_sharpen>0.001 && u_ss<0.5){               // only when NOT supersampled: real samples
+                                                 // are already crisp, and sharpening them just
+                                                 // paints coloured halos along every silhouette
     vec3 n=texture(u_tex,uv+vec2(0,t.y)).rgb,s=texture(u_tex,uv-vec2(0,t.y)).rgb;
     vec3 e=texture(u_tex,uv+vec2(t.x,0)).rgb,w=texture(u_tex,uv-vec2(t.x,0)).rgb;
     // clamp to the neighbourhood (contrast-adaptive): an unclamped unsharp mask overshoots
@@ -574,15 +611,15 @@ function setMode(m){ if(m===mode&&phase===0) return; mode2=m; mix=0; phase=1; } 
 let autoShape=false;   // shape only changes automatically if HUD = "Auto · Director"
 // ---- rich MATERIAL variations (HUD-selectable, eased for smooth switches) ----
 const MATS={
-  pearl:      {metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00},
-  iridescent: {metal:0.0,rough:0.22,reflect:0.50,irid:1.1,transl:0.30,emis:0.08},
-  chrome:     {metal:1.0,rough:0.06,reflect:1.00,irid:0.1,transl:0.00,emis:0.00},
-  frosted:    {metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00},
-  holo:       {metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18},
-  neon:       {metal:0.0,rough:0.30,reflect:0.35,irid:0.6,transl:0.40,emis:0.70},
+  //          metal rough reflect irid transl emis | tscale=detail freq, tamp=tilt(rad), taniso=stretch, trough=gloss variation
+  pearl:      {metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00, tscale:70, tamp:0.0035,taniso:1.00,trough:0.22},
+  iridescent: {metal:0.0,rough:0.22,reflect:0.50,irid:1.1,transl:0.30,emis:0.08, tscale:95, tamp:0.0035,taniso:1.00,trough:0.20},
+  chrome:     {metal:1.0,rough:0.06,reflect:1.00,irid:0.1,transl:0.00,emis:0.00, tscale:150,tamp:0.004,taniso:0.10,trough:0.12},
+  frosted:    {metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00, tscale:120,tamp:0.030,taniso:1.00,trough:0.30},
+  holo:       {metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18, tscale:240,tamp:0.005,taniso:0.06,trough:0.14},
+  neon:       {metal:0.0,rough:0.30,reflect:0.35,irid:0.6,transl:0.40,emis:0.70, tscale:55, tamp:0.0030,taniso:1.00,trough:0.14},
 };
-const MAT ={metal:0,rough:.35,reflect:.4,irid:.5,transl:.35,emis:0};
-const MATT={metal:0,rough:.35,reflect:.4,irid:.5,transl:.35,emis:0};
+const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
 
 /* ---- BACKGROUND PALETTES (a = deep tone, b = accent) — hard, saturated label colourways ---- */
 const PALS={
@@ -609,8 +646,8 @@ const inkB=()=>bgPair()[1];
 /* ---- LOOK: the press/print grade. This is what carries the label aesthetic. ---- */
 const LOOKS={
   // pristine product-render grade: no print texture at all, let the lighting do the work
-  studio:  {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.05,grain:0.10,contrast:-0.06,sat:0.08,sharp:0.24,dof:0.42},
-  clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.15,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30,dof:0.28},
+  studio:  {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.00,grain:0.10,contrast:-0.06,sat:0.08,sharp:0.22,dof:0.42},
+  clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.06,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30,dof:0.28},
   label:   {ink:0.62,poster:0, dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42,dof:0.22},
   riso:    {ink:0.88,poster:7, dither:0.80,half:0.00,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50,dof:0.12},
   xerox:   {ink:1.00,poster:3, dither:1.10,half:0.00,chroma:0.20,grain:1.35,contrast:0.85,sat:-0.30,sharp:0.60,dof:0.00},
@@ -820,6 +857,8 @@ function frame(){
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
   gl.uniform1f(US('u_iridAmt'),MAT.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
+  gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp);
+  gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough);
   drawFS(aScene);
 
   if(floatOK){
