@@ -243,7 +243,12 @@ vec2 map(vec3 wp){
   if(br>0.10) dObj=br*s*0.5;
   else{
   float d=evalMode(p,u_mode);
-  if(u_mix>0.001) d=mix(d, evalMode(p,u_mode2), smoothstep(0.,1.,u_mix));  // smooth style melt
+  // SMOOTHERSTEP (6t^5-15t^4+10t^3) rather than smoothstep. smoothstep has zero first derivative
+  // at the ends but a discontinuous SECOND derivative, so the melt visibly jerks into and out of
+  // motion — on a shape change, that snap at each end is most of what reads as abrupt.
+  // Smootherstep is C2, so the morph eases in and out with no kick.
+  if(u_mix>0.001){ float m=clamp(u_mix,0.,1.); m=m*m*m*(m*(m*6.0-15.0)+10.0);
+    d=mix(d, evalMode(p,u_mode2), m); }
   // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
   // surface chatter. Amplitude is divided back down by the frequency: displacement gradient
   // (freq * amp) must stay bounded or the field stops being a valid SDF and the march creases.
@@ -306,10 +311,21 @@ float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
     s+=(h-mapD(p+n*h))*w; w*=0.65; }
   return clamp(1.0-1.6*s,0.,1.); }
 // short-range soft shadow — self-shadowing is what separates 'rendered' from 'flat'
+// Soft shadow. The old version capped each step at 0.18 over 20 iterations, so it could only
+// reach t=3.6 — floor points further from the form ran OUT OF ITERATIONS at a distance that
+// varied with the field, and whatever partial r they had accumulated became the shadow. Since
+// the stopping point swept smoothly with radius, the error did too: concentric rings around the
+// camera's nadir, which is exactly what the floor was showing.
+// Fixed by terminating for a GEOMETRIC reason instead of an iteration count — every form lives
+// inside the bounding sphere, so once the ray is outside it and travelling outward nothing can
+// ever occlude it and the point is fully lit. Steps can also be much longer now that escaping
+// is cheap.
 float calcSha(vec3 p,vec3 l){ float r=1.,t=0.09;
-  for(int i=0;i<20;i++){ float h=mapD(p+l*t);
+  for(int i=0;i<28;i++){ vec3 q=p+l*t;
+    if(dot(q,q)>2.9*2.9 && dot(q,l)>0.0) return clamp(smoothstep(0.,1.,r),0.,1.);
+    float h=mapD(q);
     if(h<0.004) return 0.05;
-    r=min(r,7.0*h/t); t+=clamp(h,0.025,0.18); if(t>3.4) break; }
+    r=min(r,7.0*h/t); t+=clamp(h,0.03,0.34); if(t>7.0) break; }
   return clamp(smoothstep(0.,1.,r),0.,1.); }
 // A rectangular SOFTBOX projected into direction space. Real studio renders read as
 // "high class" because glossy surfaces reflect structured light sources with clean edges —
@@ -375,6 +391,15 @@ vec3 bg(vec3 rd, vec2 sv){
   float tt=u_time*(0.020+u_arousal*0.055)+u_pulse*0.045+u_bLow*0.03;
   vec2 w1=vec2(fbm(vec3(uv*1.20, tt)), fbm(vec3(uv*1.20+11.7, tt)));
   float f=fbm(vec3(uv*1.60+w1*2.6, tt*0.75));
+  // RIDGED fold. Reflecting the field about its midpoint (1-|2f-1|) turns smooth blobs into thin
+  // bright filaments — the striations you get when two liquids are stirred but not mixed. Real
+  // fluid reads as sheets and threads, not clouds, and this is the cheapest way to get them: it
+  // is a fold of a sample already taken, so it costs no extra fbm.
+  float ridge=1.0-abs(2.0*clamp(f,0.,1.)-1.0);
+  ridge*=ridge;                                          // sharpen the threads
+  // shear the filaments along the warp so they stretch the way advected ink does rather than
+  // sitting isotropic
+  float fil=ridge*(0.55+0.45*clamp(w1.y*1.6,0.,1.));
   f=clamp(f*1.8+0.14,0.,1.);
   // ---- EMOTION COLOUR. A two-stop lerp can only express ONE hue axis, which is why this still
   // read as a flat tint however hard the fluid churned. Four stops let the field travel
@@ -391,7 +416,9 @@ vec3 bg(vec3 rd, vec2 sv){
   float g=clamp(0.5+0.62*(sv.x*0.55+sv.y*0.62)+(w1.x-0.5)*0.85, 0., 1.);
   // valence slides the whole field along the ramp: a dark track sits at the deep/cool end, a
   // bright one pushes up into accent and highlight
-  float rt=clamp(f*0.68+g*0.42+(u_valence-0.5)*0.34+u_epic*0.10, 0., 1.);
+  // the filaments ride the ramp too, so a thread reads as a DIFFERENT colour rather than just a
+  // brighter patch of the same one — that hue separation is what makes it look like two fluids
+  float rt=clamp(f*0.62+g*0.40+fil*0.30+(u_valence-0.5)*0.34+u_epic*0.10, 0., 1.);
   vec3 ink=ramp4(c0,c1,c2,c3,rt);
   // The sweep used to be ~86% white — a product-shot cyclorama. That white was the real ceiling
   // on colour here: whatever the ramp produced could only ever tint it pale. Pulled down so the
@@ -446,7 +473,17 @@ void main(){
     float sha=calcSha(p,L);                          // the form's cast shadow
     float occ=calcAO(p,gn);                          // contact darkening where it sits close
     vec3 amb=env(gn,1.0)*0.95;
-    col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.10,1.0,sha) + amb*mix(0.12,1.0,occ) );
+    // The old shadow crushed to 0.10 of the key and the ambient to 0.12 — a near-black hole
+    // under the form. That is what a single hard sun does; this scene is lit by broad softboxes,
+    // where the cast shadow should stay open and only the CONTACT goes properly dark. Raised
+    // floors on both, with the occlusion term carrying the darkening instead, so the form still
+    // reads as sitting on the floor rather than punched through it.
+    col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.18,1.0,sha) + amb*mix(0.24,1.0,occ) );
+    // A broad occlusion pool under the form. The 0.55 range this first used was tuned for a form
+    // RESTING on the floor; these forms float about a unit clear, so mapD() never got small
+    // enough for it to do anything at all. Widened to 1.7 so the floor darkens under the mass —
+    // that soft pool, not the hard cast shadow, is what places an object in a space.
+    col*=mix(0.62,1.0,smoothstep(0.0,1.7,mapD(p)));
   }
   else{
     vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
@@ -526,7 +563,14 @@ void main(){
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
   // the floor dissolves into the backdrop well beyond the subject: no visible horizon line,
   // which is what sells a seamless cyclorama rather than 'object on a plane'
-  col=mix(col, back, smoothstep(3.6,15.0,t)*0.96);
+  // The FLOOR needs a later, longer dissolve than the form. Sharing the form's 3.6 start painted
+  // the backdrop's fluid — filaments and all — straight across the receding plane a short way
+  // behind the subject, which reads as dirt on the floor rather than as depth, and it was the
+  // source of the contouring that looked like concentric rings around the camera. Pushing the
+  // floor's fade out to 6.5..22 keeps the near and mid floor as clean floor; both still reach
+  // 1.0 by the horizon, so the cyclorama stays seamless with no visible join.
+  float fa=(mid>1.5)?6.5:3.6, fb=(mid>1.5)?22.0:15.0;
+  col=mix(col, back, smoothstep(fa,fb,t)*0.96);
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
 }`;
 
@@ -1007,7 +1051,10 @@ function frame(){
   camKick  += ((HITS.low*0.014 + HITS.sub*0.010) - camKick)*(1-Math.exp(-4.0*dt));
   const spin = formSpin;
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
-  if(phase===1){ mix+=dt/1.9; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
+  // genuinely neither shape; the longer that state is held the more it reads as one form flowing
+  // into another rather than as a crossfade being rushed through.
+  if(phase===1){ mix+=dt/3.4; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   const prog=(phase===1)?mix:0;
   const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
   flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*Math.sin(prog*Math.PI));  // gentle bloom lift, not a strobe
