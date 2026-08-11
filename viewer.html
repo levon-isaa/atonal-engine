@@ -226,7 +226,12 @@ float evalMode(vec3 p,float m){
 }
 vec2 map(vec3 wp){
   vec3 p=wp;
-  p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
+  // CLEAN AXIS SPIN. u_spin used to drive TWO planes at once — xz plus xy at 0.22 — which is a
+  // tumble, not a spin: the axis itself precesses, so the form never repeats a pose and the eye
+  // cannot lock onto the rotation. One plane only. u_tilt stays as a fixed lean on the axis, so
+  // the form is seen at a three-quarter angle rather than dead side-on, but the lean is static
+  // and the spin is a clean turn about it.
+  p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
   // 0.95 = global framing scale: keeps the whole silhouette inside frame at the closest camera
   // bass hits punch the whole form; sub adds the deep swell
   float s=max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10+u_hLow*0.13+u_hSub*0.09)*0.95;
@@ -266,7 +271,12 @@ vec2 map(vec3 wp){
    normal that breaks up the specular, and a roughness field that stops every highlight
    reading as one flat plastic sheen. u_txAniso stretches the noise for brushed metal. */
 vec3 objP(vec3 p){
-  p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
+  // CLEAN AXIS SPIN. u_spin used to drive TWO planes at once — xz plus xy at 0.22 — which is a
+  // tumble, not a spin: the axis itself precesses, so the form never repeats a pose and the eye
+  // cannot lock onto the rotation. One plane only. u_tilt stays as a fixed lean on the axis, so
+  // the form is seen at a three-quarter angle rather than dead side-on, but the lean is static
+  // and the spin is a clean turn about it.
+  p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
   return p;
 }
 vec3 texNormal(vec3 op,vec3 n){
@@ -650,7 +660,10 @@ function initTargets(w,h){
   hdrF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,hdrF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,hdrT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 }
-let dpr=1, rscale=0.90, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
+// 0.72 starts near where the controller actually settles on a native-resolution canvas. Starting
+// at 0.90 meant the first seconds ran ~29ms, which dragged frameAvg up and tripped the degrade
+// path before anything had stabilised.
+let dpr=1, rscale=0.72, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
 function applyScale(){ RW=Math.max(2,Math.round(glc.width*rscale)); RH=Math.max(2,Math.round(glc.height*rscale)); initTargets(RW,RH); }
 // The CANVAS must be the display's native pixel grid. Capping dpr below devicePixelRatio makes
 // the browser rescale the finished frame — a 1.6x bilinear smear on a 2x screen that no amount
@@ -900,12 +913,20 @@ function frame(){
     // frame is STILL slow does the canvas itself back off, because at that point the cost is
     // the full-screen passes and nothing else can reach it. Restoring runs in reverse: get the
     // canvas back to native before spending anything on extra march samples.
+    // The canvas is STRONGLY biased toward native, because it is what the eye actually reads:
+    // measured here, fixed cost is ~4.7ms and the march ~5.93ms per Mpx, so a native canvas at
+    // rscale ~0.63 already holds 60fps — shrinking the canvas is almost never the right trade.
+    // It drops only on a severe, sustained deficit (>30ms with the march already floored), and
+    // it is restored on anything under 21ms rather than 17.2. That asymmetry matters: with both
+    // gates at the old thresholds a transient stall (the 8s analyse, a tab switch) knocked the
+    // canvas down and then ~21ms sat inside the dead zone — too fast to degrade, too slow to
+    // restore — so it stayed blurred indefinitely. The dead zone was a one-way trap.
     if(frameAvg>24){
       if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
-      else if(dprScale>0.62){ dprScale=Math.max(0.62,dprScale-0.08); resize(); }
-    } else if(frameAvg<17.2){
-      if(dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.05); resize(); }
-      else if(rscale<1.20){ rscale=Math.min(1.20,rscale+0.06); applyScale(); }
+      else if(frameAvg>30 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
+    } else if(frameAvg<21){
+      if(dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
+      else if(frameAvg<17.2 && rscale<1.20){ rscale=Math.min(1.20,rscale+0.06); applyScale(); }
     } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
