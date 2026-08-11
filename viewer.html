@@ -49,8 +49,8 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="0" selected>Organic</option><option value="1">Gyroid</option>
-    <option value="2">Tendrils</option><option value="3">Shards</option><option value="4">Flow</option></select></div>
+    <option value="0" selected>Organic</option><option value="1">Helix</option>
+    <option value="2">Gem</option><option value="3">Petals</option><option value="4">Twist</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
     <option value="pearl" selected>Pearl</option><option value="iridescent">Iridescent</option>
     <option value="chrome">Chrome</option><option value="frosted">Frosted</option>
@@ -119,31 +119,29 @@ float mStar(vec3 p){                                   // ORGANIC bloom (living 
     d=smin(d,length(p-c)-(0.26+u_energy*0.12+u_pulse*0.08),0.45); }
   return d;
 }
-float mLattice(vec3 p){                                // GYROID (tech-organic mesh)
-  float sc=3.2+u_energy*1.2;
-  float g=dot(sin(p*sc),cos(p.yzx*sc))/sc;
-  return max(abs(g)-0.03-u_energy*0.035, length(p)-1.35);
+float mLattice(vec3 p){                               // HELIX — twin strands
+  float f=3.2, R=0.72+u_pulse*0.04, d=1e9;
+  for(int i=0;i<2;i++){ float off=float(i)*3.14159265;
+    vec3 c=vec3(cos(p.y*f+off)*R, p.y, sin(p.y*f+off)*R);
+    d=min(d, length(p-c)-0.13); }
+  return max(d, abs(p.y)-1.15);
 }
-float mTorus(vec3 p){                                  // TENDRILS (noisy, tapering filaments)
-  float rad=length(p.xz)+1e-4;
-  float ang=atan(p.z,p.x)+u_twist*rad+fbm(p*1.5)*2.0;
-  float sec=6.2831853/max(u_count,4.0), aw=mod(ang,sec)-sec*0.5;
-  vec3 q=vec3(rad, p.y+sin(rad*3.0+u_time*0.8)*0.18, sin(aw)*rad);
-  float th=max(u_thick*0.5*(1.0-rad*0.35),0.02);
-  return smin(capX(q,u_r0,u_r1*(1.0+0.3*fbm(p+u_time*0.1)),th), length(p)-0.22, 0.15);
+float mTorus(vec3 p){                                  // GEM — faceted rounded crystal
+  float o=sdOcta(p,1.2);
+  float b=sdBox(p,vec3(0.82))-0.04;
+  return max(o,b)-0.04;
 }
-float mSwarm(vec3 p){                                  // SHARDS (broken facets, burst on the beat)
-  float d=1e9, e=0.72+u_pulse*0.6+u_energy*0.2;
-  for(int i=0;i<6;i++){ float fi=float(i);
-    vec3 q=p; q.xy*=rot(fi*1.05+u_time*0.15); q.yz*=rot(fi*0.7-u_time*0.1);
-    q-=vec3(sin(fi*2.0),cos(fi*1.3),sin(fi))*0.55*e;
-    d=min(d, sdBox(q,vec3(0.5,0.11,0.26))-0.02); }
-  return d;
+float mSwarm(vec3 p){                                  // PETALS — radial lotus
+  float rad=length(p.xz), ang=atan(p.z,p.x);
+  float pet=5.0+floor(u_count*0.4);
+  float prof=0.55+0.45*abs(cos(ang*pet*0.5));
+  float body=length(vec2(rad-prof*0.95, p.y*2.0))-0.16;
+  return smin(body, length(p)-0.34, 0.22);
 }
-float mMono(vec3 p){                                   // FLOW (melting liquid)
-  float d=length(p)-0.95;
-  d+=(fbm(p*1.4+vec3(0.,u_time*0.25,0.))-0.5)*(0.5+u_energy*0.2);
-  d+=(fbm(p*3.2-u_time*0.15)-0.5)*0.15;
+float mMono(vec3 p){                                   // TWIST — twisted ribbon prism
+  float k=1.5; float c=cos(k*p.y), s=sin(k*p.y);
+  vec2 xz=mat2(c,-s,s,c)*p.xz;
+  float d=sdBox(vec3(xz.x,p.y,xz.y), vec3(0.5,1.0,0.18))-0.07;
   return d*0.7;
 }
 float evalMode(vec3 p,float m){
@@ -167,20 +165,24 @@ vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*0.0018;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
 vec3 env(vec3 d){
   vec3 sun=normalize(vec3(-.4,.8,.4));
-  vec3 z=vec3(.014,.016,.024), h=vec3(.10,.11,.15)*u_env, g=vec3(.004,.004,.007);   // darker, underground
-  vec3 e=mix(g,z,smoothstep(-.4,.6,d.y)); e=mix(e,h,exp(-abs(d.y)*3.8)*.7);
-  e+=vec3(1.,.95,.88)*pow(max(0.,dot(d,sun)),60.)*0.9*u_env;
-  e+=vec3(.5,.6,.85)*pow(max(0.,dot(d,normalize(vec3(.5,.1,-.5)))),8.)*.18*u_env;
+  // studio dome — used ONLY for material reflections, so metals/chrome/holo read properly
+  vec3 z=vec3(.05,.06,.085), h=vec3(.40,.43,.52)*u_env, g=vec3(.02,.02,.03);
+  vec3 e=mix(g,z,smoothstep(-.4,.6,d.y)); e=mix(e,h,exp(-abs(d.y)*3.2)*.8);
+  e+=vec3(1.,.97,.90)*pow(max(0.,dot(d,sun)),50.)*3.0*u_env;    // bright key -> mirror highlight
+  e+=vec3(1.,.97,.90)*pow(max(0.,dot(d,sun)),8.)*0.5*u_env;     // soft halo
+  e+=vec3(.55,.65,.90)*pow(max(0.,dot(d,normalize(vec3(.5,.1,-.5)))),6.)*.4*u_env;  // cool fill
   return e;
 }
 // fluid, flowing backdrop tied to the shape's palette (domain-warped fbm) — professional depth
 vec3 bg(vec3 rd){
-  vec2 uv=rd.xy*1.4 + vec2(u_time*0.015, u_time*0.010);
-  float warp=fbm(vec3(uv*0.7+u_time*0.03, 0.0));
-  float fv=clamp(fbm(vec3(uv*1.3 + warp*1.4, u_time*0.02)), 0., 1.);
-  vec3 col=mix(vec3(0.012,0.014,0.020), u_mood*0.34, smoothstep(0.35,0.95,fv)*u_bgAmt);
-  col+=u_mood*0.10*pow(fv,3.0)*u_bgAmt;                     // drifting wisps
-  col*=0.75+0.25*smoothstep(1.1,0.15,length(rd.xy));        // gentle center glow
+  vec2 uv=rd.xy*1.3;
+  // flowing domain warp (fluid) — the backdrop advects like liquid, in the shape's palette
+  vec2 q=vec2(fbm(vec3(uv+u_time*0.03,0.0)), fbm(vec3(uv+vec2(5.2,1.3)-u_time*0.025,0.0)));
+  float fv=clamp(fbm(vec3(uv*1.2 + q*1.9 + u_time*0.02, 1.0)), 0., 1.);
+  vec3 deep=u_mood*0.06;                                    // matched: dark tone of the mood
+  vec3 col=mix(vec3(0.010,0.012,0.018)+deep, u_mood*0.42, smoothstep(0.25,0.9,fv)*u_bgAmt);
+  col+=u_mood*0.12*pow(fv,3.0)*u_bgAmt;                     // bright wisps of the mood colour
+  col*=0.72+0.28*smoothstep(1.25,0.12,length(rd.xy));      // vignette-ish center glow so the form reads
   return col;
 }
 void main(){
