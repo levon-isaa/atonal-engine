@@ -53,6 +53,50 @@ def smooth(a, win):
 def resample_curve(x_src, y_src, x_dst):
     return np.interp(x_dst, x_src, y_src)
 
+# ------------------------------------------------------- LAYER 1b: PER-BAND SOUND
+# Every distinct sound in a mix lives in a frequency band. Splitting the spectrum lets
+# the renderer react to the KICK, the SNARE and the HATS separately instead of lumping
+# everything into one "energy" number. Each band gets a sustained level curve AND a
+# discrete onset list (the actual hits), so motion can land on individual sounds.
+BANDS = [("sub",   20,   80,  0.075),    # name, lo Hz, hi Hz, min gap between onsets (s)
+         ("low",   80,   250, 0.070),    # kick body / bassline
+         ("mid",   250,  1200, 0.055),   # snare body, chords, vocals
+         ("high",  1200, 4500, 0.045),   # snare snap, stabs, leads
+         ("air",   4500, 11000, 0.035)]  # hats, cymbals, texture
+
+def pick_onsets(env, times, min_gap_s, sr):
+    """Peak-pick a band's onset envelope -> [[t, strength], ...] (sorted, strength 0..1).
+    Hand-rolled: librosa.util.peak_pick trips a numba type error on this build."""
+    e = smooth(np.asarray(env, dtype=np.float64), 3)
+    mx = float(e.max())
+    if mx <= 1e-9:
+        return []
+    en = e / mx
+    thr = max(0.10, float(np.percentile(en, 72)))
+    wait = max(1, int(min_gap_s * sr / HOP))
+    out, last = [], -10**9
+    for i in range(1, len(en) - 1):
+        if en[i] > thr and en[i] >= en[i-1] and en[i] > en[i+1] and (i - last) > wait:
+            out.append([round(float(times[i]), 3), round(float(en[i]), 3)])
+            last = i
+    return out
+
+def layer1b_bands(S, sr, times):
+    """Per-band level curves + discrete onsets, straight off the magnitude spectrogram."""
+    import librosa
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    levels, onsets = {}, {}
+    for name, lo, hi, gap in BANDS:
+        idx = np.where((freqs >= lo) & (freqs < hi))[0]
+        if len(idx) == 0:
+            idx = np.array([min(len(freqs) - 1, 1)])
+        B = S[idx, :]
+        levels[name] = np.sqrt((B ** 2).mean(axis=0))               # band RMS
+        L = np.log1p(B)                                             # log-domain flux
+        d = np.maximum(np.diff(L, axis=1, prepend=L[:, :1]), 0)     # half-wave rectified
+        onsets[name] = pick_onsets(d.mean(axis=0), times, gap, sr)
+    return levels, onsets
+
 # ============================================================ LAYER 1: SIGNAL
 def layer1_signal(mono, stereo, sr):
     import librosa
@@ -101,6 +145,8 @@ def layer1_signal(mono, stereo, sr):
     f["n"] = len(f["rms"])
     f["times"] = librosa.frames_to_time(np.arange(f["n"]), sr=sr, hop_length=HOP)
     f["duration"] = float(len(mono) / sr)
+    # per-band levels + the individual hits in each band (done here, while S is in hand)
+    f["band_levels"], f["band_onsets"] = layer1b_bands(S, sr, f["times"])
     return f
 
 # ========================================================= LAYER 2: STRUCTURE
@@ -298,6 +344,8 @@ def build_director(path):
     bounds = layer2_structure(f, sr)
     print(f"[layer4] genre…")
     genre = panns or layer4_genre(f, cur)
+    print(f"[layer1b] per-band sounds: " +
+          ", ".join(f"{k}={len(v)}" for k, v in f["band_onsets"].items()))
     print(f"[layer6] director / sections…")
     secs = label_and_direct(bounds, f, cur, genre)
     events = layer10_predict(secs)
@@ -308,6 +356,9 @@ def build_director(path):
     for k in ("energy","brightness","arousal","valence","tension","darkness",
               "warmth","danceability","epicness","flux","percussive","harmonic","density"):
         curves[k] = [round(float(x), 4) for x in resample_curve(f["times"], cur[k], td)]
+    # per-band sustained levels, normalised the same way as the emotion curves
+    for k, lv in f["band_levels"].items():
+        curves[k] = [round(float(x), 4) for x in resample_curve(f["times"], nrm(smooth(lv, 5)), td)]
     out = {
         "schema": "atonal.director/1",
         "meta": {"source": os.path.basename(path), "duration": round(dur, 3),
@@ -317,7 +368,9 @@ def build_director(path):
                   "stereo_width": round(f["stereo_width"], 3)},
         "genre": genre,
         "sections": secs,
-        "events": {"beats": [round(x, 3) for x in f["beat_times"]], "predictions": events},
+        "events": {"beats": [round(x, 3) for x in f["beat_times"]],
+                   "onsets": f["band_onsets"],          # the individual sounds, per band
+                   "predictions": events},
         "curves": curves,
     }
     return out

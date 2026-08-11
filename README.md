@@ -7,6 +7,10 @@ renderer consumes. The renderer never sees FFT; it reads the Director's decision
 1. **Signal** (librosa): RMS, centroid, flatness, rolloff, bandwidth, ZCR, spectral flux,
    contrast, 20 MFCCs, chroma-CQT, HPSS harmonic/percussive, tempo+beats, tempo stability,
    crest factor, dynamic range, stereo width / phase correlation.
+1b. **Per-band sounds**: the spectrum is split into `sub / low / mid / high / air`. Each band
+   gets a sustained level curve *and* a discrete onset list (the actual hits), so the kick,
+   the snare and the hats are separate events instead of one lumped "energy" number. This is
+   what lets motion land on individual sounds.
 2. **Structure**: beat-synced chroma+MFCC agglomerative segmentation + energy-novelty
    boundaries → labelled sections (intro/build/drop/groove/breakdown/outro).
 3. **Emotion**: continuous curves (energy, valence, arousal, tension, darkness, warmth,
@@ -51,10 +55,24 @@ tempo{bpm,stability,crest_db,dynamic_range_db,stereo_width}
 genre{primary,confidence,secondary,method,top_tags[],moods{}}
 sections[]{t0,t1,label,energy,tension,valence,camera,composition,mood,palette,
            motion,fog,bloom,grain,intent}
-events{beats[], predictions[]{t,type,lead}}
+events{beats[], onsets{sub|low|mid|high|air: [[t,strength],…]}, predictions[]{t,type,lead}}
 curves{t[], energy[],brightness[],arousal[],valence[],tension[],darkness[],
-       warmth[],danceability[],epicness[],flux[],percussive[],harmonic[],density[]}   # 30 Hz
+       warmth[],danceability[],epicness[],flux[],percussive[],harmonic[],density[],
+       sub[],low[],mid[],high[],air[]}                                              # 30 Hz
 ```
+
+### How each band drives the visuals
+| band | onset lands as | level sustains as |
+|---|---|---|
+| sub / low | scale punch + camera dolly-in, background flash | overall swell |
+| mid | shockwave ring through the surface, spin nudge | ink turbulence |
+| high | rim flare, spin nudge, surface chatter | surface detail frequency |
+| air | iridescent shimmer, bloom lift | sheen |
+
+Transients are decayed then attack-smoothed per band (highs snap, lows hang) so the motion
+is articulate without jittering. Surface displacement divides amplitude back down by
+frequency — `freq * amp` must stay bounded or the field stops being a valid SDF and the
+raymarch creases.
 
 ## Viewer controls (top right)
 - **Shape** — `Auto · Director` lets the Director pick, or lock one of Organic / Helix / Gem / Petals / Twist.
