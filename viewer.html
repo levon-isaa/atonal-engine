@@ -53,7 +53,7 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="4" selected>Pods</option><option value="0">Turbine</option>
+    <option value="4" selected>Pods</option><option value="0">Ribbon</option>
     <option value="1">Tower</option><option value="2">Gyroscope</option>
     <option value="3">Space Frame</option><option value="5">Shell</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
@@ -141,19 +141,28 @@ float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
-float mArray(vec3 p){                                  // TURBINE — polar array of pitched blades
-  float N=floor(clamp(u_gDense*1.6+5.0,5.0,12.0));
-  float sec=6.28318530/N;
-  float a=atan(p.z,p.x), r=length(p.xz);
-  float k=mod(a+sec*0.5,sec)-sec*0.5;                  // fold into one sector
-  vec3 q=vec3(cos(k)*r,p.y,sin(k)*r);
-  q.x-=0.60;
-  q.xy*=rot(0.55+u_gTwist*0.45);                       // blade pitch
-  q.xz*=rot(0.30);
-  float blade=sdRBox(q,vec3(0.34,0.075+u_gThick*0.06,0.17),0.055);
-  float hub  =sdRBox(p,vec3(0.26,0.20,0.26),0.17);
-  float ring =sdTorus(p,vec2(0.96,0.055));
-  return min(smin(blade,hub,0.10),ring);
+float mArray(vec3 p){                                  // RIBBON — a wide band swept round the axis
+  // Replaces the old turbine (a polar array of pitched blades + hub + ring). That form read as
+  // machinery: hard repeated blades, a dead hub in the middle, and a torus that never belonged
+  // to the rest of it. This is one continuous surface instead — a band swept around the axis
+  // while rotating about its own centreline, so the silhouette changes completely as it turns
+  // and the light runs along the twist. Glossy materials have somewhere to travel.
+  float a=atan(p.z,p.x);
+  float r=length(p.xz)-0.92;                           // signed distance to the sweep circle
+  vec2 q=vec2(r,p.y);
+  // INTEGER twist count only. A half twist gives a true Mobius band but leaves a seam where
+  // atan wraps at +/-pi, because the cross-section arrives back rotated by an odd multiple of
+  // pi and no longer matches itself.
+  float tw=floor(clamp(u_gDense*0.35+2.0,2.0,5.0));
+  q*=rot(a*tw + u_gTwist*0.9);
+  vec2 half_=vec2(0.048+u_gThick*0.050, 0.26+u_gCut*0.09);
+  vec2 d2=abs(q)-half_+0.042;
+  float band=length(max(d2,0.0))+min(max(d2.x,d2.y),0.0)-0.042;
+  // The angular twist stretches space, so the true distance is SHORTER than this estimate and
+  // marching it unscaled overshoots — the band tears into chords, which is exactly what a fixed
+  // 0.55 still did at 2+ twists. The distortion grows with the twist rate, so the safety factor
+  // has to grow with it too rather than being a constant.
+  return band/(1.0+tw*0.55);
 }
 float mStack(vec3 p){                                  // TOWER — stacked slabs, progressive twist
   const float N=8.0; float H=2.00/N;
@@ -326,10 +335,36 @@ void palAB(out vec3 A,out vec3 B){
 vec3 bg(vec3 rd, vec2 sv){
   vec3 A,B; palAB(A,B);
   float h=clamp(rd.y*0.5+0.5,0.,1.);
-  vec3 lo=mix(vec3(0.90),B,0.12);                          // bright at the horizon
-  vec3 hi=mix(vec3(0.52),B,0.24);                          // deeper up top
+  // ---- FLUID: two rounds of domain warping. Warping the noise's INPUT by more noise is what
+  // turns a static cloud into something that folds and shears like ink in water; a single fbm
+  // only ever pulses in place. Drift speed rides arousal, so the field is calm under an intro
+  // and genuinely churning through a drop -- but it is always slow in absolute terms, because
+  // this sits behind the subject and must never compete with it.
+  // ONE warp round, not two. bg() runs for every pixel in the frame (the aerial fade needs it
+  // even where the form is hit), so each fbm here costs a full-screen pass — two rounds drove
+  // rscale to its floor and cost more resolution than the extra detail was worth. A single warp
+  // with a stronger coefficient folds the field convincingly at 3 fbm calls instead of 5.
+  vec2 uv=sv*1.25;
+  float tt=u_time*(0.020+u_arousal*0.045);
+  vec2 w1=vec2(fbm(vec3(uv*1.20, tt)), fbm(vec3(uv*1.20+11.7, tt)));
+  float f=fbm(vec3(uv*1.60+w1*2.6, tt*0.75));
+  f=clamp(f*1.7+0.16,0.,1.);
+  // ---- EMOTION COLOUR. valence swings the field warm/cool, tension pushes it toward the
+  // palette accent, darkness pulls the whole thing down. The base sweep still comes from the
+  // section palette, so the backdrop and the duotone inks stay on one colourway.
+  vec3 cool=mix(vec3(0.24,0.34,0.68), A, 0.62);
+  vec3 warm=mix(vec3(0.80,0.36,0.28), B, 0.62);
+  vec3 ink =mix(cool, warm, clamp(u_valence,0.,1.));
+  vec3 lo=mix(vec3(0.90), B, 0.14+u_tension*0.26);         // bright at the horizon
+  vec3 hi=mix(vec3(0.52), B, 0.26+u_tension*0.30);         // deeper up top
   vec3 col=mix(lo,hi,smoothstep(0.48,1.0,h));
+  // the fluid rides ON the sweep rather than replacing it: a studio backdrop that MOVES, not a
+  // noise texture pasted behind the subject. Weighted to stay legible at IDLE too — at the flat
+  // default curves (arousal .3, tension .2) the emotion terms contribute almost nothing, so a
+  // mix driven purely by them reads as no effect at all until a track is actually playing.
+  col=mix(col, ink, f*(0.44+u_tension*0.26+u_epic*0.16));
   col*=mix(1.0,0.68,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
+  col*=1.0-u_darkness*0.28;
   return col*(0.80+u_bgAmt*0.30);
 }
 
@@ -596,19 +631,24 @@ const COMPS={
   column: {count:4, twist:0.05,r0:0.05,r1:0.75,thick:0.20,bulge:0.55,hub:0.26},
   scatter:{count:10,twist:0.55,r0:0.10,r1:1.55,thick:0.06,bulge:0.20,hub:0.12},
 };
+// Orbit rates are rad/s. The old 0.45 put a full revolution at ~13s, which reads as a turntable
+// rather than a camera move; a held cinematic orbit is nearer 30-45s. Halved across the board —
+// the section still changes the FEEL of the move (push vs retreat vs drift), just at a pace you
+// can actually watch.
 const CAM={
-  wide_drift:{dist:5.2,height:0.4,spin:0.05,fov:1.5},
-  slow_push :{dist:3.4,height:0.25,spin:0.10,fov:1.35},
-  orbit     :{dist:3.9,height:0.5,spin:0.45,fov:1.42},
-  tracking  :{dist:4.2,height:0.35,spin:0.28,fov:1.44},
-  pull_back :{dist:6.0,height:0.8,spin:0.08,fov:1.6},
-  retreat   :{dist:6.6,height:1.0,spin:0.05,fov:1.66},
+  wide_drift:{dist:5.2,height:0.4,spin:0.026,fov:1.5},
+  slow_push :{dist:3.4,height:0.25,spin:0.048,fov:1.35},
+  orbit     :{dist:3.9,height:0.5,spin:0.190,fov:1.42},
+  tracking  :{dist:4.2,height:0.35,spin:0.125,fov:1.44},
+  pull_back :{dist:6.0,height:0.8,spin:0.040,fov:1.6},
+  retreat   :{dist:6.6,height:1.0,spin:0.026,fov:1.66},
 };
 // eased state
 const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0, rollS=0;
+let spinKick=0, camKick=0;          // decaying angular OFFSETS from onsets (never velocity)
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
 const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
@@ -625,7 +665,7 @@ function rerollVariant(){
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
-// modes: 0 turbine  1 tower  2 gyroscope  3 space frame  4 pods  5 shell
+// modes: 0 ribbon  1 tower  2 gyroscope  3 space frame  4 pods  5 shell
 const GENRE_MODES={
   techno:[2,5,4,3],'melodic techno':[1,3,0],house:[1,3,2],edm:[0,4,5],electronic:[0,1,2,3,4,5],
   dance:[3,1,4],trance:[1,3,0],'drum & bass':[5,4,0],dubstep:[5,4,2],ambient:[1,3,2],
@@ -641,8 +681,11 @@ const HIT ={sub:0,low:0,mid:0,high:0,air:0};          // transient, raw (set on 
 const HITS={sub:0,low:0,mid:0,high:0,air:0};          // smoothed attack -> no jitter
 const BND ={sub:0,low:0,mid:0,high:0,air:0};          // sustained band level
 // low frequencies swell and hang; highs must snap, or hats smear into a blur
-const DECAY ={sub:5.0,low:5.5,mid:7.5,high:11.0,air:15.0};
-const ATTACK={sub:13,low:15,mid:20,high:28,air:36};
+// Softened ~30%: the envelopes hang longer and rise less abruptly, so a hit reads as a swell
+// rather than a snap. The ORDERING is what carries the pace (lows hang, highs snap), and that
+// is preserved exactly — this slows the gesture, not the groove.
+const DECAY ={sub:3.6,low:4.0,mid:5.4,high:8.0,air:11.0};
+const ATTACK={sub:9,low:10,mid:13,high:19,air:25};
 const OCUR={sub:0,low:0,mid:0,high:0,air:0};          // per-band cursor into the onset list
 let shockT=9, shockA=0;                                // mid-band shockwave ring
 function resetOnsetCursors(t){                         // after a seek, re-place every cursor
@@ -833,8 +876,10 @@ function frame(){
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
-  CM.dist=sm(CM.dist,camTarget.dist,1.3,dt); CM.height=sm(CM.height,camTarget.height,1.3,dt);
-  CM.fov=sm(CM.fov,camTarget.fov,1.3,dt); CM.spin=sm(CM.spin,camTarget.spin,1.3,dt);
+  // Section cuts must not snap the camera. 1.3 crossed a dist/fov change in well under a second,
+  // which lands as a jump cut; 0.55 carries it over ~3s so the move is felt, not seen.
+  CM.dist=sm(CM.dist,camTarget.dist,0.55,dt); CM.height=sm(CM.height,camTarget.height,0.55,dt);
+  CM.fov=sm(CM.fov,camTarget.fov,0.55,dt); CM.spin=sm(CM.spin,camTarget.spin,0.45,dt);
   pulse*=Math.exp(-6.0*dt);
   pulseS += (pulse-pulseS)*(1-Math.exp(-16*dt));      // smoothed attack -> no hard beat snap
   // per-band envelopes: decay the transient, then smooth its attack so hits land soft
@@ -844,9 +889,17 @@ function frame(){
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
   // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
   // individual sounds nudge the rotation — articulate, but damped so it never jitters
-  camAng += (CM.spin*(0.5+energy*0.6) + 0.012 + HITS.low*0.10)*dt;
-  formSpin += (0.04+energy*0.12 + HITS.mid*0.38 + HITS.high*0.22)*dt;
-  const spin = formSpin;
+  // Onsets must nudge the ANGLE, not the angular VELOCITY. Adding every hit into the rate is
+  // what made this feel hurried: a dense hat pattern integrates into permanent speed, so the
+  // form ratchets faster and faster through a busy section and never settles back. Feeding the
+  // same envelope into a decaying angular OFFSET keeps the articulation on each hit — you still
+  // see the kick and the snare land — while the underlying rotation stays at the pace the
+  // section's energy actually asks for.
+  camAng  += (CM.spin*(0.45+energy*0.45) + 0.008)*dt;
+  formSpin += (0.03+energy*0.075)*dt;
+  spinKick += ((HITS.mid*0.115 + HITS.high*0.05) - spinKick)*(1-Math.exp(-7.0*dt));
+  camKick  += ((HITS.low*0.030 + HITS.sub*0.020) - camKick )*(1-Math.exp(-5.0*dt));
+  const spin = formSpin + spinKick;
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
   if(phase===1){ mix+=dt/1.9; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   const prog=(phase===1)?mix:0;
@@ -860,7 +913,7 @@ function frame(){
   // camera basis
   // kick/sub dolly the camera in a touch — the push you feel rather than see
   const dolly=CM.dist*(1-HITS.low*0.055-HITS.sub*0.045);
-  const ca=camAng, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
+  const ca=camAng+camKick, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
   let rx=fz,ry=0,rz=-fx; const rl=Math.hypot(rx,ry,rz)||1; rx/=rl;ry/=rl;rz/=rl;
   let ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
