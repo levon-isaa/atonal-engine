@@ -175,14 +175,18 @@ vec3 env(vec3 d){
 }
 // fluid, flowing backdrop tied to the shape's palette (domain-warped fbm) — professional depth
 vec3 bg(vec3 rd){
-  vec2 uv=rd.xy*1.3;
-  // flowing domain warp (fluid) — the backdrop advects like liquid, in the shape's palette
-  vec2 q=vec2(fbm(vec3(uv+u_time*0.03,0.0)), fbm(vec3(uv+vec2(5.2,1.3)-u_time*0.025,0.0)));
-  float fv=clamp(fbm(vec3(uv*1.2 + q*1.9 + u_time*0.02, 1.0)), 0., 1.);
-  vec3 deep=u_mood*0.06;                                    // matched: dark tone of the mood
-  vec3 col=mix(vec3(0.010,0.012,0.018)+deep, u_mood*0.42, smoothstep(0.25,0.9,fv)*u_bgAmt);
-  col+=u_mood*0.12*pow(fv,3.0)*u_bgAmt;                     // bright wisps of the mood colour
-  col*=0.72+0.28*smoothstep(1.25,0.12,length(rd.xy));      // vignette-ish center glow so the form reads
+  vec2 uv=rd.xy*1.2;
+  // liquid plasma: multi-scale domain-warped flow (BCCO / Mutual Rytm gradient energy)
+  vec2 q=vec2(fbm(vec3(uv+u_time*0.04,0.)), fbm(vec3(uv+vec2(3.1,6.2)-u_time*0.03,0.)));
+  float fv=clamp(fbm(vec3(uv*1.15 + q*2.2 + u_time*0.03, 1.0)), 0., 1.);
+  vec3 m=u_mood; m=mix(vec3(dot(m,vec3(.3333))), m, 1.7);   // punch up the saturation -> vibrant
+  vec3 A=m*0.55;                                            // deep pole
+  vec3 B=m.gbr*0.95;                                        // hue-shifted partner (duotone)
+  vec3 hot=mix(m, vec3(1.0,0.92,0.72), 0.5);                // bright accent wisps
+  vec3 col=mix(A, B, smoothstep(0.15,0.85,fv));
+  col=mix(col, hot, pow(fv,4.0)*0.8);                       // hot plasma highlights
+  col*=(0.9+u_bgAmt*0.8);                                   // vibrant, rises with energy
+  col*=mix(0.35,1.0, smoothstep(0.2,1.05,length(rd.xy)));   // dark halo right behind the form so it pops
   return col;
 }
 void main(){
