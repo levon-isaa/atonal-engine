@@ -61,7 +61,8 @@
     <option value="chrome">Chrome</option><option value="frosted">Frosted</option>
     <option value="holo">Holographic</option><option value="neon">Neon</option></select></div>
   <div class="row"><label>Look</label><select id="selLook">
-    <option value="label" selected>Label</option><option value="riso">Riso</option>
+    <option value="studio" selected>Studio</option>
+    <option value="label">Label</option><option value="riso">Riso</option>
     <option value="xerox">Xerox</option><option value="halftone">Halftone</option>
     <option value="chrome">Chrome</option><option value="clean">Clean</option></select></div>
   <div class="row"><label>Palette</label><select id="selPal">
@@ -244,15 +245,29 @@ float calcSha(vec3 p,vec3 l){ float r=1.,t=0.09;
     if(h<0.004) return 0.06;
     r=min(r,8.0*h/t); t+=clamp(h,0.06,0.40); if(t>2.6) break; }
   return clamp(r,0.,1.); }
-vec3 env(vec3 d){
-  vec3 sun=normalize(vec3(-.4,.8,.4));
-  // studio dome — used ONLY for material reflections, so metals/chrome/holo read properly
-  vec3 z=vec3(.05,.06,.085), h=vec3(.40,.43,.52)*u_env, g=vec3(.02,.02,.03);
-  vec3 e=mix(g,z,smoothstep(-.4,.6,d.y)); e=mix(e,h,exp(-abs(d.y)*3.2)*.8);
-  e+=vec3(1.,.97,.90)*pow(max(0.,dot(d,sun)),50.)*3.0*u_env;    // bright key -> mirror highlight
-  e+=vec3(1.,.97,.90)*pow(max(0.,dot(d,sun)),8.)*0.5*u_env;     // soft halo
-  e+=vec3(.55,.65,.90)*pow(max(0.,dot(d,normalize(vec3(.5,.1,-.5)))),6.)*.4*u_env;  // cool fill
-  return e*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);   // reflections feel the mood too
+// A rectangular SOFTBOX projected into direction space. Real studio renders read as
+// "high class" because glossy surfaces reflect structured light sources with clean edges —
+// a single analytic sun gives a chrome ball nothing to show.
+float softbox(vec3 d, vec3 n, vec2 sz, float soft){
+  float dn=dot(d,n); if(dn<=0.001) return 0.0;
+  vec3 up=abs(n.y)<0.95?vec3(0,1,0):vec3(1,0,0);
+  vec3 u=normalize(cross(n,up)), v=cross(n,u);
+  vec2 q=vec2(dot(d,u),dot(d,v))/dn;                 // project onto the box plane
+  vec2 e=abs(q)-sz;
+  return smoothstep(soft,-soft,max(e.x,e.y));
+}
+// three-point studio: key + cool fill + hot rim, over a soft gradient with a floor bounce.
+// roughness widens every source, which is what makes rough materials read as rough.
+// (NB: never use backticks in here — this GLSL lives inside a JS template literal.)
+vec3 env(vec3 d,float rough){
+  float sf=0.05+rough*0.45;
+  vec3 e=mix(vec3(0.020,0.022,0.030), vec3(0.150,0.165,0.205), smoothstep(-0.35,0.85,d.y));
+  e=mix(e, vec3(0.055,0.050,0.046), smoothstep(0.05,-0.55,d.y));                    // floor
+  e+=vec3(1.00,0.96,0.90)*softbox(d,normalize(vec3(-0.40,0.78,0.48)),vec2(0.52,0.30),sf)*6.5;
+  e+=vec3(0.55,0.68,1.00)*softbox(d,normalize(vec3( 0.88,0.12,0.30)),vec2(0.80,0.55),sf+0.12)*1.3;
+  e+=vec3(1.00,0.88,0.74)*softbox(d,normalize(vec3( 0.22,0.32,-0.92)),vec2(0.20,0.14),sf*0.7+0.03)*9.0;
+  e+=vec3(0.90,0.94,1.00)*softbox(d,normalize(vec3( 0.05,1.00,-0.10)),vec2(0.62,0.10),sf+0.05)*2.2;
+  return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
 }
 // liquid-ink backdrop: 2-stage domain warp, driven by the selected palette (u_bgA/u_bgB)
 vec3 bg(vec3 rd, vec2 sv){
@@ -299,13 +314,17 @@ void main(){
     float NoL=max(0.,dot(n,L));
     float occ=calcAO(p,n);
     float sha=(NoL>0.001)?calcSha(p,L):1.0;
-    // diffuse body (fades out for metals) — occluded + self-shadowed
-    vec3 c=base*keyC*(1.-u_metal)*(0.24+0.62*NoL*mix(0.30,1.0,sha))*mix(0.30,1.0,occ);
+    // diffuse body (fades out for metals) — occluded + self-shadowed.
+    // Ambient is real environment irradiance (env sampled along the normal, fully rough)
+    // rather than a flat constant: that is what makes unlit faces read as lit by a room.
+    vec3 amb=env(n,1.0)*0.62;
+    vec3 c=base*(1.-u_metal)*( keyC*(0.62*NoL*mix(0.30,1.0,sha))*mix(0.30,1.0,occ)
+                             + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
     c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
     // environment reflection (fresnel + roughness), strong for chrome — specular occlusion
     vec3 R=reflect(-v,n);
-    c += env(R)*f0*(u_reflect*(0.3+0.9*fr))*mix(0.45,1.0,occ);
+    c += env(R,u_rough)*f0*(u_reflect*(0.3+0.9*fr))*mix(0.45,1.0,occ);
     // thin-film iridescence (pearl / holo) — air/hats make it shimmer and shift
     vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+u_time*0.03+u_iridHue+u_hAir*0.25) + vec3(0.,2.1,4.2));
     c += irid*(0.08+0.35*fr)*u_iridAmt*(1.0+u_hAir*0.9+u_bAir*0.4);
@@ -328,7 +347,7 @@ precision highp float;
 out vec4 o;
 uniform sampler2D u_tex; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
-uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half;
+uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
 float lum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}
@@ -369,7 +388,12 @@ vec3 duo(float l){
 }
 void main(){
   vec2 uv=gl_FragCoord.xy/u_res,t=u_texel;      // offsets in SOURCE texels so AA/sharpen actually bite
-  vec3 col=fxaa(uv,t);
+  vec3 col;
+  if(u_ss>0.5){                                 // supersampled: resolve real samples with a 4-tap tent
+    vec2 h=t*0.5;                               // (true SSAA beats any edge-reconstruction filter)
+    col=(texture(u_tex,uv+vec2(-h.x,-h.y)).rgb+texture(u_tex,uv+vec2(h.x,-h.y)).rgb
+        +texture(u_tex,uv+vec2(-h.x, h.y)).rgb+texture(u_tex,uv+vec2(h.x, h.y)).rgb)*0.25;
+  } else col=fxaa(uv,t);
   if(u_chroma>0.001){                            // misregistration / lens split
     vec2 d=uv-0.5; float k=u_chroma*0.007*(0.25+dot(d,d)*3.0);
     col.r=texture(u_tex,uv+d*k).r; col.b=texture(u_tex,uv-d*k).b; }
@@ -399,7 +423,7 @@ void main(){
   if(u_poster>1.5) col=floor(clamp(col,0.,1.)*u_poster+0.5)/u_poster;
   col=clamp(col,0.,1.);
   col+=(r2(gl_FragCoord.xy+fract(u_time)*17.)-.5)/255.;
-  col+=(r2(gl_FragCoord.xy*1.7+fract(u_time)*91.)-.5)*.045*u_grain;
+  col+=(r2(gl_FragCoord.xy*1.7+fract(u_time)*91.)-.5)*.032*u_grain;
   col*=mix(1.,smoothstep(1.5,.3,length(c2)*.95),u_vig);
   o=vec4(max(col,0.),1.);
 }`;
@@ -550,6 +574,8 @@ const inkB=()=>bgPair()[1];
 
 /* ---- LOOK: the press/print grade. This is what carries the label aesthetic. ---- */
 const LOOKS={
+  // pristine product-render grade: no print texture at all, let the lighting do the work
+  studio:  {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.05,grain:0.10,contrast:-0.06,sat:0.08,sharp:0.24},
   clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.15,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30},
   label:   {ink:0.62,poster:0, dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42},
   riso:    {ink:0.88,poster:7, dither:0.80,half:0.00,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50},
@@ -557,8 +583,7 @@ const LOOKS={
   halftone:{ink:0.92,poster:5, dither:0.25,half:0.75,chroma:0.35,grain:0.70,contrast:0.55,sat:0.00,sharp:0.55},
   chrome:  {ink:0.22,poster:0, dither:0.15,half:0.00,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38},
 };
-const LK ={ink:0.62,poster:0,dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42};
-const LKT={ink:0.62,poster:0,dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42};
+const LK =Object.assign({},LOOKS.studio), LKT=Object.assign({},LOOKS.studio);
 
 let director=null, audioBuffer=null, ctx=null, source=null, isPlaying=false, startedAt=0, pausedAt=0;
 
@@ -629,8 +654,10 @@ function frame(){
   const now=performance.now(); let dt=Math.min(.05,(now-last)/1000); last=now; const time=(now-t0)/1000;
   frameAvg += (Math.min(80,dt*1000)-frameAvg)*0.1;   // adaptive quality: scale render res to hold fps
   if(now-lastQ>500){ lastQ=now;
+    // ceiling is 1.45: above 1.0 the march genuinely supersamples, which the post pass
+    // resolves with a real 4-tap tent — the cleanest edges available for the cost
     if(frameAvg>26 && rscale>0.50){ rscale=Math.max(0.50,rscale-0.08); applyScale(); }
-    else if(frameAvg<15 && rscale<1.0){ rscale=Math.min(1.0,rscale+0.06); applyScale(); } }
+    else if(frameAvg<15 && rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
@@ -770,6 +797,7 @@ function frame(){
     gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
     gl.uniform1i(UP('u_tex'),0); gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
     gl.uniform2f(UP('u_texel'),1/RW,1/RH); gl.uniform1f(UP('u_mip'),mipOK?1:0);
+    gl.uniform1f(UP('u_ss'),rscale>1.05?1:0);
     // underground grade: darker, grittier, higher contrast
     gl.uniform1f(UP('u_bloom'),0.34+energy*0.6+pulseS*0.24+HITS.high*0.22+HITS.air*0.14);
     gl.uniform1f(UP('u_sat'),0.82+valence*0.25+LK.sat);
