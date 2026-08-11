@@ -316,14 +316,14 @@ const CAM={
 const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
 const MO=[0.82,0.82,0.9];
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
-let camAng=0;
+let camAng=0, formSpin=0;
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
 const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 let lastSecKey='';
 function rerollVariant(){
   const R=Math.random;
-  VART.tilt=(R()-0.5)*0.9;
+  VART.tilt=(R()-0.5)*0.5;
   VART.twist=(R()-0.5)*0.9;
   VART.ring=R()<0.45?0:(0.4+R()*0.6);
   VART.wob=R()<0.5?0:(0.25+R()*0.6);
@@ -463,13 +463,15 @@ function frame(){
   for(const k in VAR) VAR[k]=sm(VAR[k],VART[k],1.0,dt);
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
-  CM.dist=sm(CM.dist,camTarget.dist,2.0,dt); CM.height=sm(CM.height,camTarget.height,2.0,dt);
-  CM.fov=sm(CM.fov,camTarget.fov,2.0,dt); CM.spin=sm(CM.spin,camTarget.spin,2.0,dt);
+  CM.dist=sm(CM.dist,camTarget.dist,1.3,dt); CM.height=sm(CM.height,camTarget.height,1.3,dt);
+  CM.fov=sm(CM.fov,camTarget.fov,1.3,dt); CM.spin=sm(CM.spin,camTarget.spin,1.3,dt);
   pulse*=Math.exp(-6.0*dt);
   pulseS += (pulse-pulseS)*(1-Math.exp(-16*dt));      // smoothed attack -> no hard beat snap
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
-  camAng += (CM.spin*(0.35+arousal*0.8) + 0.022 + 0.03*Math.sin(time*0.09) + pulseS*0.05)*dt;
-  const spin = time*(0.06+arousal*0.10) + 0.12*Math.sin(time*0.11) + 0.08*Math.sin(time*0.043+1.7);
+  // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
+  camAng += (CM.spin*(0.5+energy*0.6) + 0.012)*dt;
+  formSpin += (0.04+energy*0.12)*dt;                 // steady, accumulated self-rotation (no jumps)
+  const spin = formSpin;
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
   if(phase===1){ mix+=dt/1.9; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   const prog=(phase===1)?mix:0;
@@ -499,7 +501,7 @@ function frame(){
   gl.uniform1f(US('u_thick'),SH.thick*VAR.thickMul); gl.uniform1f(US('u_bulge'),SH.bulge); gl.uniform1f(US('u_hub'),SH.hub);
   gl.uniform1f(US('u_spin'),spin);
   gl.uniform1f(US('u_ring'),VAR.ring); gl.uniform1f(US('u_wob'),VAR.wob);
-  gl.uniform1f(US('u_tilt'),VAR.tilt+0.14*Math.sin(time*0.09)+0.07*Math.sin(time*0.037+0.6)); gl.uniform1f(US('u_iridHue'),VAR.hue);
+  gl.uniform1f(US('u_tilt'),VAR.tilt); gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_mode'),mode); gl.uniform1f(US('u_mode2'),mode2); gl.uniform1f(US('u_mix'),(phase===1?mix:0));
   gl.uniform1f(US('u_reform'),reform);
   gl.uniform3f(US('u_mood'),MO[0],MO[1],MO[2]);
