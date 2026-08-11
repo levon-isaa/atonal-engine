@@ -423,8 +423,12 @@ vec3 bg(vec3 rd, vec2 sv){
   // The sweep used to be ~86% white — a product-shot cyclorama. That white was the real ceiling
   // on colour here: whatever the ramp produced could only ever tint it pale. Pulled down so the
   // backdrop is a colourway in its own right and the ramp reads as colour rather than as a wash.
-  vec3 lo=mix(vec3(0.88), B, 0.34+u_tension*0.28);         // bright at the horizon
-  vec3 hi=mix(vec3(0.42), B, 0.48+u_tension*0.30);         // deeper up top
+  // With the ground plane gone the background IS the whole frame, so the sweep can no longer
+  // hedge toward white to stay a product-shot cyclorama — there is nothing left for the form to
+  // sit on, and a near-white lower half just reads as empty. Both ends pulled deep into the
+  // colourway.
+  vec3 lo=mix(vec3(0.72), B, 0.56+u_tension*0.24);         // toward the horizon
+  vec3 hi=mix(vec3(0.30), B, 0.62+u_tension*0.26);         // deeper up top
   vec3 col=mix(lo,hi,smoothstep(0.48,1.0,h));
   // the fluid rides ON the sweep rather than replacing it: a studio backdrop that MOVES, not a
   // noise texture pasted behind the subject. Weighted to stay legible at IDLE too — at the flat
@@ -439,8 +443,13 @@ vec3 bg(vec3 rd, vec2 sv){
   col=mix(col, mix(ink,u_mood,0.55), aur*(0.20+u_bLow*0.20+u_pulse*0.14));
   // air band lifts a fine sheen across the whole field — hats/shimmer read in the backdrop too
   col+=vec3(0.9,0.95,1.0)*f*u_bAir*0.05;
-  col*=mix(1.0,0.68,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
-  col*=1.0-u_darkness*0.28;
+  col*=mix(1.0,0.76,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
+  col*=1.0-u_darkness*0.22;
+  // VIBRANCE — pushes chroma while holding luminance, so the field gets its intensity from
+  // colour rather than from being blown brighter. Raising exposure instead would just wash the
+  // whole frame toward white, which is the thing this is meant to get away from.
+  float lm=dot(col,vec3(0.2126,0.7152,0.0722));
+  col=max(mix(vec3(lm), col, 1.42), vec3(0.0));
   return col*(0.80+u_bgAmt*0.30);
 }
 
@@ -452,39 +461,15 @@ void main(){
   float t=0.02+dth*0.012,mid=-1.;                 // dithered start kills stair-step banding
   for(int i=0;i<112;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
     if(h.x<0.0015*t){mid=h.y;break;} t+=h.x*0.62; if(t>18.)break; }
-  // The floor is a PLANE — intersect it analytically. Marching an infinite plane makes
-  // grazing rays converge too slowly, so they hit the step cap at varying distances and
-  // the floor bands into concentric rings around the camera.
-  float tp=(rd.y<-1e-4)?(u_groundY-ro.y)/rd.y:-1.0;
-  if(tp>0.02 && (mid<0.0 || tp<t)){ t=tp; mid=2.0; }
-  vec3 back=bg(rd,uv);       // compute the fluid background once, reuse for miss + fog
+  // GROUND PLANE REMOVED. It existed to catch a cast shadow, and that shadow never worked here:
+  // the forms float clear of it, so what landed was a soft grey pool with a horizon behind it,
+  // and every attempt to fix the shadow only moved the artefact around. Without a shadow the
+  // plane is just an arbitrary horizon line dividing the frame, so it goes too and the form now
+  // floats in the colour field. This also drops a shadow march for every floor pixel, which was
+  // the most expensive thing in the lower half of the frame.
+  vec3 back=bg(rd,uv);       // the background is now the whole frame: miss + aerial fade
   vec3 col;
   if(mid<0.){ col=back; }
-  else if(mid>1.5){                                  // ---- STUDIO FLOOR ----
-    vec3 p=ro+rd*t, gn=vec3(0,1,0);
-    vec3 A,B; palAB(A,B);
-    // The floor is a separate branch from bg(), and at 10% palette it stayed near-white while
-    // the backdrop above it moved through the colourway — which left the bottom third of the
-    // frame reading as a different, flatter scene. It has to sit in the same colourway, just
-    // lighter, or the cyclorama stops being seamless.
-    vec3 alb=mix(vec3(0.74),B,0.32);
-    vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
-    vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
-    float sha=calcSha(p,L);                          // the form's cast shadow
-    float occ=calcAO(p,gn);                          // contact darkening where it sits close
-    vec3 amb=env(gn,1.0)*0.95;
-    // The old shadow crushed to 0.10 of the key and the ambient to 0.12 — a near-black hole
-    // under the form. That is what a single hard sun does; this scene is lit by broad softboxes,
-    // where the cast shadow should stay open and only the CONTACT goes properly dark. Raised
-    // floors on both, with the occlusion term carrying the darkening instead, so the form still
-    // reads as sitting on the floor rather than punched through it.
-    col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.18,1.0,sha) + amb*mix(0.24,1.0,occ) );
-    // A broad occlusion pool under the form. The 0.55 range this first used was tuned for a form
-    // RESTING on the floor; these forms float about a unit clear, so mapD() never got small
-    // enough for it to do anything at all. Widened to 1.7 so the floor darkens under the mass —
-    // that soft pool, not the hard cast shadow, is what places an object in a space.
-    col*=mix(0.62,1.0,smoothstep(0.0,1.7,mapD(p)));
-  }
   else{
     vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
     vec3 op=objP(p);
@@ -563,14 +548,8 @@ void main(){
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
   // the floor dissolves into the backdrop well beyond the subject: no visible horizon line,
   // which is what sells a seamless cyclorama rather than 'object on a plane'
-  // The FLOOR needs a later, longer dissolve than the form. Sharing the form's 3.6 start painted
-  // the backdrop's fluid — filaments and all — straight across the receding plane a short way
-  // behind the subject, which reads as dirt on the floor rather than as depth, and it was the
-  // source of the contouring that looked like concentric rings around the camera. Pushing the
-  // floor's fade out to 6.5..22 keeps the near and mid floor as clean floor; both still reach
-  // 1.0 by the horizon, so the cyclorama stays seamless with no visible join.
-  float fa=(mid>1.5)?6.5:3.6, fb=(mid>1.5)?22.0:15.0;
-  col=mix(col, back, smoothstep(fa,fb,t)*0.96);
+  // Only the form is left to fade, so the floor's separate range is gone with it.
+  col=mix(col, back, smoothstep(3.6,15.0,t)*0.96);
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
 }`;
 
