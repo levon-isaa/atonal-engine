@@ -53,7 +53,7 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="4" selected>Pods</option><option value="0">Turbine</option>
+    <option value="4" selected>Pods</option><option value="0">Ribbon</option>
     <option value="1">Tower</option><option value="2">Gyroscope</option>
     <option value="3">Space Frame</option><option value="5">Shell</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
@@ -141,19 +141,28 @@ float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
-float mArray(vec3 p){                                  // TURBINE — polar array of pitched blades
-  float N=floor(clamp(u_gDense*1.6+5.0,5.0,12.0));
-  float sec=6.28318530/N;
-  float a=atan(p.z,p.x), r=length(p.xz);
-  float k=mod(a+sec*0.5,sec)-sec*0.5;                  // fold into one sector
-  vec3 q=vec3(cos(k)*r,p.y,sin(k)*r);
-  q.x-=0.60;
-  q.xy*=rot(0.55+u_gTwist*0.45);                       // blade pitch
-  q.xz*=rot(0.30);
-  float blade=sdRBox(q,vec3(0.34,0.075+u_gThick*0.06,0.17),0.055);
-  float hub  =sdRBox(p,vec3(0.26,0.20,0.26),0.17);
-  float ring =sdTorus(p,vec2(0.96,0.055));
-  return min(smin(blade,hub,0.10),ring);
+float mArray(vec3 p){                                  // RIBBON — a wide band swept round the axis
+  // Replaces the old turbine (a polar array of pitched blades + hub + ring). That form read as
+  // machinery: hard repeated blades, a dead hub in the middle, and a torus that never belonged
+  // to the rest of it. This is one continuous surface instead — a band swept around the axis
+  // while rotating about its own centreline, so the silhouette changes completely as it turns
+  // and the light runs along the twist. Glossy materials have somewhere to travel.
+  float a=atan(p.z,p.x);
+  float r=length(p.xz)-0.92;                           // signed distance to the sweep circle
+  vec2 q=vec2(r,p.y);
+  // INTEGER twist count only. A half twist gives a true Mobius band but leaves a seam where
+  // atan wraps at +/-pi, because the cross-section arrives back rotated by an odd multiple of
+  // pi and no longer matches itself.
+  float tw=floor(clamp(u_gDense*0.35+2.0,2.0,5.0));
+  q*=rot(a*tw + u_gTwist*0.9);
+  vec2 half_=vec2(0.048+u_gThick*0.050, 0.26+u_gCut*0.09);
+  vec2 d2=abs(q)-half_+0.042;
+  float band=length(max(d2,0.0))+min(max(d2.x,d2.y),0.0)-0.042;
+  // The angular twist stretches space, so the true distance is SHORTER than this estimate and
+  // marching it unscaled overshoots — the band tears into chords, which is exactly what a fixed
+  // 0.55 still did at 2+ twists. The distortion grows with the twist rate, so the safety factor
+  // has to grow with it too rather than being a constant.
+  return band/(1.0+tw*0.55);
 }
 float mStack(vec3 p){                                  // TOWER — stacked slabs, progressive twist
   const float N=8.0; float H=2.00/N;
@@ -217,7 +226,12 @@ float evalMode(vec3 p,float m){
 }
 vec2 map(vec3 wp){
   vec3 p=wp;
-  p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
+  // CLEAN AXIS SPIN. u_spin used to drive TWO planes at once — xz plus xy at 0.22 — which is a
+  // tumble, not a spin: the axis itself precesses, so the form never repeats a pose and the eye
+  // cannot lock onto the rotation. One plane only. u_tilt stays as a fixed lean on the axis, so
+  // the form is seen at a three-quarter angle rather than dead side-on, but the lean is static
+  // and the spin is a clean turn about it.
+  p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
   // 0.95 = global framing scale: keeps the whole silhouette inside frame at the closest camera
   // bass hits punch the whole form; sub adds the deep swell
   float s=max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10+u_hLow*0.13+u_hSub*0.09)*0.95;
@@ -229,14 +243,23 @@ vec2 map(vec3 wp){
   if(br>0.10) dObj=br*s*0.5;
   else{
   float d=evalMode(p,u_mode);
-  if(u_mix>0.001) d=mix(d, evalMode(p,u_mode2), smoothstep(0.,1.,u_mix));  // smooth style melt
+  // SMOOTHERSTEP (6t^5-15t^4+10t^3) rather than smoothstep. smoothstep has zero first derivative
+  // at the ends but a discontinuous SECOND derivative, so the melt visibly jerks into and out of
+  // motion — on a shape change, that snap at each end is most of what reads as abrupt.
+  // Smootherstep is C2, so the morph eases in and out with no kick.
+  if(u_mix>0.001){ float m=clamp(u_mix,0.,1.); m=m*m*m*(m*(m*6.0-15.0)+10.0);
+    d=mix(d, evalMode(p,u_mode2), m); }
   // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
   // surface chatter. Amplitude is divided back down by the frequency: displacement gradient
   // (freq * amp) must stay bounded or the field stops being a valid SDF and the march creases.
   // lighter than before: these forms carry their own detail, so the noise only breathes
   float nf=2.0+u_bHigh*1.6+u_hHigh*1.2;                       // 2.0 .. 4.8
-  float na=u_energy*0.030+u_pulse*0.035+u_flux*0.020+u_wob*0.015+u_hHigh*0.025+u_hAir*0.018;
-  d+=(fbm(p*nf+u_time*(0.15+u_hAir*0.5))-0.5)*na*(2.0/nf);
+  float na=u_energy*0.030+u_pulse*0.030+u_flux*0.014+u_wob*0.010+u_hHigh*0.012+u_hAir*0.009;
+  // The time term CRAWLS the noise through the form. At 0.15 (and 0.5 on air hits) the surface
+  // was boiling — detail sliding across geometry that is itself turning, which is most of what
+  // read as jiggle even after the rotation was cleaned up. Slowed hard so the detail rides WITH
+  // the form and the eye tracks the spin instead of the churn.
+  d+=(fbm(p*nf+u_time*(0.030+u_hAir*0.09))-0.5)*na*(2.0/nf);
   // mid-band onset -> a shockwave ring travelling out through the surface
   if(u_shockA>0.002){
     float rr=length(p);
@@ -253,7 +276,12 @@ vec2 map(vec3 wp){
    normal that breaks up the specular, and a roughness field that stops every highlight
    reading as one flat plastic sheen. u_txAniso stretches the noise for brushed metal. */
 vec3 objP(vec3 p){
-  p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
+  // CLEAN AXIS SPIN. u_spin used to drive TWO planes at once — xz plus xy at 0.22 — which is a
+  // tumble, not a spin: the axis itself precesses, so the form never repeats a pose and the eye
+  // cannot lock onto the rotation. One plane only. u_tilt stays as a fixed lean on the axis, so
+  // the form is seen at a three-quarter angle rather than dead side-on, but the lean is static
+  // and the spin is a clean turn about it.
+  p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
   return p;
 }
 vec3 texNormal(vec3 op,vec3 n){
@@ -283,10 +311,21 @@ float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
     s+=(h-mapD(p+n*h))*w; w*=0.65; }
   return clamp(1.0-1.6*s,0.,1.); }
 // short-range soft shadow — self-shadowing is what separates 'rendered' from 'flat'
+// Soft shadow. The old version capped each step at 0.18 over 20 iterations, so it could only
+// reach t=3.6 — floor points further from the form ran OUT OF ITERATIONS at a distance that
+// varied with the field, and whatever partial r they had accumulated became the shadow. Since
+// the stopping point swept smoothly with radius, the error did too: concentric rings around the
+// camera's nadir, which is exactly what the floor was showing.
+// Fixed by terminating for a GEOMETRIC reason instead of an iteration count — every form lives
+// inside the bounding sphere, so once the ray is outside it and travelling outward nothing can
+// ever occlude it and the point is fully lit. Steps can also be much longer now that escaping
+// is cheap.
 float calcSha(vec3 p,vec3 l){ float r=1.,t=0.09;
-  for(int i=0;i<20;i++){ float h=mapD(p+l*t);
+  for(int i=0;i<28;i++){ vec3 q=p+l*t;
+    if(dot(q,q)>2.9*2.9 && dot(q,l)>0.0) return clamp(smoothstep(0.,1.,r),0.,1.);
+    float h=mapD(q);
     if(h<0.004) return 0.05;
-    r=min(r,7.0*h/t); t+=clamp(h,0.025,0.18); if(t>3.4) break; }
+    r=min(r,7.0*h/t); t+=clamp(h,0.03,0.34); if(t>7.0) break; }
   return clamp(smoothstep(0.,1.,r),0.,1.); }
 // A rectangular SOFTBOX projected into direction space. Real studio renders read as
 // "high class" because glossy surfaces reflect structured light sources with clean edges —
@@ -315,6 +354,16 @@ vec3 env(vec3 d,float rough){
   e+=vec3(0.90,0.94,1.00)*softbox(d,normalize(vec3( 0.05,1.00,-0.10)),vec2(0.62,0.10),sf+0.05)*2.2;
   return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
 }
+// Four-stop colour ramp with overlapping smoothstep bands. The overlap matters: butted-up
+// segments put a visible crease at each stop, and on a field this smooth a crease reads as a
+// contour line rather than as a gradient.
+vec3 ramp4(vec3 c0,vec3 c1,vec3 c2,vec3 c3,float t){
+  t=clamp(t,0.,1.);
+  vec3 c=mix(c0,c1,smoothstep(0.00,0.40,t));
+  c=mix(c,c2,smoothstep(0.28,0.74,t));
+  c=mix(c,c3,smoothstep(0.62,1.00,t));
+  return c;
+}
 void palAB(out vec3 A,out vec3 B){
   A=u_bgA; B=u_bgB;
   if(u_bgAuto>0.5){ vec3 m=u_mood; vec3 s=m/max(max(m.r,max(m.g,m.b)),1e-3);
@@ -326,10 +375,81 @@ void palAB(out vec3 A,out vec3 B){
 vec3 bg(vec3 rd, vec2 sv){
   vec3 A,B; palAB(A,B);
   float h=clamp(rd.y*0.5+0.5,0.,1.);
-  vec3 lo=mix(vec3(0.90),B,0.12);                          // bright at the horizon
-  vec3 hi=mix(vec3(0.52),B,0.24);                          // deeper up top
+  // ---- FLUID: two rounds of domain warping. Warping the noise's INPUT by more noise is what
+  // turns a static cloud into something that folds and shears like ink in water; a single fbm
+  // only ever pulses in place. Drift speed rides arousal, so the field is calm under an intro
+  // and genuinely churning through a drop -- but it is always slow in absolute terms, because
+  // this sits behind the subject and must never compete with it.
+  // ONE warp round, not two. bg() runs for every pixel in the frame (the aerial fade needs it
+  // even where the form is hit), so each fbm here costs a full-screen pass — two rounds drove
+  // rscale to its floor and cost more resolution than the extra detail was worth. A single warp
+  // with a stronger coefficient folds the field convincingly at 3 fbm calls instead of 5.
+  // The field turns WITH the form (u_spin) and its feature size tracks the form's scale, so the
+  // backdrop belongs to the subject instead of being a texture the subject happens to sit on.
+  vec2 uv=sv*1.25*(1.0+u_energy*0.12); uv*=rot(u_spin*0.16+u_tilt*0.25);
+  // the beat breathes the flow forward — motion on the downbeat, not just colour
+  float tt=u_time*(0.020+u_arousal*0.055)+u_pulse*0.045+u_bLow*0.03;
+  vec2 w1=vec2(fbm(vec3(uv*1.20, tt)), fbm(vec3(uv*1.20+11.7, tt)));
+  float f=fbm(vec3(uv*1.60+w1*2.6, tt*0.75));
+  // RIDGED fold. Reflecting the field about its midpoint (1-|2f-1|) turns smooth blobs into thin
+  // bright filaments — the striations you get when two liquids are stirred but not mixed. Real
+  // fluid reads as sheets and threads, not clouds, and this is the cheapest way to get them: it
+  // is a fold of a sample already taken, so it costs no extra fbm.
+  float ridge=1.0-abs(2.0*clamp(f,0.,1.)-1.0);
+  ridge*=ridge;                                          // sharpen the threads
+  // shear the filaments along the warp so they stretch the way advected ink does rather than
+  // sitting isotropic
+  float fil=ridge*(0.55+0.45*clamp(w1.y*1.6,0.,1.));
+  f=clamp(f*1.8+0.14,0.,1.);
+  // ---- EMOTION COLOUR. A two-stop lerp can only express ONE hue axis, which is why this still
+  // read as a flat tint however hard the fluid churned. Four stops let the field travel
+  // deep -> cool -> accent -> hot, so one frame carries several hues at once and the boundaries
+  // between them become the gradients. Every stop is derived from the section palette, so the
+  // backdrop still agrees with the duotone inks.
+  vec3 c0=mix(A*0.60, vec3(0.05,0.05,0.11), u_darkness*0.55);           // deep shadow
+  vec3 c1=mix(mix(vec3(0.16,0.32,0.74),vec3(0.44,0.16,0.64),u_tension), A, 0.42);
+  vec3 c2=B;                                                            // palette accent
+  vec3 c3=mix(vec3(1.00,0.74,0.42), mix(B,vec3(1.0),0.42), 0.55);       // hot highlight
+  // A LARGE-SCALE sweep underneath the fluid detail, so the frame reads as one big movement of
+  // colour with turbulence inside it rather than as uniform noise. w1 is REUSED here — this
+  // costs no extra fbm, it just spends samples already taken on a second job.
+  float g=clamp(0.5+0.62*(sv.x*0.55+sv.y*0.62)+(w1.x-0.5)*0.85, 0., 1.);
+  // valence slides the whole field along the ramp: a dark track sits at the deep/cool end, a
+  // bright one pushes up into accent and highlight
+  // the filaments ride the ramp too, so a thread reads as a DIFFERENT colour rather than just a
+  // brighter patch of the same one — that hue separation is what makes it look like two fluids
+  float rt=clamp(f*0.62+g*0.40+fil*0.30+(u_valence-0.5)*0.34+u_epic*0.10, 0., 1.);
+  vec3 ink=ramp4(c0,c1,c2,c3,rt);
+  // The sweep used to be ~86% white — a product-shot cyclorama. That white was the real ceiling
+  // on colour here: whatever the ramp produced could only ever tint it pale. Pulled down so the
+  // backdrop is a colourway in its own right and the ramp reads as colour rather than as a wash.
+  // With the ground plane gone the background IS the whole frame, so the sweep can no longer
+  // hedge toward white to stay a product-shot cyclorama — there is nothing left for the form to
+  // sit on, and a near-white lower half just reads as empty. Both ends pulled deep into the
+  // colourway.
+  vec3 lo=mix(vec3(0.72), B, 0.56+u_tension*0.24);         // toward the horizon
+  vec3 hi=mix(vec3(0.30), B, 0.62+u_tension*0.26);         // deeper up top
   vec3 col=mix(lo,hi,smoothstep(0.48,1.0,h));
-  col*=mix(1.0,0.68,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
+  // the fluid rides ON the sweep rather than replacing it: a studio backdrop that MOVES, not a
+  // noise texture pasted behind the subject. Weighted to stay legible at IDLE too — at the flat
+  // default curves (arousal .3, tension .2) the emotion terms contribute almost nothing, so a
+  // mix driven purely by them reads as no effect at all until a track is actually playing.
+  col=mix(col, ink, (0.70+u_tension*0.24+u_epic*0.16)*(0.50+0.50*f));
+  // AURA — a pool of the section's own mood sitting directly behind the subject, breathing on
+  // the low band. This is the piece that makes the backdrop read as belonging to the FORM: it
+  // is anchored to where the form actually is on screen, not to the frame, and it carries the
+  // same colour the material is picking up from u_mood.
+  float aur=exp(-dot(sv,sv)*(2.6-u_bLow*1.0-u_energy*0.5));
+  col=mix(col, mix(ink,u_mood,0.55), aur*(0.20+u_bLow*0.20+u_pulse*0.14));
+  // air band lifts a fine sheen across the whole field — hats/shimmer read in the backdrop too
+  col+=vec3(0.9,0.95,1.0)*f*u_bAir*0.05;
+  col*=mix(1.0,0.76,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
+  col*=1.0-u_darkness*0.22;
+  // VIBRANCE — pushes chroma while holding luminance, so the field gets its intensity from
+  // colour rather than from being blown brighter. Raising exposure instead would just wash the
+  // whole frame toward white, which is the thing this is meant to get away from.
+  float lm=dot(col,vec3(0.2126,0.7152,0.0722));
+  col=max(mix(vec3(lm), col, 1.42), vec3(0.0));
   return col*(0.80+u_bgAmt*0.30);
 }
 
@@ -341,30 +461,29 @@ void main(){
   float t=0.02+dth*0.012,mid=-1.;                 // dithered start kills stair-step banding
   for(int i=0;i<112;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
     if(h.x<0.0015*t){mid=h.y;break;} t+=h.x*0.62; if(t>18.)break; }
-  // The floor is a PLANE — intersect it analytically. Marching an infinite plane makes
-  // grazing rays converge too slowly, so they hit the step cap at varying distances and
-  // the floor bands into concentric rings around the camera.
-  float tp=(rd.y<-1e-4)?(u_groundY-ro.y)/rd.y:-1.0;
-  if(tp>0.02 && (mid<0.0 || tp<t)){ t=tp; mid=2.0; }
-  vec3 back=bg(rd,uv);       // compute the fluid background once, reuse for miss + fog
+  // GROUND PLANE REMOVED. It existed to catch a cast shadow, and that shadow never worked here:
+  // the forms float clear of it, so what landed was a soft grey pool with a horizon behind it,
+  // and every attempt to fix the shadow only moved the artefact around. Without a shadow the
+  // plane is just an arbitrary horizon line dividing the frame, so it goes too and the form now
+  // floats in the colour field. This also drops a shadow march for every floor pixel, which was
+  // the most expensive thing in the lower half of the frame.
+  vec3 back=bg(rd,uv);       // the background is now the whole frame: miss + aerial fade
   vec3 col;
   if(mid<0.){ col=back; }
-  else if(mid>1.5){                                  // ---- STUDIO FLOOR ----
-    vec3 p=ro+rd*t, gn=vec3(0,1,0);
-    vec3 A,B; palAB(A,B);
-    vec3 alb=mix(vec3(0.80),B,0.10);
-    vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
-    vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
-    float sha=calcSha(p,L);                          // the form's cast shadow
-    float occ=calcAO(p,gn);                          // contact darkening where it sits close
-    vec3 amb=env(gn,1.0)*0.95;
-    col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.10,1.0,sha) + amb*mix(0.12,1.0,occ) );
-  }
   else{
     vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
     vec3 op=objP(p);
     vec3 n=texNormal(op,gn);                       // textured shading normal
     float rgh=texRough(op,u_rough);                // spatially varying roughness
+    // GEOMETRIC SPECULAR AA. A narrow GGX lobe over a high-frequency normal map aliases into
+    // crawling white sparkle along every silhouette — one pixel catches the lobe, its neighbour
+    // misses it entirely. Widen roughness by how fast the shading normal turns across this
+    // pixel (Toksvig-style): sub-pixel normal variance is mathematically the same thing as
+    // extra microfacet spread, so folding it into roughness removes the sparkle without
+    // softening surfaces that are genuinely flat. Chrome (rough 0.06) is unusable without it.
+    vec3 dnx=dFdx(n), dny=dFdy(n);
+    float kvar=min(0.030, 0.5*(dot(dnx,dnx)+dot(dny,dny)));
+    rgh=min(1.0, sqrt(rgh*rgh+kvar));
     float NoV=clamp(dot(n,v),1e-4,1.);
     float fr=pow(1.-NoV,2.6);
     // albedo carries the same grain, so the body is not one flat colour
@@ -393,7 +512,12 @@ void main(){
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     vec3 refl=env(R,rgh);
-    c += refl*f0*(u_reflect*(0.3+0.9*fr))*mix(0.45,1.0,occ);
+    // Schlick-with-roughness: the standard IBL Fresnel. The old pow(1-NoV,2.6) ramp ignored
+    // roughness entirely, so a matte surface still lit a bright reflective rim and a polished
+    // one never reached full grazing reflectance. Edge-on, smooth materials now go fully
+    // mirror-like — that grazing sweep is most of what reads as "glossy" rather than "chalky".
+    vec3 Fr=f0+(max(vec3(1.0-rgh),f0)-f0)*pow(1.0-NoV,5.0);
+    c += refl*Fr*u_reflect*mix(0.45,1.0,occ);
     // Thin film TINTS THE REFLECTION — it does not add light. Adding it emissively is what
     // painted a saturated rim (green whenever the section's random hue landed there); a real
     // pearl shows its colour in what it reflects.
@@ -402,14 +526,29 @@ void main(){
     c += base*max(0.,dot(n,-L))*0.18*u_transl;
     // emissive glow (neon) — high-band stabs flare it, desaturated so it cannot band
     c += base*fr*(u_emis*1.6+u_hHigh*0.30+u_hMid*0.16);
-    // specular highlight (sharpness from the TEXTURED roughness -> broken-up, not plastic)
-    vec3 Hh=normalize(L+v); float NoH=max(0.,dot(n,Hh));
-    c += keyC*pow(NoH, mix(10.,220.,1.-rgh))*(0.35+u_reflect*0.7)*sha;
+    // Direct specular: Cook-Torrance GGX (roughness still comes from the TEXTURED field, so the
+    // lobe breaks up instead of reading as plastic). Blinn-Phong's pow(NoH,k) was the single
+    // biggest "not a real render" cue here — its lobe has the wrong falloff and no geometry
+    // term, so grazing angles under-brighten and the highlight never stretches the way a real
+    // microfacet surface does. D*G/(4*NoV*NoL) * NoL collapses to D*G/(4*NoV).
+    vec3 Hh=normalize(L+v);
+    float NoH=max(0.,dot(n,Hh)), VoH=max(1e-4,dot(v,Hh));
+    float a=max(1e-3,rgh*rgh), a2=a*a;
+    float dnm=NoH*NoH*(a2-1.0)+1.0;
+    float D=a2/(3.14159265*dnm*dnm);
+    float kg=a*0.5;                                  // Smith height-correlated, Schlick-GGX form
+    float G=(NoV/(NoV*(1.0-kg)+kg))*(NoL/(NoL*(1.0-kg)+kg));
+    vec3  Fs=f0+(1.0-f0)*pow(1.0-VoH,5.0);
+    // D explodes as roughness -> 0 (a mirror lit by a point light is a singularity). Clamp the
+    // lobe, or a smooth material fires single-pixel white sparks that bloom into blown blobs.
+    vec3 spec=min(Fs*(D*G/(4.0*NoV)), vec3(24.0));
+    c += keyC*spec*(0.35+u_reflect*0.7)*sha*mix(0.5,1.0,occ);
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
   // the floor dissolves into the backdrop well beyond the subject: no visible horizon line,
   // which is what sells a seamless cyclorama rather than 'object on a plane'
+  // Only the form is left to fade, so the floor's separate range is gone with it.
   col=mix(col, back, smoothstep(3.6,15.0,t)*0.96);
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
 }`;
@@ -544,9 +683,23 @@ function initTargets(w,h){
   hdrF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,hdrF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,hdrT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 }
-let dpr=1, rscale=0.82, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
+// 0.72 starts near where the controller actually settles on a native-resolution canvas. Starting
+// at 0.90 meant the first seconds ran ~29ms, which dragged frameAvg up and tripped the degrade
+// path before anything had stabilised.
+let dpr=1, rscale=0.72, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
 function applyScale(){ RW=Math.max(2,Math.round(glc.width*rscale)); RH=Math.max(2,Math.round(glc.height*rscale)); initTargets(RW,RH); }
-function resize(){ dpr=Math.min(devicePixelRatio||1,1.25); glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
+// The CANVAS must be the display's native pixel grid. Capping dpr below devicePixelRatio makes
+// the browser rescale the finished frame — a 1.6x bilinear smear on a 2x screen that no amount
+// of AA or sharpening downstream can undo, because it happens after we are done. Cost is paid by
+// rscale (the raymarch resolution) instead, which is adaptive; the post pass, grade and text
+// always land 1:1 on the panel.
+// SECOND-TIER quality. rscale only shrinks the RAYMARCH; the post pass (bloom mip chain, DOF,
+// grade, dither) always runs at full canvas, so on a large window it imposes a frame-time floor
+// that rscale cannot reach — measured here at ~12ms of a 25ms frame, where cutting march pixels
+// 3.4x saved only 10ms. The controller would then pin rscale at its minimum, destroying
+// sharpness AND still missing the target. dprScale lets the CANVAS back off as a last resort.
+let dprScale=1.0;
+function resize(){ dpr=Math.min(devicePixelRatio||1,2)*dprScale; glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
 addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
@@ -563,19 +716,28 @@ const COMPS={
   column: {count:4, twist:0.05,r0:0.05,r1:0.75,thick:0.20,bulge:0.55,hub:0.26},
   scatter:{count:10,twist:0.55,r0:0.10,r1:1.55,thick:0.06,bulge:0.20,hub:0.12},
 };
+// Orbit rates are rad/s. The old 0.45 put a full revolution at ~13s, which reads as a turntable
+// rather than a camera move; a held cinematic orbit is nearer 30-45s. Halved across the board —
+// the section still changes the FEEL of the move (push vs retreat vs drift), just at a pace you
+// can actually watch.
 const CAM={
-  wide_drift:{dist:5.2,height:0.4,spin:0.05,fov:1.5},
-  slow_push :{dist:3.4,height:0.25,spin:0.10,fov:1.35},
-  orbit     :{dist:3.9,height:0.5,spin:0.45,fov:1.42},
-  tracking  :{dist:4.2,height:0.35,spin:0.28,fov:1.44},
-  pull_back :{dist:6.0,height:0.8,spin:0.08,fov:1.6},
-  retreat   :{dist:6.6,height:1.0,spin:0.05,fov:1.66},
+  wide_drift:{dist:5.2,height:0.4,spin:0.026,fov:1.5},
+  slow_push :{dist:3.4,height:0.25,spin:0.048,fov:1.35},
+  orbit     :{dist:3.9,height:0.5,spin:0.190,fov:1.42},
+  tracking  :{dist:4.2,height:0.35,spin:0.125,fov:1.44},
+  pull_back :{dist:6.0,height:0.8,spin:0.040,fov:1.6},
+  retreat   :{dist:6.6,height:1.0,spin:0.026,fov:1.66},
 };
 // eased state
 const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0, rollS=0;
+let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
+// One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
+// most electronic music, so a turn lines up with the structure the Director cuts sections on.
+// Lower it for a faster spin: 16 = 4 bars, 8 = 2 bars.
+const SPIN_BEATS=32;
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
 const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
@@ -592,7 +754,7 @@ function rerollVariant(){
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
-// modes: 0 turbine  1 tower  2 gyroscope  3 space frame  4 pods  5 shell
+// modes: 0 ribbon  1 tower  2 gyroscope  3 space frame  4 pods  5 shell
 const GENRE_MODES={
   techno:[2,5,4,3],'melodic techno':[1,3,0],house:[1,3,2],edm:[0,4,5],electronic:[0,1,2,3,4,5],
   dance:[3,1,4],trance:[1,3,0],'drum & bass':[5,4,0],dubstep:[5,4,2],ambient:[1,3,2],
@@ -601,6 +763,17 @@ const GENRE_MODES={
 // low -> high energy: contemplative lattices, then organic fractals, then aggressive ones
 const CALM=[3,2], MID=[1,3], HOT=[0,4,5];
 let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
+// Object-space reach per mode — the radius that actually sets the silhouette, read off each
+// SDF's own constants:
+//   0 ribbon  sweep 0.92 + half-width up to 0.35        1 tower   y +/-1.0, w 0.66
+//   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
+//   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
+const REACH=[1.27,1.20,1.03,1.15,1.00,0.90];
+function frameReach(){                                 // blended across a morph, as the shader does
+  const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
+  const k=(phase===1)?(mix*mix*(3-2*mix)):0;           // same smoothstep the melt uses
+  return r0+(r1-r0)*k;
+}
 let pulse=0, pulseS=0, prevT=-1;                      // beat pulse (raw + smoothed envelope)
 /* ---- PER-BAND SOUND REACTION: every distinct sound in the mix gets its own envelope ---- */
 const BANDS=['sub','low','mid','high','air'];
@@ -608,8 +781,11 @@ const HIT ={sub:0,low:0,mid:0,high:0,air:0};          // transient, raw (set on 
 const HITS={sub:0,low:0,mid:0,high:0,air:0};          // smoothed attack -> no jitter
 const BND ={sub:0,low:0,mid:0,high:0,air:0};          // sustained band level
 // low frequencies swell and hang; highs must snap, or hats smear into a blur
-const DECAY ={sub:5.0,low:5.5,mid:7.5,high:11.0,air:15.0};
-const ATTACK={sub:13,low:15,mid:20,high:28,air:36};
+// Softened ~30%: the envelopes hang longer and rise less abruptly, so a hit reads as a swell
+// rather than a snap. The ORDERING is what carries the pace (lows hang, highs snap), and that
+// is preserved exactly — this slows the gesture, not the groove.
+const DECAY ={sub:3.6,low:4.0,mid:5.4,high:8.0,air:11.0};
+const ATTACK={sub:9,low:10,mid:13,high:19,air:25};
 const OCUR={sub:0,low:0,mid:0,high:0,air:0};          // per-band cursor into the onset list
 let shockT=9, shockA=0;                                // mid-band shockwave ring
 function resetOnsetCursors(t){                         // after a seek, re-place every cursor
@@ -751,8 +927,30 @@ function frame(){
     // Threshold must sit ABOVE the vsync interval (16.7ms @60Hz) or quality can never rise:
     // a vsync-locked frame reads ~16.7ms no matter how much GPU headroom is left. Holding
     // 60fps IS the signal that there is room, so push resolution until we stop holding it.
-    if(frameAvg>24 && rscale>0.50){ rscale=Math.max(0.50,rscale-0.08); applyScale(); }
-    else if(frameAvg<17.2 && rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); } }
+    // rscale is now relative to the NATIVE grid, so 1.0 already means one march sample per
+    // device pixel. The old 1.45 ceiling was tuned against a 1.25x canvas and would ask for
+    // ~8M samples/frame here; past ~1.2 the tent resolve has nothing left to recover.
+    // Two tiers, degraded in the order that costs the least visible quality. The march goes
+    // first: dropping it keeps the canvas — and so the post pass, the HUD text and every edge
+    // the grade touches — landing 1:1 on the panel. Only once the march is at its floor and the
+    // frame is STILL slow does the canvas itself back off, because at that point the cost is
+    // the full-screen passes and nothing else can reach it. Restoring runs in reverse: get the
+    // canvas back to native before spending anything on extra march samples.
+    // The canvas is STRONGLY biased toward native, because it is what the eye actually reads:
+    // measured here, fixed cost is ~4.7ms and the march ~5.93ms per Mpx, so a native canvas at
+    // rscale ~0.63 already holds 60fps — shrinking the canvas is almost never the right trade.
+    // It drops only on a severe, sustained deficit (>30ms with the march already floored), and
+    // it is restored on anything under 21ms rather than 17.2. That asymmetry matters: with both
+    // gates at the old thresholds a transient stall (the 8s analyse, a tab switch) knocked the
+    // canvas down and then ~21ms sat inside the dead zone — too fast to degrade, too slow to
+    // restore — so it stayed blurred indefinitely. The dead zone was a one-way trap.
+    if(frameAvg>24){
+      if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
+      else if(frameAvg>30 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
+    } else if(frameAvg<21){
+      if(dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
+      else if(frameAvg<17.2 && rscale<1.20){ rscale=Math.min(1.20,rscale+0.06); applyScale(); }
+    } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
@@ -797,8 +995,10 @@ function frame(){
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
-  CM.dist=sm(CM.dist,camTarget.dist,1.3,dt); CM.height=sm(CM.height,camTarget.height,1.3,dt);
-  CM.fov=sm(CM.fov,camTarget.fov,1.3,dt); CM.spin=sm(CM.spin,camTarget.spin,1.3,dt);
+  // Section cuts must not snap the camera. 1.3 crossed a dist/fov change in well under a second,
+  // which lands as a jump cut; 0.55 carries it over ~3s so the move is felt, not seen.
+  CM.dist=sm(CM.dist,camTarget.dist,0.55,dt); CM.height=sm(CM.height,camTarget.height,0.55,dt);
+  CM.fov=sm(CM.fov,camTarget.fov,0.55,dt); CM.spin=sm(CM.spin,camTarget.spin,0.45,dt);
   pulse*=Math.exp(-6.0*dt);
   pulseS += (pulse-pulseS)*(1-Math.exp(-16*dt));      // smoothed attack -> no hard beat snap
   // per-band envelopes: decay the transient, then smooth its attack so hits land soft
@@ -808,11 +1008,32 @@ function frame(){
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
   // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
   // individual sounds nudge the rotation — articulate, but damped so it never jitters
-  camAng += (CM.spin*(0.5+energy*0.6) + 0.012 + HITS.low*0.10)*dt;
-  formSpin += (0.04+energy*0.12 + HITS.mid*0.38 + HITS.high*0.22)*dt;
+  // Onsets must nudge the ANGLE, not the angular VELOCITY. Adding every hit into the rate is
+  // what made this feel hurried: a dense hat pattern integrates into permanent speed, so the
+  // form ratchets faster and faster through a busy section and never settles back. Feeding the
+  // same envelope into a decaying angular OFFSET keeps the articulation on each hit — you still
+  // see the kick and the snare land — while the underlying rotation stays at the pace the
+  // section's energy actually asks for.
+  // TEMPO-LOCKED SPIN. The form's rotation is a musical quantity now, not an arbitrary rate:
+  // exactly one revolution every SPIN_BEATS beats, so angular velocity comes from the track's
+  // own BPM and a faster track visibly spins faster.
+  //     rad/s = 2*PI * (bpm/60) / SPIN_BEATS
+  const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
+  const spinRate=2*Math.PI*(bpm/60)/SPIN_BEATS;
+  formSpin += spinRate*dt;
+  // spinKick is gone. Feeding onsets into the rotation at all — as velocity OR as a decaying
+  // offset — is what read as jiggle: something in the mix hits on almost every frame, so the
+  // form sat permanently trembling around its own axis instead of turning. The beat still
+  // lands, via scale (u_pulse / u_hLow) and the shockwave ring, which are radial and so do not
+  // fight the rotation.
+  camAng  += (CM.spin*(0.45+energy*0.45) + 0.008)*dt;
+  camKick  += ((HITS.low*0.014 + HITS.sub*0.010) - camKick)*(1-Math.exp(-4.0*dt));
   const spin = formSpin;
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
-  if(phase===1){ mix+=dt/1.9; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
+  // genuinely neither shape; the longer that state is held the more it reads as one form flowing
+  // into another rather than as a crossfade being rushed through.
+  if(phase===1){ mix+=dt/3.4; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   const prog=(phase===1)?mix:0;
   const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
   flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*Math.sin(prog*Math.PI));  // gentle bloom lift, not a strobe
@@ -822,9 +1043,26 @@ function frame(){
     $('tc').textContent=fmt(c)+' / '+fmt(d); $('tlF').style.width=(d?c/d*100:0)+'%'; }
 
   // camera basis
-  // kick/sub dolly the camera in a touch — the push you feel rather than see
-  const dolly=CM.dist*(1-HITS.low*0.055-HITS.sub*0.045);
-  const ca=camAng, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
+  // FRAMING. CM.dist used to be the literal camera distance, which meant the same section
+  // framed one shape well and left the next either clipped or postage-stamp sized — the modes
+  // differ by ~1.4x in object-space reach (Shell lives inside r=0.90, Ribbon sweeps to 1.27),
+  // and fov swings 1.35..1.66 on top of that. Distance is now DERIVED so the silhouette always
+  // subtends the same share of the frame, and CM.dist keeps its meaning as framing intent
+  // (tight vs wide) rather than as a number of units.
+  //   a form of radius R at distance d covers  2*f*R/d  of the frame height
+  //   => d = 2*f*R / fill
+  // NB f here is CM.fov itself, which is a FOCAL factor and not an angle — the shader takes
+  // fovY = 2*atan(0.5/f), so tan(fovY/2) = 0.5/f. Treating it as an angle puts the camera 2.4x
+  // too close and the form bursts out of frame.
+  const reach=frameReach();
+  const fEff=Math.max(0.4,CM.fov*(1-epic*0.12));       // must match the fovY sent to the shader
+  const fill=Math.max(0.50,Math.min(0.80,0.78-(CM.dist-3.4)*0.081));
+  // base scale only — the beat's punch on u_reform/u_pulse must stay VISIBLE, so it is
+  // deliberately left out of the compensation instead of being cancelled by the camera
+  const sBase=Math.max(reform,0.2)*(1.0+energy*0.10)*0.95;
+  const framed=2.0*fEff*reach*sBase/fill;
+  const dolly=framed*(1-HITS.low*0.055-HITS.sub*0.045);
+  const ca=camAng+camKick, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
   let rx=fz,ry=0,rz=-fx; const rl=Math.hypot(rx,ry,rz)||1; rx/=rl;ry/=rl;rz/=rl;
   let ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
