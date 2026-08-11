@@ -33,6 +33,10 @@
   #ctrl label{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#8a8b91}
   #ctrl select{background:rgba(14,14,17,.85);color:#e6e6e4;border:1px solid rgba(255,255,255,.18);border-radius:3px;
     padding:5px 8px;font:inherit;font-size:10px;letter-spacing:.06em;backdrop-filter:blur(12px)}
+  #ctrl input[type=color]{width:26px;height:22px;padding:0;border:1px solid rgba(255,255,255,.22);border-radius:3px;
+    background:transparent;cursor:pointer}
+  #ctrl input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
+  #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:2px}
 </style>
 
 <canvas id="gl"></canvas>
@@ -55,6 +59,19 @@
     <option value="pearl" selected>Pearl</option><option value="iridescent">Iridescent</option>
     <option value="chrome">Chrome</option><option value="frosted">Frosted</option>
     <option value="holo">Holographic</option><option value="neon">Neon</option></select></div>
+  <div class="row"><label>Look</label><select id="selLook">
+    <option value="label" selected>Label</option><option value="riso">Riso</option>
+    <option value="xerox">Xerox</option><option value="halftone">Halftone</option>
+    <option value="chrome">Chrome</option><option value="clean">Clean</option></select></div>
+  <div class="row"><label>Palette</label><select id="selPal">
+    <option value="auto" selected>Auto · Director</option>
+    <option value="blood">Blood</option><option value="acid">Acid</option>
+    <option value="ultra">Ultra</option><option value="cyber">Cyber</option>
+    <option value="solar">Solar</option><option value="mono">Mono</option>
+    <option value="custom">Custom</option></select></div>
+  <div class="row"><label>Colors</label>
+    <input type="color" id="colA" value="#2a0410" title="Background — deep tone">
+    <input type="color" id="colB" value="#ff1f4b" title="Background — accent tone"></div>
 </div>
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
@@ -95,6 +112,7 @@ uniform float u_count,u_twist,u_r0,u_r1,u_thick,u_bulge,u_hub,u_spin;
 uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
+uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto;
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
@@ -111,25 +129,26 @@ float sdOcta(vec3 p,float s){p=abs(p);return (p.x+p.y+p.z-s)*0.57735;}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}
 // ---- interesting, irregular, audio-reactive forms ----
 float mStar(vec3 p){                                   // ORGANIC bloom (living blob)
-  float d=length(p)-0.82;
-  d+=(fbm(p*1.7+u_time*0.2)-0.5)*(0.35+u_energy*0.2);
+  float d=length(p)-0.62;
+  d+=(fbm(p*1.7+u_time*0.2)-0.5)*(0.26+u_energy*0.16);
   for(int i=0;i<4;i++){ float fi=float(i);
     float aa=u_time*(0.5+fi*0.13)+fi*1.6;
-    vec3 c=vec3(cos(aa),sin(aa*0.9),sin(aa*1.1))*(0.85+0.25*sin(u_time*0.3+fi));
-    d=smin(d,length(p-c)-(0.26+u_energy*0.12+u_pulse*0.08),0.45); }
+    vec3 c=vec3(cos(aa),sin(aa*0.9),sin(aa*1.1))*(0.58+0.18*sin(u_time*0.3+fi));
+    d=smin(d,length(p-c)-(0.20+u_energy*0.10+u_pulse*0.07),0.38); }
   return d;
 }
 float mLattice(vec3 p){                               // HELIX — twin strands
-  float f=3.2, R=0.72+u_pulse*0.04, d=1e9;
+  float f=3.2, R=0.68+u_pulse*0.04, d=1e9;
   for(int i=0;i<2;i++){ float off=float(i)*3.14159265;
     vec3 c=vec3(cos(p.y*f+off)*R, p.y, sin(p.y*f+off)*R);
     d=min(d, length(p-c)-0.13); }
-  return max(d, abs(p.y)-1.15);
+  return max(d, abs(p.y)-1.02);
 }
 float mTorus(vec3 p){                                  // GEM — faceted rounded crystal
+  p*=1.45;                                             // shrink to frame (divide result to keep metric)
   float o=sdOcta(p,1.2);
   float b=sdBox(p,vec3(0.82))-0.04;
-  return max(o,b)-0.04;
+  return (max(o,b)-0.04)/1.45;
 }
 float mSwarm(vec3 p){                                  // PETALS — radial lotus
   float rad=length(p.xz), ang=atan(p.z,p.x);
@@ -141,7 +160,7 @@ float mSwarm(vec3 p){                                  // PETALS — radial lotu
 float mMono(vec3 p){                                   // TWIST — twisted ribbon prism
   float k=1.5; float c=cos(k*p.y), s=sin(k*p.y);
   vec2 xz=mat2(c,-s,s,c)*p.xz;
-  float d=sdBox(vec3(xz.x,p.y,xz.y), vec3(0.5,1.0,0.18))-0.07;
+  float d=sdBox(vec3(xz.x,p.y,xz.y), vec3(0.44,0.88,0.16))-0.07;
   return d*0.7;
 }
 float evalMode(vec3 p,float m){
@@ -153,7 +172,8 @@ float evalMode(vec3 p,float m){
 }
 vec2 map(vec3 p){
   p.yz*=rot(u_tilt); p.xz*=rot(u_spin); p.xy*=rot(u_spin*0.22);
-  float s=max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10);   // gentle breathe/beat (smoother)
+  // 0.95 = global framing scale: keeps the whole silhouette inside frame at the closest camera
+  float s=max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10)*0.95;
   p/=s;
   float d=evalMode(p,u_mode);
   if(u_mix>0.001) d=mix(d, evalMode(p,u_mode2), smoothstep(0.,1.,u_mix));  // smooth style melt
@@ -163,6 +183,19 @@ vec2 map(vec3 p){
 }
 vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*0.0018;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
+// map() returns a 0.5-scaled (deliberately conservative) field — undo that for ratio-based lighting
+float mapD(vec3 p){ return map(p).x*2.0; }
+// ambient occlusion — crevices darken, gives the form real volume (4 extra taps)
+float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
+  for(int i=1;i<=4;i++){ float h=0.04*float(i)*float(i);
+    s+=(h-mapD(p+n*h))*w; w*=0.65; }
+  return clamp(1.0-1.6*s,0.,1.); }
+// short-range soft shadow — self-shadowing is what separates 'rendered' from 'flat'
+float calcSha(vec3 p,vec3 l){ float r=1.,t=0.09;
+  for(int i=0;i<8;i++){ float h=mapD(p+l*t);
+    if(h<0.004) return 0.06;
+    r=min(r,8.0*h/t); t+=clamp(h,0.06,0.40); if(t>2.6) break; }
+  return clamp(r,0.,1.); }
 vec3 env(vec3 d){
   vec3 sun=normalize(vec3(-.4,.8,.4));
   // studio dome — used ONLY for material reflections, so metals/chrome/holo read properly
@@ -173,30 +206,34 @@ vec3 env(vec3 d){
   e+=vec3(.55,.65,.90)*pow(max(0.,dot(d,normalize(vec3(.5,.1,-.5)))),6.)*.4*u_env;  // cool fill
   return e;
 }
-// fluid, flowing backdrop tied to the shape's palette (domain-warped fbm) — professional depth
-vec3 bg(vec3 rd){
-  vec2 uv=rd.xy*1.2;
-  // liquid plasma: multi-scale domain-warped flow (BCCO / Mutual Rytm gradient energy)
-  vec2 q=vec2(fbm(vec3(uv+u_time*0.04,0.)), fbm(vec3(uv+vec2(3.1,6.2)-u_time*0.03,0.)));
-  float fv=clamp(fbm(vec3(uv*1.15 + q*2.2 + u_time*0.03, 1.0)), 0., 1.);
-  vec3 m=u_mood; m=mix(vec3(dot(m,vec3(.3333))), m, 1.7);   // punch up the saturation -> vibrant
-  vec3 A=m*0.55;                                            // deep pole
-  vec3 B=m.gbr*0.95;                                        // hue-shifted partner (duotone)
-  vec3 hot=mix(m, vec3(1.0,0.92,0.72), 0.5);                // bright accent wisps
-  vec3 col=mix(A, B, smoothstep(0.15,0.85,fv));
-  col=mix(col, hot, pow(fv,4.0)*0.8);                       // hot plasma highlights
-  col*=(0.9+u_bgAmt*0.8);                                   // vibrant, rises with energy
-  col*=mix(0.35,1.0, smoothstep(0.2,1.05,length(rd.xy)));   // dark halo right behind the form so it pops
+// liquid-ink backdrop: 2-stage domain warp, driven by the selected palette (u_bgA/u_bgB)
+vec3 bg(vec3 rd, vec2 sv){
+  // screen-space domain (FOV-independent) + slow parallax off the camera heading
+  vec2 uv=sv*2.6 + vec2(u_fw.x,u_fw.z)*0.9;
+  vec2 q=vec2(fbm(vec3(uv+u_time*0.045,0.)), fbm(vec3(uv+vec2(3.1,6.2)-u_time*0.035,0.)));
+  vec2 r=vec2(fbm(vec3(uv*1.4+q*2.6+u_time*0.02,3.7)), fbm(vec3(uv*1.4+q*2.6+vec2(8.3,2.8),7.1)));
+  float fv=smoothstep(0.10,0.90, clamp(fbm(vec3(uv*1.25+r*2.4,1.0)),0.,1.));
+  vec3 A=u_bgA, B=u_bgB;
+  if(u_bgAuto>0.5){                                          // Auto: take the mood's HUE, force the ink values
+    vec3 m=u_mood; vec3 s=m/max(max(m.r,max(m.g,m.b)),1e-3); // normalise -> pure hue, brightness-independent
+    s=clamp(mix(vec3(dot(s,vec3(.3333))),s,2.2),0.,1.);      // slam the saturation
+    B=s; A=clamp(s.gbr,0.,1.)*0.16; }                        // saturated accent + deep hue-shifted pole
+  vec3 col=mix(A,B,fv);
+  vec3 hot=clamp(B*1.7,0.,1.);                                  // hot core = the accent pushed, NOT white
+  col=mix(col, hot, pow(fv,5.0)*0.7);
+  col*=(0.70+u_bgAmt*0.75);                                     // vibrancy rises with energy
+  col*=mix(0.32,1.0, smoothstep(0.06,0.62,length(sv)));         // dark halo so the form still reads
   return col;
 }
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
-  float f=1.0/tan(u_fov*0.5);
+  float f=0.5/tan(u_fov*0.5);        // uv.y spans +/-0.5, so the 0.5 is required or the FOV halves
   vec3 rd=normalize(uv.x*u_rt+uv.y*u_up+f*u_fw), ro=u_ro;
-  float t=0.02,mid=-1.;
-  for(int i=0;i<120;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
-    if(h.x<0.0015*t){mid=1.;break;} t+=h.x*0.62; if(t>18.)break; }
-  vec3 back=bg(rd);          // compute the fluid background once, reuse for miss + fog
+  float dth=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
+  float t=0.02+dth*0.012,mid=-1.;                 // dithered start kills stair-step banding
+  for(int i=0;i<112;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
+    if(h.x<0.0015*t){mid=1.;break;} t+=h.x*0.68; if(t>18.)break; }
+  vec3 back=bg(rd,uv);       // compute the fluid background once, reuse for miss + fog
   vec3 col;
   if(mid<0.){ col=back; }
   else{
@@ -207,11 +244,13 @@ void main(){
     vec3 f0=mix(vec3(0.04), base, u_metal);
     vec3 L=normalize(vec3(-.4,.8,.4));
     float NoL=max(0.,dot(n,L));
-    // diffuse body (fades out for metals)
-    vec3 c=base*(1.-u_metal)*(0.28+0.6*NoL);
-    // environment reflection (fresnel + roughness), strong for chrome
+    float occ=calcAO(p,n);
+    float sha=(NoL>0.001)?calcSha(p,L):1.0;
+    // diffuse body (fades out for metals) — occluded + self-shadowed
+    vec3 c=base*(1.-u_metal)*(0.24+0.62*NoL*mix(0.30,1.0,sha))*mix(0.30,1.0,occ);
+    // environment reflection (fresnel + roughness), strong for chrome — specular occlusion
     vec3 R=reflect(-v,n);
-    c += env(R)*f0*(u_reflect*(0.3+0.9*fr));
+    c += env(R)*f0*(u_reflect*(0.3+0.9*fr))*mix(0.45,1.0,occ);
     // thin-film iridescence (pearl / holo)
     vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+u_time*0.03+u_iridHue) + vec3(0.,2.1,4.2));
     c += irid*(0.08+0.35*fr)*u_iridAmt;
@@ -221,20 +260,23 @@ void main(){
     c += (base*0.5+irid*0.5)*fr*u_emis*1.6;
     // specular highlight (sharpness from roughness)
     vec3 Hh=normalize(L+v); float NoH=max(0.,dot(n,Hh));
-    c += vec3(1.)*pow(NoH, mix(10.,220.,1.-u_rough))*(0.35+u_reflect*0.7);
+    c += vec3(1.)*pow(NoH, mix(10.,220.,1.-u_rough))*(0.35+u_reflect*0.7)*sha;
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
-  col=mix(col, back, 1.-exp(-t*t*0.0016));
+  col=mix(col, back, 1.-exp(-t*t*0.0012));
   o=vec4(max(col,0.),1.);
 }`;
 
 const POST=`#version 300 es
 precision highp float;
 out vec4 o;
-uniform sampler2D u_tex; uniform vec2 u_res;
+uniform sampler2D u_tex; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
+uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half;
+uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
+float lum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}
 vec3 fxaa(vec2 uv,vec2 r){
   vec3 nw=texture(u_tex,uv+vec2(-1,-1)*r).rgb,ne=texture(u_tex,uv+vec2(1,-1)*r).rgb;
   vec3 sw=texture(u_tex,uv+vec2(-1,1)*r).rgb,se=texture(u_tex,uv+vec2(1,1)*r).rgb,m=texture(u_tex,uv).rgb;
@@ -249,13 +291,37 @@ vec3 fxaa(vec2 uv,vec2 r){
   float lb=luma(b); return (lb<lmin||lb>lmax)?a:b;
 }
 float r2(vec2 p){return fract(dot(p,vec2(0.7548776662,0.5698402909)));}
-vec3 bloom(vec2 uv,vec2 t){vec3 s=vec3(0.);float w=0.;
-  for(int i=-3;i<=3;i++)for(int j=-3;j<=3;j++){vec2 of=vec2(float(i),float(j));float g=exp(-dot(of,of)*.18);
-    vec3 c=texture(u_tex,uv+of*t*2.4).rgb;float l=dot(c,vec3(.2126,.7152,.0722));
-    float k=max(0.,l-0.8);k=k*k/(k+.5);s+=c*(k/max(l,1e-4))*g;w+=g;}return s/max(w,1e-4);}
+vec3 knee(vec3 c){float l=lum(c);float k=max(0.,l-0.80);k=k*k/(k+.5);return c*(k/max(l,1e-4));}
+// wide, soft, cinematic bloom straight off the mip chain — 4 taps instead of 49
+vec3 bloom(vec2 uv,vec2 t){
+  if(u_mip>0.5){
+    return knee(textureLod(u_tex,uv,2.0).rgb)*0.34
+         + knee(textureLod(u_tex,uv,3.5).rgb)*0.30
+         + knee(textureLod(u_tex,uv,5.0).rgb)*0.22
+         + knee(textureLod(u_tex,uv,6.5).rgb)*0.14; }
+  vec3 s=vec3(0.);float w=0.;
+  for(int i=-2;i<=2;i++)for(int j=-2;j<=2;j++){vec2 of=vec2(float(i),float(j));float g=exp(-dot(of,of)*.22);
+    s+=knee(texture(u_tex,uv+of*t*5.0).rgb)*g;w+=g;}
+  return s/max(w,1e-4);}
+const float BAY[16]=float[16](0.,8.,2.,10.,12.,4.,14.,6.,3.,11.,1.,9.,15.,7.,13.,5.);
+float bayer(vec2 p){ivec2 i=ivec2(mod(p,4.0));return BAY[i.y*4+i.x]/16.0-0.46875;}
+mat2 rot2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+// two-ink separation ramp: paper black -> ink A -> ink B -> blown white
+vec3 duo(float l){
+  vec3 sh=vec3(0.012,0.012,0.017);
+  vec3 c=(l<0.5)?mix(sh,u_inkA,l*2.0):mix(u_inkA,u_inkB,(l-0.5)*2.0);
+  return mix(c,vec3(1.),smoothstep(0.86,1.0,l)*0.55);
+}
 void main(){
-  vec2 uv=gl_FragCoord.xy/u_res,t=1./u_res;
+  vec2 uv=gl_FragCoord.xy/u_res,t=u_texel;      // offsets in SOURCE texels so AA/sharpen actually bite
   vec3 col=fxaa(uv,t);
+  if(u_chroma>0.001){                            // misregistration / lens split
+    vec2 d=uv-0.5; float k=u_chroma*0.007*(0.25+dot(d,d)*3.0);
+    col.r=texture(u_tex,uv+d*k).r; col.b=texture(u_tex,uv-d*k).b; }
+  if(u_sharpen>0.001){                           // recover crispness lost to the reduced-res march
+    vec3 n=texture(u_tex,uv+vec2(0,t.y)).rgb,s=texture(u_tex,uv-vec2(0,t.y)).rgb;
+    vec3 e=texture(u_tex,uv+vec2(t.x,0)).rgb,w=texture(u_tex,uv-vec2(t.x,0)).rgb;
+    col=max(col+(col-(n+s+e+w)*0.25)*u_sharpen, 0.); }
   vec2 c2=uv-.5;c2.x*=u_res.x/u_res.y;
   col+=bloom(uv,t)*u_bloom;
   col*=u_expo*(1.0+u_flash);
@@ -266,8 +332,19 @@ void main(){
   float l=dot(col,vec3(.2126,.7152,.0722));col=mix(vec3(l),col,u_sat);
   col=(col-.5)*(0.92+u_contrast*0.4)+.5;col=clamp(col,0.,1.);
   col=mix(col*12.92,1.055*pow(max(col,1e-5),vec3(1./2.4))-.055,step(.0031308,col));
+  /* ---- print separation grade (done in display space, like a real press) ---- */
+  if(u_ink>0.001) col=mix(col,duo(lum(col)),u_ink);
+  if(u_half>0.001){                              // rotated dot screen
+    vec2 hp=rot2(0.45)*gl_FragCoord.xy*1.0472;
+    float scr=(sin(hp.x)*sin(hp.y))*0.5+0.5;
+    float li=lum(col);
+    vec3 ink=mix(vec3(0.012,0.012,0.017),col,smoothstep(scr-0.30,scr+0.30,li));
+    col=mix(col,ink,u_half); }
+  if(u_dither>0.001) col+=bayer(gl_FragCoord.xy)*u_dither*0.13;
+  if(u_poster>1.5) col=floor(clamp(col,0.,1.)*u_poster+0.5)/u_poster;
+  col=clamp(col,0.,1.);
   col+=(r2(gl_FragCoord.xy+fract(u_time)*17.)-.5)/255.;
-  col+=(r2(gl_FragCoord.xy*1.7+fract(u_time)*91.)-.5)*.012*u_grain;
+  col+=(r2(gl_FragCoord.xy*1.7+fract(u_time)*91.)-.5)*.045*u_grain;
   col*=mix(1.,smoothstep(1.5,.3,length(c2)*.95),u_vig);
   o=vec4(max(col,0.),1.);
 }`;
@@ -285,19 +362,25 @@ const aScene=gl.getAttribLocation(sceneP,'p'), aPost=gl.getAttribLocation(postP,
 function drawFS(a){gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.enableVertexAttribArray(a);
   gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);gl.drawArrays(gl.TRIANGLES,0,3);}
 const US=n=>gl.getUniformLocation(sceneP,n), UP=n=>gl.getUniformLocation(postP,n);
+let mipOK=false;
 function initTargets(w,h){
   if(!floatOK) return;
+  if(hdrT) gl.deleteTexture(hdrT); if(hdrF) gl.deleteFramebuffer(hdrF);   // no leak on resize/quality change
   hdrT=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,hdrT);
   gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,w,h,0,gl.RGBA,gl.HALF_FLOAT,null);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,mipOK?gl.LINEAR_MIPMAP_LINEAR:gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   hdrF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,hdrF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,hdrT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 }
-let dpr=1, rscale=0.72, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
+let dpr=1, rscale=0.82, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
 function applyScale(){ RW=Math.max(2,Math.round(glc.width*rscale)); RH=Math.max(2,Math.round(glc.height*rscale)); initTargets(RW,RH); }
 function resize(){ dpr=Math.min(devicePixelRatio||1,1.25); glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
 addEventListener('resize',resize);resize();
+// probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
+if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
+  gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
 let frameAvg=16, lastQ=0;                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -320,7 +403,7 @@ const CAM={
 };
 // eased state
 const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
-const MO=[0.82,0.82,0.9];
+const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0;
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
@@ -371,6 +454,39 @@ const MATS={
 };
 const MAT ={metal:0,rough:.35,reflect:.4,irid:.5,transl:.35,emis:0};
 const MATT={metal:0,rough:.35,reflect:.4,irid:.5,transl:.35,emis:0};
+
+/* ---- BACKGROUND PALETTES (a = deep tone, b = accent) — hard, saturated label colourways ---- */
+const PALS={
+  blood:{a:'#2a0410',b:'#ff1f4b'}, acid:{a:'#071a08',b:'#9dff0d'},
+  ultra:{a:'#10064d',b:'#ff17c0'}, cyber:{a:'#03192e',b:'#19f0ff'},
+  solar:{a:'#3a0d02',b:'#ff8a08'}, mono :{a:'#080809',b:'#eceef2'},
+};
+const hex2rgb=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
+let palAuto=true, BGA=hex2rgb('#2a0410'), BGB=hex2rgb('#ff1f4b');
+const cl=v=>Math.max(0,Math.min(1,v));
+// in Auto the palette rides the Director's mood — mirror the shader's derivation so bg + inks agree
+function bgPair(){
+  if(!palAuto) return [BGA,BGB];
+  const mx=Math.max(MO[0],MO[1],MO[2])||1e-3;
+  let s=MO.map(c=>c/mx); const g=(s[0]+s[1]+s[2])/3;
+  s=s.map(c=>cl(g+(c-g)*2.2));
+  return [[s[1],s[2],s[0]].map(c=>cl(c*0.16)), s];
+}
+// duotone separation: shadows->paper black, mids->ink A, highlights->ink B
+const inkA=()=>{ const[a,b]=bgPair(); return a.map((v,i)=>cl((v+(b[i]-v)*0.55)*1.15)); };
+const inkB=()=>bgPair()[1];
+
+/* ---- LOOK: the press/print grade. This is what carries the label aesthetic. ---- */
+const LOOKS={
+  clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.15,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30},
+  label:   {ink:0.62,poster:0, dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42},
+  riso:    {ink:0.88,poster:7, dither:0.80,half:0.00,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50},
+  xerox:   {ink:1.00,poster:3, dither:1.10,half:0.00,chroma:0.20,grain:1.35,contrast:0.85,sat:-0.30,sharp:0.60},
+  halftone:{ink:0.92,poster:5, dither:0.25,half:0.75,chroma:0.35,grain:0.70,contrast:0.55,sat:0.00,sharp:0.55},
+  chrome:  {ink:0.22,poster:0, dither:0.15,half:0.00,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38},
+};
+const LK ={ink:0.62,poster:0,dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42};
+const LKT={ink:0.62,poster:0,dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42};
 
 let director=null, audioBuffer=null, ctx=null, source=null, isPlaying=false, startedAt=0, pausedAt=0;
 
@@ -437,7 +553,7 @@ function frame(){
   const now=performance.now(); let dt=Math.min(.05,(now-last)/1000); last=now; const time=(now-t0)/1000;
   frameAvg += (Math.min(80,dt*1000)-frameAvg)*0.1;   // adaptive quality: scale render res to hold fps
   if(now-lastQ>500){ lastQ=now;
-    if(frameAvg>26 && rscale>0.45){ rscale=Math.max(0.45,rscale-0.08); applyScale(); }
+    if(frameAvg>26 && rscale>0.50){ rscale=Math.max(0.50,rscale-0.08); applyScale(); }
     else if(frameAvg<15 && rscale<1.0){ rscale=Math.min(1.0,rscale+0.06); applyScale(); } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
@@ -468,6 +584,7 @@ function frame(){
   for(const k in SH) SH[k]=sm(SH[k],compTarget[k],1.1,dt);
   for(const k in VAR) VAR[k]=sm(VAR[k],VART[k],1.0,dt);
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
+  for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
   CM.dist=sm(CM.dist,camTarget.dist,1.3,dt); CM.height=sm(CM.height,camTarget.height,1.3,dt);
   CM.fov=sm(CM.fov,camTarget.fov,1.3,dt); CM.spin=sm(CM.spin,camTarget.spin,1.3,dt);
@@ -514,6 +631,8 @@ function frame(){
   gl.uniform1f(US('u_energy'),energy); gl.uniform1f(US('u_tension'),tension); gl.uniform1f(US('u_arousal'),arousal);
   gl.uniform1f(US('u_pulse'),pulseS); gl.uniform1f(US('u_flux'),flux);
   gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
+  gl.uniform3f(US('u_bgA'),BGA[0],BGA[1],BGA[2]); gl.uniform3f(US('u_bgB'),BGB[0],BGB[1],BGB[2]);
+  gl.uniform1f(US('u_bgAuto'),palAuto?1:0);
   gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
@@ -521,14 +640,22 @@ function frame(){
   drawFS(aScene);
 
   if(floatOK){
-    gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
+    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);          // feeds the wide, soft bloom
+    gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
     gl.uniform1i(UP('u_tex'),0); gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
+    gl.uniform2f(UP('u_texel'),1/RW,1/RH); gl.uniform1f(UP('u_mip'),mipOK?1:0);
     // underground grade: darker, grittier, higher contrast
-    gl.uniform1f(UP('u_bloom'),0.28+energy*0.5+pulseS*0.2); gl.uniform1f(UP('u_sat'),0.78+valence*0.25);
+    gl.uniform1f(UP('u_bloom'),0.34+energy*0.6+pulseS*0.24); gl.uniform1f(UP('u_sat'),0.82+valence*0.25+LK.sat);
     gl.uniform1f(UP('u_vig'),0.75+darkness*0.35); gl.uniform1f(UP('u_expo'),0.82+energy*0.45+pulseS*0.12);
-    gl.uniform1f(UP('u_contrast'),0.55+tension*0.35); gl.uniform1f(UP('u_grain'),0.45+darkness*0.35);
+    gl.uniform1f(UP('u_contrast'),0.45+tension*0.30+LK.contrast); gl.uniform1f(UP('u_grain'),(0.35+darkness*0.30)*LK.grain);
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
+    // press grade
+    gl.uniform1f(UP('u_sharpen'),LK.sharp); gl.uniform1f(UP('u_chroma'),LK.chroma);
+    gl.uniform1f(UP('u_ink'),LK.ink); gl.uniform1f(UP('u_poster'),LK.poster);
+    gl.uniform1f(UP('u_dither'),LK.dither); gl.uniform1f(UP('u_half'),LK.half);
+    const iA=inkA(), iB=inkB();
+    gl.uniform3f(UP('u_inkA'),iA[0],iA[1],iA[2]); gl.uniform3f(UP('u_inkB'),iB[0],iB[1],iB[2]);
     drawFS(aPost);
   }
 }
@@ -537,6 +664,16 @@ function frame(){
 $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
+$('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
+$('selPal').addEventListener('change',e=>{ const v=e.target.value;
+  if(v==='auto'){ palAuto=true; return; }
+  palAuto=false;
+  const p=PALS[v];
+  if(p){ $('colA').value=p.a; $('colB').value=p.b; }
+  BGA=hex2rgb($('colA').value); BGB=hex2rgb($('colB').value); });
+function onColor(){ palAuto=false; $('selPal').value='custom';
+  BGA=hex2rgb($('colA').value); BGB=hex2rgb($('colB').value); }
+$('colA').addEventListener('input',onColor); $('colB').addEventListener('input',onColor);
 $('file').addEventListener('change',e=>{ if(e.target.files[0]) loadFile(e.target.files[0]); });
 $('play').addEventListener('click',()=>{ if(!audioBuffer) return $('file').click(); isPlaying?pause():play(); });
 $('tl').addEventListener('click',e=>{ if(!audioBuffer)return; const r=$('tl').getBoundingClientRect();

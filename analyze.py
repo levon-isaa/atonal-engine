@@ -236,9 +236,12 @@ def label_and_direct(bounds, f, cur, genre):
             comp = rng.choice(["cluster", "radial", "spiral", "grid", "column"])
         mood = ("violet" if sdark > 0.6 else "amber" if swarm > 0.6 else
                 "ice" if sval > 0.6 else "rose" if sval > 0.4 else "pearl")
-        # pearlescent base palette per mood (soft, high-key, iridescent frontend adds sheen)
-        palette = {"violet":[0.55,0.5,0.8],"amber":[0.85,0.7,0.5],"ice":[0.7,0.85,0.95],
-                   "rose":[0.9,0.7,0.8],"pearl":[0.82,0.82,0.9],"mono":[0.8,0.8,0.8]}[mood]
+        # label colourways: every mood carries a CLEAR hue at medium saturation. The renderer
+        # tints the form with this directly and slams the saturation for the background ink,
+        # so a near-grey palette here would give a washed-out backdrop. "mono" stays neutral
+        # on purpose — it becomes the stark black & white press look.
+        palette = {"violet":[0.58,0.42,0.92],"amber":[0.95,0.62,0.30],"ice":[0.45,0.80,0.98],
+                   "rose":[0.95,0.48,0.62],"pearl":[0.62,0.68,0.92],"mono":[0.80,0.80,0.85]}[mood]
         intent = semantic_intent(role, sten, sval, sdark, rise)
         secs.append({
             "t0": round(t0, 3), "t1": round(t1, 3), "label": role,

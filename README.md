@@ -56,7 +56,28 @@ curves{t[], energy[],brightness[],arousal[],valence[],tension[],darkness[],
        warmth[],danceability[],epicness[],flux[],percussive[],harmonic[],density[]}   # 30 Hz
 ```
 
+## Viewer controls (top right)
+- **Shape** — `Auto · Director` lets the Director pick, or lock one of Organic / Helix / Gem / Petals / Twist.
+- **Material** — Pearl, Iridescent, Chrome, Frosted, Holographic, Neon.
+- **Look** — the *press grade*, i.e. the label aesthetic. `Label` (default), `Riso`,
+  `Xerox`, `Halftone`, `Chrome`, `Clean`. Drives duotone ink separation, posterisation,
+  ordered dither, dot screen, misregistration/chromatic split and grain.
+- **Palette / Colors** — background colourway. `Auto · Director` takes the hue from the
+  current section's mood and slams the saturation; or pick Blood / Acid / Ultra / Cyber /
+  Solar / Mono, or set the two colours by hand. The palette also feeds the duotone inks,
+  so the whole frame stays on one colourway.
+
+Section palettes in `analyze.py` must carry a **clear hue** — a near-grey palette gives a
+washed-out backdrop, since the renderer slams saturation to derive the ink. `mono` is
+deliberately neutral: it produces the stark black & white press look.
+
+## Rendering notes
+Raymarched SDF → RGBA16F → post. Quality is adaptive: `rscale` tracks frame time
+(0.50–1.0) so it holds framerate on weaker GPUs. Bloom comes off the half-float mip chain
+(4 taps, wide and soft) with a 25-tap fallback when a GPU can't mipmap RGBA16F. AO and a
+short soft shadow give the form volume — both use `mapD()`, which undoes the deliberate
+0.5 scaling `map()` applies, otherwise free space reads as fully occluded.
+
 ## Next
-Frontend renderer consumes this over the server, synced to audio playback:
-pearlescent instanced generative geometry (cluster → radial → spiral), camera + world
-evolution driven by the Director State.
+Camera + world evolution driven further by the Director State (per-section framing,
+predictive pre-roll into drops).
