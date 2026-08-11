@@ -5,3 +5,4 @@ out/
 testdata/
 *.wav
 .DS_Store
+.claude/
