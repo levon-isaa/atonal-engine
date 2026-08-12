@@ -187,6 +187,11 @@ def layer2_structure(f, sr):
             merged.append(t)
     if merged[-1] < f["duration"] - 1e-3:
         merged[-1] = f["duration"]
+    # A track shorter than the minimum section length collapses to a SINGLE boundary, which
+    # yields zero sections downstream — and a director with an empty sections[] crashes the
+    # renderer's frame loop on the first lookup. Always emit at least one whole-track section.
+    if len(merged) < 2:
+        merged = [0.0, max(f["duration"], 0.05)]
     return merged   # boundary times
 
 # =================================================== LAYER 3: EMOTION CURVES

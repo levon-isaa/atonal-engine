@@ -113,9 +113,9 @@ precision highp float;
 out vec4 o;
 uniform vec2 u_res; uniform float u_time;
 uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
-uniform float u_count,u_twist,u_r0,u_r1,u_thick,u_bulge,u_hub,u_spin;
-uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
-uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
+uniform float u_spin;
+uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
+uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
@@ -123,7 +123,7 @@ uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene,u_shadow;
 uniform float u_twA,u_twB,u_twMix;                  // ribbon twist cross-fade
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
-uniform float u_bLow,u_bMid,u_bHigh,u_bAir;
+uniform float u_bLow,u_bHigh,u_bAir;
 uniform float u_shock,u_shockA;
 // emotion -> geometry: these drive the construction parameters of the forms
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
@@ -701,10 +701,9 @@ float r2(vec2 p){return fract(dot(p,vec2(0.7548776662,0.5698402909)));}
 // energy-preserving. No knee here — doing it per mip sample was the bug.
 vec3 bloom(vec2 uv,vec2 t){
   if(u_mip>0.5){
-    return textureLod(u_brt,uv,1.0).rgb*0.36
-         + textureLod(u_brt,uv,2.5).rgb*0.30
-         + textureLod(u_brt,uv,4.0).rgb*0.21
-         + textureLod(u_brt,uv,5.5).rgb*0.13; }
+    return textureLod(u_brt,uv,1.2).rgb*0.42
+         + textureLod(u_brt,uv,3.0).rgb*0.34
+         + textureLod(u_brt,uv,5.0).rgb*0.24; }   // 3 taps, same total weight
   vec3 sum=vec3(0.); float w=0.;
   for(int i=-2;i<=2;i++)for(int j=-2;j<=2;j++){
     vec2 of=vec2(float(i),float(j)); float g=exp(-dot(of,of)*.22);
@@ -739,7 +738,9 @@ void main(){
     // behind it falls away. Blurring the subject reads as a soft render, not a shallow lens.
     float coc=clamp((abs(z-u_focus)-0.55)*u_dof,0.,1.);
     coc*=coc;
-    col=mix(col, textureLod(u_tex,uv,coc*3.2).rgb, clamp(coc*1.25,0.,1.));
+    // the blurred tap was fetched for every pixel and then mixed at zero weight across the
+    // whole in-focus subject — skip it there instead of paying for it and discarding it
+    if(coc>0.002) col=mix(col, textureLod(u_tex,uv,coc*3.2).rgb, clamp(coc*1.25,0.,1.));
   }
   if(u_chroma>0.001){                            // misregistration / lens split
     vec2 d=uv-0.5; float k=u_chroma*0.007*(0.25+dot(d,d)*3.0);
@@ -841,7 +842,7 @@ addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
-let frameAvg=16, lastQ=0;                            // adaptive quality (frame-time driven)
+let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
 // composition presets -> continuous shape params (eased between sections)
@@ -1013,8 +1014,12 @@ function sampleCurve(name,t){
   if(i<0) return arr[0]; if(i>=arr.length-1) return arr[arr.length-1];
   return arr[i]*(1-fdr)+arr[i+1]*fdr;
 }
+const FALLBACK_SECTION={t0:0,t1:1e9,label:'—',mood:'pearl',energy:0.3,tension:0.2,valence:0.5,
+  camera:'orbit',composition:'radial',palette:[0.62,0.68,0.92],intent:''};
 function currentSection(t){
-  const s=director.sections; for(let i=0;i<s.length;i++) if(t>=s[i].t0&&t<s[i].t1) return s[i];
+  const s=director&&director.sections;
+  if(!s||!s.length) return FALLBACK_SECTION;   // never hand undefined back to the frame loop
+  for(let i=0;i<s.length;i++) if(t>=s[i].t0&&t<s[i].t1) return s[i];
   return s[s.length-1];
 }
 function nextPrediction(t){
@@ -1102,7 +1107,7 @@ function frame(){
     // is, so it is now bought at up to ~43fps: raise under 23ms, degrade only over 29ms, with a
     // dead band between. Measured on this machine: rscale 1.45 costs ~21.5ms (46fps), so it
     // reaches the cap and holds it.
-    if(frameAvg>29){
+    if(QLOCK){} else if(frameAvg>29){
       if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
       else if(dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
     } else if(frameAvg<23){
@@ -1247,11 +1252,7 @@ function frame(){
   gl.uniform2f(US('u_res'),sw,sh); gl.uniform1f(US('u_time'),time);
   gl.uniform3f(US('u_ro'),roX,roY,roZ); gl.uniform3f(US('u_rt'),rx,ry,rz);
   gl.uniform3f(US('u_up'),ux,uy,uz); gl.uniform3f(US('u_fw'),fx,fy,fz); gl.uniform1f(US('u_fov'),fovY);
-  gl.uniform1f(US('u_count'),Math.max(3,SH.count*VAR.countMul)); gl.uniform1f(US('u_twist'),SH.twist+VAR.twist+tension*0.35);
-  gl.uniform1f(US('u_r0'),SH.r0); gl.uniform1f(US('u_r1'),SH.r1*(1.0+energy*0.12));
-  gl.uniform1f(US('u_thick'),SH.thick*VAR.thickMul); gl.uniform1f(US('u_bulge'),SH.bulge); gl.uniform1f(US('u_hub'),SH.hub);
   gl.uniform1f(US('u_spin'),spin);
-  gl.uniform1f(US('u_ring'),VAR.ring); gl.uniform1f(US('u_wob'),VAR.wob);
   gl.uniform1f(US('u_tilt'),VAR.tilt); gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_mode'),mode); gl.uniform1f(US('u_mode2'),mode2); gl.uniform1f(US('u_mix'),(phase===1?mix:0));
   gl.uniform1f(US('u_reform'),reform);
@@ -1262,7 +1263,7 @@ function frame(){
   gl.uniform1f(US('u_hSub'),HITS.sub); gl.uniform1f(US('u_hLow'),HITS.low);
   gl.uniform1f(US('u_hMid'),HITS.mid); gl.uniform1f(US('u_hHigh'),HITS.high);
   gl.uniform1f(US('u_hAir'),HITS.air);
-  gl.uniform1f(US('u_bLow'),BND.low); gl.uniform1f(US('u_bMid'),BND.mid);
+  gl.uniform1f(US('u_bLow'),BND.low);
   gl.uniform1f(US('u_bHigh'),BND.high); gl.uniform1f(US('u_bAir'),BND.air);
   gl.uniform1f(US('u_shock'),shockT); gl.uniform1f(US('u_shockA'),shockA);
   gl.uniform1f(US('u_valence'),valence); gl.uniform1f(US('u_warmth'),warmth); gl.uniform1f(US('u_epic'),epic);
@@ -1283,7 +1284,7 @@ function frame(){
   gl.uniform1f(US('u_twoTone'), 0.30+valence*0.45+epic*0.15);
   gl.uniform1f(US('u_twA'),twA); gl.uniform1f(US('u_twB'),twB);
   gl.uniform1f(US('u_twMix'), twMix>0 ? twMix*twMix*(3-2*twMix) : 0);
-  gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
+  gl.uniform1f(US('u_darkness'),darkness);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
   gl.uniform1f(US('u_iridAmt'),MAT.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
