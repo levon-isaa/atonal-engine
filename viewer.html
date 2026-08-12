@@ -141,6 +141,21 @@ float sdRBox(vec3 p,vec3 b,float r){vec3 d=abs(p)-b+r;return length(max(d,0.))+m
 float sdTorus(vec3 p,vec2 t){vec2 q=vec2(length(p.xz)-t.x,p.y);return length(q)-t.y;}
 float smax(float a,float b,float k){return -smin(-a,-b,k);}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}
+// TEXTURE NOISE — 5 octaves, normalised. A procedural material has no texel grid to raise, so
+// its resolution IS its octave count: 2 octaves can only ever produce soft blobs at one scale.
+// Five spanning ~32:1 in frequency give a surface that carries coarse variation, mid grain and
+// fine tooth simultaneously, which is what reads as a real, high-resolution material. The
+// offset per octave decorrelates them so the layers do not stack into visible lattice beats.
+float fbmT(vec3 p){
+  float v=0., a=0.5, s=0.0;
+  // GAIN MUST BE BELOW 1/LACUNARITY. This noise drives a NORMAL, so what matters is the
+  // gradient, and octave k contributes gradient ~ (gain*lacunarity)^k. At gain 0.55 with
+  // lacunarity 2.13 that is 1.17^k — RISING, so the finest octave dominated the normal and
+  // every material read as sandblasted whatever the amplitude. At 0.42 it is 0.89^k: the
+  // coarse form leads, and the fine octaves add tooth underneath it instead of burying it.
+  for(int i=0;i<5;i++){ v+=a*n3(p); s+=a; p=p*2.13+17.3; a*=0.42; }
+  return v/s;
+}
 /* ============ COMPLEX GEOMETRIC FORMS ============
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
@@ -301,9 +316,9 @@ vec3 objP(vec3 p){
 vec3 texNormal(vec3 op,vec3 n){
   if(u_txAmp<0.0005) return n;
   vec3 sc=vec3(u_txScale,u_txScale*u_txAniso,u_txScale);
-  float e=0.35;
-  float f0=fbm(op*sc);
-  vec3 g=vec3(fbm(op*sc+vec3(e,0,0))-f0, fbm(op*sc+vec3(0,e,0))-f0, fbm(op*sc+vec3(0,0,e))-f0);
+  float e=0.10;                                   // small enough to resolve the top octave
+  float f0=fbmT(op*sc);
+  vec3 g=vec3(fbmT(op*sc+vec3(e,0,0))-f0, fbmT(op*sc+vec3(0,e,0))-f0, fbmT(op*sc+vec3(0,0,e))-f0);
   g-=n*dot(g,n);                                  // tangential only -> a bump, not a dent
   float gl=length(g); if(gl<1e-5) return n;
   // use the gradient DIRECTION and let u_txAmp be the tilt in radians. Scaling by the raw
@@ -312,7 +327,7 @@ vec3 texNormal(vec3 op,vec3 n){
 }
 float texRough(vec3 op,float base){
   if(u_txRough<0.001) return base;
-  float v=fbm(op*vec3(u_txScale,u_txScale*u_txAniso,u_txScale)*0.42);
+  float v=fbmT(op*vec3(u_txScale,u_txScale*u_txAniso,u_txScale)*0.42);
   return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
 }
 vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*0.0018;
@@ -556,12 +571,16 @@ void main(){
     // extra microfacet spread, so folding it into roughness removes the sparkle without
     // softening surfaces that are genuinely flat. Chrome (rough 0.06) is unusable without it.
     vec3 dnx=dFdx(n), dny=dFdy(n);
+    // Cap left at 0.030. Raising it to 0.075 to absorb the richer 5-octave normal measured
+    // WORSE, not better — but the metric (frame-to-frame pixel change) cannot separate genuine
+    // shimmer from sharp reflections legitimately sweeping across a rotating chrome surface, so
+    // it could not justify the change either way. Keeping the value that was tuned by eye.
     float kvar=min(0.030, 0.5*(dot(dnx,dnx)+dot(dny,dny)));
     rgh=min(1.0, sqrt(rgh*rgh+kvar));
     float NoV=clamp(dot(n,v),1e-4,1.);
     float fr=pow(1.-NoV,2.6);
     // albedo carries the same grain, so the body is not one flat colour
-    float av=fbm(op*u_txScale*0.30);
+    float av=fbmT(op*u_txScale*0.30);
     // TWO-TONE. A single u_mood makes the whole form one hue, which is why a frame reads
     // flatter than the reference — those get their life from several colourways at once.
     // Sweep in OBJECT space (so the split belongs to the form and turns with it) between the
@@ -960,13 +979,15 @@ function setMode(m){ if(m===mode&&phase===0) return; mode2=m; mix=0; phase=1; } 
 let autoShape=false;   // shape only changes automatically if HUD = "Auto · Director"
 // ---- rich MATERIAL variations (HUD-selectable, eased for smooth switches) ----
 const MATS={
-  //          metal rough reflect irid transl emis | tscale=detail freq, tamp=tilt(rad), taniso=stretch, trough=gloss variation
-  pearl:      {metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00, tscale:70, tamp:0.0035,taniso:1.00,trough:0.22},
-  iridescent: {metal:0.0,rough:0.22,reflect:0.50,irid:1.1,transl:0.30,emis:0.08, tscale:95, tamp:0.0035,taniso:1.00,trough:0.20},
-  chrome:     {metal:1.0,rough:0.06,reflect:1.00,irid:0.1,transl:0.00,emis:0.00, tscale:150,tamp:0.004,taniso:0.10,trough:0.12},
-  frosted:    {metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00, tscale:120,tamp:0.030,taniso:1.00,trough:0.30},
-  holo:       {metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18, tscale:240,tamp:0.005,taniso:0.06,trough:0.14},
-  neon:       {metal:0.0,rough:0.30,reflect:0.35,irid:0.6,transl:0.40,emis:0.70, tscale:55, tamp:0.0030,taniso:1.00,trough:0.14},
+  // tscale = base detail frequency (fbmT stacks 5 octaves above it), tamp = surface tilt in
+  // RADIANS, taniso = stretch for brushed metal, trough = gloss variation.
+  // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
+  pearl:      {metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00, tscale:64, tamp:0.020,taniso:1.00,trough:0.36},
+  iridescent: {metal:0.0,rough:0.22,reflect:0.50,irid:1.1,transl:0.30,emis:0.08, tscale:88, tamp:0.018,taniso:1.00,trough:0.32},
+  chrome:     {metal:1.0,rough:0.06,reflect:1.00,irid:0.1,transl:0.00,emis:0.00, tscale:150,tamp:0.018,taniso:0.09,trough:0.28},
+  frosted:    {metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00, tscale:110,tamp:0.070,taniso:1.00,trough:0.58},
+  holo:       {metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18, tscale:230,tamp:0.020,taniso:0.06,trough:0.30},
+  neon:       {metal:0.0,rough:0.30,reflect:0.35,irid:0.6,transl:0.40,emis:0.70, tscale:52, tamp:0.018,taniso:1.00,trough:0.26},
 };
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
 
