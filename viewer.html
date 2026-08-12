@@ -60,6 +60,8 @@
     <option value="pearl" selected>Pearl</option><option value="iridescent">Iridescent</option>
     <option value="chrome">Chrome</option><option value="frosted">Frosted</option>
     <option value="holo">Holographic</option><option value="neon">Neon</option></select></div>
+  <div class="row"><label>Scene</label><select id="selScene">
+    <option value="studio" selected>Studio</option><option value="field">Colour field</option></select></div>
   <div class="row"><label>Look</label><select id="selLook">
     <option value="studio" selected>Studio</option>
     <option value="label">Label</option><option value="riso">Riso</option>
@@ -116,7 +118,8 @@ uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
-uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY;
+uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
+uniform float u_twA,u_twB,u_twMix;                  // ribbon twist cross-fade
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
 uniform float u_bLow,u_bMid,u_bHigh,u_bAir;
@@ -141,7 +144,7 @@ float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
-float mArray(vec3 p){                                  // RIBBON — a wide band swept round the axis
+float ribbonAt(vec3 p,float twN){                                  // RIBBON — a wide band swept round the axis
   // Replaces the old turbine (a polar array of pitched blades + hub + ring). That form read as
   // machinery: hard repeated blades, a dead hub in the middle, and a torus that never belonged
   // to the rest of it. This is one continuous surface instead — a band swept around the axis
@@ -150,10 +153,10 @@ float mArray(vec3 p){                                  // RIBBON — a wide band
   float a=atan(p.z,p.x);
   float r=length(p.xz)-0.92;                           // signed distance to the sweep circle
   vec2 q=vec2(r,p.y);
+  float tw=twN;
   // INTEGER twist count only. A half twist gives a true Mobius band but leaves a seam where
   // atan wraps at +/-pi, because the cross-section arrives back rotated by an odd multiple of
   // pi and no longer matches itself.
-  float tw=floor(clamp(u_gDense*0.35+2.0,2.0,5.0));
   q*=rot(a*tw + u_gTwist*0.9);
   vec2 half_=vec2(0.048+u_gThick*0.050, 0.26+u_gCut*0.09);
   vec2 d2=abs(q)-half_+0.042;
@@ -163,6 +166,16 @@ float mArray(vec3 p){                                  // RIBBON — a wide band
   // 0.55 still did at 2+ twists. The distortion grows with the twist rate, so the safety factor
   // has to grow with it too rather than being a constant.
   return band/(1.0+tw*0.55);
+}
+// The twist count MUST be an integer or the cross-section fails to meet itself at the atan
+// wrap. Driving it straight off energy therefore made it snap 2->3->4 mid-track and the whole
+// form re-shaped in a single frame — that is the 'changes very strange' problem. It is now
+// latched, changed only at section boundaries, and cross-faded between the two counts exactly
+// like a mode morph, so the change reads as a transformation instead of a pop.
+float mArray(vec3 p){
+  float d=ribbonAt(p,u_twA);
+  if(u_twMix>0.001) d=mix(d,ribbonAt(p,u_twB),u_twMix);
+  return d;
 }
 float mStack(vec3 p){                                  // TOWER — stacked slabs, progressive twist
   const float N=8.0; float H=2.00/N;
@@ -375,6 +388,15 @@ void palAB(out vec3 A,out vec3 B){
 vec3 bg(vec3 rd, vec2 sv){
   vec3 A,B; palAB(A,B);
   float h=clamp(rd.y*0.5+0.5,0.,1.);
+  // STUDIO: a lit cyclorama the form sits IN. Returns before any fbm, so the fluid field costs
+  // nothing when it is not on screen.
+  if(u_scene>0.5){
+    vec3 lo=mix(vec3(0.93),B,0.10);                        // bright toward the horizon
+    vec3 hi=mix(vec3(0.58),B,0.20);                        // deeper up top
+    vec3 c=mix(lo,hi,smoothstep(0.42,1.0,h));
+    c*=mix(1.0,0.72,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
+    return c*(0.85+u_bgAmt*0.25);
+  }
   // ---- FLUID: two rounds of domain warping. Warping the noise's INPUT by more noise is what
   // turns a static cloud into something that folds and shears like ink in water; a single fbm
   // only ever pulses in place. Drift speed rides arousal, so the field is calm under an intro
@@ -467,9 +489,33 @@ void main(){
   // plane is just an arbitrary horizon line dividing the frame, so it goes too and the form now
   // floats in the colour field. This also drops a shadow march for every floor pixel, which was
   // the most expensive thing in the lower half of the frame.
-  vec3 back=bg(rd,uv);       // the background is now the whole frame: miss + aerial fade
+  // STUDIO FLOOR, intersected analytically. Marching an infinite plane makes grazing rays
+  // converge too slowly, so they hit the step cap at varying distances and the floor bands into
+  // rings — a plane has a closed form, so use it. The plane sits just under the form (JS derives
+  // u_groundY from the same reach the framing uses), which is what makes the contact shadow
+  // actually land instead of spreading into the grey pool this replaced.
+  if(u_scene>0.5){
+    float tp=(rd.y<-1e-4)?(u_groundY-ro.y)/rd.y:-1.0;
+    if(tp>0.02 && (mid<0.0 || tp<t)){ t=tp; mid=2.0; }
+  }
+  vec3 back=bg(rd,uv);       // miss + aerial fade
   vec3 col;
   if(mid<0.){ col=back; }
+  else if(mid>1.5){                                  // ---- STUDIO FLOOR ----
+    vec3 p=ro+rd*t, gn=vec3(0,1,0);
+    vec3 A,B; palAB(A,B);
+    vec3 alb=mix(vec3(0.82),B,0.10);
+    vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
+    vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
+    float sha=calcSha(p,L);                          // cast shadow
+    float occ=calcAO(p,gn);                          // contact darkening
+    vec3 amb=env(gn,1.0)*0.95;
+    // Contact shadow has to be DARK right under the form or it reads as a grey smudge. Both
+    // terms are driven near zero in full occlusion, and AO is sharpened so the darkest part sits
+    // tight against the silhouette instead of spreading.
+    float ao2=occ*occ;
+    col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.02,1.0,sha) + amb*mix(0.04,1.0,ao2) );
+  }
   else{
     vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
     vec3 op=objP(p);
@@ -549,7 +595,7 @@ void main(){
   // the floor dissolves into the backdrop well beyond the subject: no visible horizon line,
   // which is what sells a seamless cyclorama rather than 'object on a plane'
   // Only the form is left to fade, so the floor's separate range is gone with it.
-  col=mix(col, back, smoothstep(3.6,15.0,t)*0.96);
+  col=mix(col, back, smoothstep(3.0,11.0,t));   // reaches 1.0: floor becomes the backdrop exactly
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
 }`;
 
@@ -733,6 +779,10 @@ const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0, rollS=0;
+// Ribbon twist: integer only (see the shader note), latched and cross-faded so it never pops.
+let twA=3, twB=3, twMix=0;
+let scene=1;                                          // 1 studio, 0 colour field
+let groundY=-1.05;
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
 // One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
 // most electronic music, so a turn lines up with the structure the Director cuts sections on.
@@ -979,7 +1029,9 @@ function frame(){
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
     moodTarget=s.palette||MO;
-    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy); }
+    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy);
+      const want=2+Math.round(Math.max(0,Math.min(1,s.energy))*2);   // 2..4 twists, per SECTION
+      if(want!==twA && twMix===0){ twB=want; twMix=1e-4; } }
     // predictive anticipation: ramp before a drop
     const p=nextPrediction(t);
     if(p){ const eta=p.t-t;
@@ -1004,7 +1056,8 @@ function frame(){
   // per-band envelopes: decay the transient, then smooth its attack so hits land soft
   for(const b of BANDS){ HIT[b]*=Math.exp(-DECAY[b]*dt);
     HITS[b]+=(HIT[b]-HITS[b])*(1-Math.exp(-ATTACK[b]*dt)); }
-  shockT+=dt; shockA*=Math.exp(-2.4*dt);              // ring travels out and fades
+  shockT+=dt; shockA*=Math.exp(-2.4*dt);
+  if(twMix>0){ twMix=Math.min(1,twMix+dt/1.4); if(twMix>=1){ twA=twB; twMix=0; } }              // ring travels out and fades
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
   // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
   // individual sounds nudge the rotation — articulate, but damped so it never jitters
@@ -1061,6 +1114,7 @@ function frame(){
   // deliberately left out of the compensation instead of being cancelled by the camera
   const sBase=Math.max(reform,0.2)*(1.0+energy*0.10)*0.95;
   const framed=2.0*fEff*reach*sBase/fill;
+  groundY=-(reach*sBase+0.02);   // floor sits just under the actual silhouette
   const dolly=framed*(1-HITS.low*0.055-HITS.sub*0.045);
   const ca=camAng+camKick, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
@@ -1111,7 +1165,10 @@ function frame(){
   // aperture size — valence opens the shell up, darkness closes it in
   gl.uniform1f(US('u_gCut'), Math.max(0.0, 0.25+valence*0.8-darkness*0.35));
   gl.uniform3f(US('u_bgA'),BGA[0],BGA[1],BGA[2]); gl.uniform3f(US('u_bgB'),BGB[0],BGB[1],BGB[2]);
-  gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_groundY'),-1.28);
+  gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_scene'),scene);
+  gl.uniform1f(US('u_groundY'),groundY);
+  gl.uniform1f(US('u_twA'),twA); gl.uniform1f(US('u_twB'),twB);
+  gl.uniform1f(US('u_twMix'), twMix>0 ? twMix*twMix*(3-2*twMix) : 0);
   gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
@@ -1151,6 +1208,7 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
+$('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ palAuto=true; return; }
   palAuto=false;
