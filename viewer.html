@@ -550,8 +550,8 @@ void main(){
     // diffuse body (fades out for metals) — occluded + self-shadowed.
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
-    vec3 amb=env(n,1.0)*0.95;
-    vec3 c=base*(1.-u_metal)*( keyC*(0.80*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
+    vec3 amb=env(n,1.0)*1.22;
+    vec3 c=base*(1.-u_metal)*( keyC*(0.95*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
                              + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
     c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
@@ -595,7 +595,11 @@ void main(){
   // the floor dissolves into the backdrop well beyond the subject: no visible horizon line,
   // which is what sells a seamless cyclorama rather than 'object on a plane'
   // Only the form is left to fade, so the floor's separate range is gone with it.
-  col=mix(col, back, smoothstep(3.0,11.0,t));   // reaches 1.0: floor becomes the backdrop exactly
+  // AERIAL FADE starts BEYOND the subject. The form sits at t~3..6, so a fade opening at 3.0
+  // was mixing the backdrop straight into it — measurably ~15-20% darker and tinted toward the
+  // background colour. That is the rendering quality bleeding away into whatever is behind it.
+  // Opening at 6.5 leaves the subject untouched while distant floor still dissolves completely.
+  col=mix(col, back, smoothstep(6.5,15.0,t));
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
 }`;
 
