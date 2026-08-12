@@ -483,7 +483,13 @@ void main(){
   float dth=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
   float t=0.02+dth*0.012,mid=-1.;                 // dithered start kills stair-step banding
   for(int i=0;i<112;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
-    if(h.x<0.0015*t){mid=h.y;break;} t+=h.x*0.62; if(t>18.)break; }
+    if(h.x<0.0015*t){mid=h.y;break;}
+    // map() returns a HALF-scaled field, so h.x is at most half the true clearance. Near the
+    // surface the 0.62 factor guards the displaced field; out in empty space (where h.x is
+    // large and the value comes straight off the bounding sphere) that is doubly conservative
+    // and burns steps crossing nothing. 1.35*h.x is still only ~0.68 of the true distance.
+    t+=h.x*(h.x>0.20 ? 1.35 : 0.62);
+    if(t>18.)break; }
   // GROUND PLANE REMOVED. It existed to catch a cast shadow, and that shadow never worked here:
   // the forms float clear of it, so what landed was a soft grey pool with a horizon behind it,
   // and every attempt to fix the shadow only moved the artefact around. Without a shadow the
@@ -672,7 +678,7 @@ precision highp float;
 out vec4 o;
 uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
-uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss;
+uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
 uniform float u_focus,u_dof;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
@@ -718,7 +724,10 @@ void main(){
   vec2 uv=gl_FragCoord.xy/u_res,t=u_texel;      // offsets in SOURCE texels so AA/sharpen actually bite
   vec3 col;
   if(u_ss>0.5){                                 // supersampled: resolve real samples with a 4-tap tent
-    vec2 h=t*0.5;                               // (true SSAA beats any edge-reconstruction filter)
+    // Footprint must match the RATIO. One output pixel covers u_ssRatio source texels, so taps
+    // at a fixed +/-0.5 source texel only ever filtered a 1-texel window and left most of the
+    // extra samples outside the kernel — paying for supersampling without collecting it.
+    vec2 h=t*0.5*u_ssRatio;
     col=(texture(u_tex,uv+vec2(-h.x,-h.y)).rgb+texture(u_tex,uv+vec2(h.x,-h.y)).rgb
         +texture(u_tex,uv+vec2(-h.x, h.y)).rgb+texture(u_tex,uv+vec2(h.x, h.y)).rgb)*0.25;
   } else col=fxaa(uv,t);
@@ -1086,12 +1095,19 @@ function frame(){
     // gates at the old thresholds a transient stall (the 8s analyse, a tab switch) knocked the
     // canvas down and then ~21ms sat inside the dead zone — too fast to degrade, too slow to
     // restore — so it stayed blurred indefinitely. The dead zone was a one-way trap.
-    if(frameAvg>24){
+    // TARGET IS EDGE QUALITY, NOT 60fps. The old gate only raised rscale under 17.2ms, i.e. it
+    // demanded ~58fps at the HIGHER cost before it would supersample at all — unreachable here,
+    // so rscale sat at 1.0 permanently and every frame shipped with FXAA-only edges. That is
+    // the "rough edges" everyone sees. Supersampling is the single largest quality lever there
+    // is, so it is now bought at up to ~43fps: raise under 23ms, degrade only over 29ms, with a
+    // dead band between. Measured on this machine: rscale 1.45 costs ~21.5ms (46fps), so it
+    // reaches the cap and holds it.
+    if(frameAvg>29){
       if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
-      else if(frameAvg>30 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
-    } else if(frameAvg<21){
+      else if(dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
+    } else if(frameAvg<23){
       if(dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
-      else if(frameAvg<17.2 && rscale<1.20){ rscale=Math.min(1.20,rscale+0.06); applyScale(); }
+      else if(rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); }
     } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
@@ -1292,6 +1308,7 @@ function frame(){
     gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
     gl.uniform2f(UP('u_texel'),1/RW,1/RH); gl.uniform1f(UP('u_mip'),mipOK?1:0);
     gl.uniform1f(UP('u_ss'),rscale>1.05?1:0);
+    gl.uniform1f(UP('u_ssRatio'),rscale);
     // focus on the form itself; everything behind it falls away into a soft wash
     gl.uniform1f(UP('u_focus'),CM.dist*0.94); gl.uniform1f(UP('u_dof'),LK.dof);
     // underground grade: darker, grittier, higher contrast
