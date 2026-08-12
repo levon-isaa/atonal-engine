@@ -759,7 +759,17 @@ void main(){
     coc*=coc;
     // the blurred tap was fetched for every pixel and then mixed at zero weight across the
     // whole in-focus subject — skip it there instead of paying for it and discarding it
-    if(coc>0.002) col=mix(col, textureLod(u_tex,uv,coc*3.2).rgb, clamp(coc*1.25,0.,1.));
+    if(coc>0.002){
+      vec4 b=textureLod(u_tex,uv,coc*3.2);
+      // DEPTH-AWARE BLEND. b.a is the AVERAGE depth over the blurred neighbourhood (mip
+      // generation averages alpha along with colour). Where a background pixel sits next to
+      // the subject, that neighbourhood is dominated by the subject and is much NEARER than
+      // this pixel — blending it in is what smeared the form outward as a glowing halo.
+      // Rejecting the blur exactly where the neighbourhood disagrees on depth removes the
+      // halo while leaving open background fully blurred.
+      float agree=1.0-clamp((z-b.a)/(0.35*z+0.5), 0., 1.);
+      col=mix(col, b.rgb, clamp(coc*1.25,0.,1.)*agree);
+    }
   }
   if(u_chroma>0.001){                            // misregistration / lens split
     vec2 d=uv-0.5; float k=u_chroma*0.007*(0.25+dot(d,d)*3.0);
