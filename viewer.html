@@ -118,6 +118,7 @@ uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
+uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene,u_shadow;
 uniform float u_twA,u_twB,u_twMix;                  // ribbon twist cross-fade
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
@@ -555,7 +556,15 @@ void main(){
     float fr=pow(1.-NoV,2.6);
     // albedo carries the same grain, so the body is not one flat colour
     float av=fbm(op*u_txScale*0.30);
-    vec3 base=mix(vec3(0.9), u_mood, 0.68)*(1.0+(av-0.5)*u_txRough*0.16);
+    // TWO-TONE. A single u_mood makes the whole form one hue, which is why a frame reads
+    // flatter than the reference — those get their life from several colourways at once.
+    // Sweep in OBJECT space (so the split belongs to the form and turns with it) between the
+    // section's mood and the palette accent, with the surface grain breaking up the boundary
+    // so it reads as material rather than a gradient laid over the top.
+    vec3 pA,pB; palAB(pA,pB);
+    float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30)+(av-0.5)*0.55, 0., 1.);
+    vec3 tint=mix(u_mood, clamp(pB*1.12,0.,1.), smoothstep(0.18,0.82,sweep)*u_twoTone);
+    vec3 base=mix(vec3(0.9), tint, 0.68)*(1.0+(av-0.5)*u_txRough*0.16);
     vec3 f0=mix(vec3(0.04), base, u_metal);
     // thin-film colour, shifted by the micro surface so it mottles like real pearl
     vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+av*0.7+u_time*0.03+u_iridHue+u_hAir*0.25)
@@ -637,10 +646,31 @@ void main(){
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
 }`;
 
+const BRIGHT=`#version 300 es
+precision highp float;
+out vec4 o;
+uniform sampler2D u_tex; uniform vec2 u_res, u_src; uniform float u_thr;
+vec3 bp(vec3 c,float thr){                       // soft-knee bright pass on a LINEAR HDR value
+  float l=dot(c,vec3(.2126,.7152,.0722));
+  float k=max(0.,l-thr); k=k*k/(k+0.5);
+  return c*(k/max(l,1e-4));
+}
+void main(){
+  vec2 uv=gl_FragCoord.xy/u_res, t=u_src*0.5;
+  // Threshold each tap BEFORE averaging. Thresholding blurred samples (what sampling the mip
+  // chain directly did) lets a small, very bright highlight average below the threshold and
+  // vanish — so specular pinpoints never bloomed, which is what made highlights read as bright
+  // pixels rather than as light.
+  o=vec4((bp(texture(u_tex,uv+vec2(-t.x,-t.y)).rgb,u_thr)
+         +bp(texture(u_tex,uv+vec2( t.x,-t.y)).rgb,u_thr)
+         +bp(texture(u_tex,uv+vec2(-t.x, t.y)).rgb,u_thr)
+         +bp(texture(u_tex,uv+vec2( t.x, t.y)).rgb,u_thr))*0.25, 1.);
+}`;
+
 const POST=`#version 300 es
 precision highp float;
 out vec4 o;
-uniform sampler2D u_tex; uniform vec2 u_res, u_texel;
+uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
 uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss;
 uniform float u_focus,u_dof;
@@ -661,18 +691,20 @@ vec3 fxaa(vec2 uv,vec2 r){
   float lb=luma(b); return (lb<lmin||lb>lmax)?a:b;
 }
 float r2(vec2 p){return fract(dot(p,vec2(0.7548776662,0.5698402909)));}
-vec3 knee(vec3 c){float l=lum(c);float k=max(0.,l-0.80);k=k*k/(k+.5);return c*(k/max(l,1e-4));}
-// wide, soft, cinematic bloom straight off the mip chain — 4 taps instead of 49
+// Bloom now reads an ALREADY-thresholded buffer, so this is a pure gather: wide, soft, and
+// energy-preserving. No knee here — doing it per mip sample was the bug.
 vec3 bloom(vec2 uv,vec2 t){
   if(u_mip>0.5){
-    return knee(textureLod(u_tex,uv,2.0).rgb)*0.34
-         + knee(textureLod(u_tex,uv,3.5).rgb)*0.30
-         + knee(textureLod(u_tex,uv,5.0).rgb)*0.22
-         + knee(textureLod(u_tex,uv,6.5).rgb)*0.14; }
-  vec3 s=vec3(0.);float w=0.;
-  for(int i=-2;i<=2;i++)for(int j=-2;j<=2;j++){vec2 of=vec2(float(i),float(j));float g=exp(-dot(of,of)*.22);
-    s+=knee(texture(u_tex,uv+of*t*5.0).rgb)*g;w+=g;}
-  return s/max(w,1e-4);}
+    return textureLod(u_brt,uv,1.0).rgb*0.36
+         + textureLod(u_brt,uv,2.5).rgb*0.30
+         + textureLod(u_brt,uv,4.0).rgb*0.21
+         + textureLod(u_brt,uv,5.5).rgb*0.13; }
+  vec3 sum=vec3(0.); float w=0.;
+  for(int i=-2;i<=2;i++)for(int j=-2;j<=2;j++){
+    vec2 of=vec2(float(i),float(j)); float g=exp(-dot(of,of)*.22);
+    sum+=texture(u_brt,uv+of*t*5.0).rgb*g; w+=g; }
+  return sum/max(w,1e-4);
+}
 const float BAY[16]=float[16](0.,8.,2.,10.,12.,4.,14.,6.,3.,11.,1.,9.,15.,7.,13.,5.);
 float bayer(vec2 p){ivec2 i=ivec2(mod(p,4.0));return BAY[i.y*4+i.x]/16.0-0.46875;}
 mat2 rot2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
@@ -747,14 +779,16 @@ function sh(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.co
 function prog(vs,fs){const p=gl.createProgram();gl.attachShader(p,sh(gl.VERTEX_SHADER,vs));
   gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);
   if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));return p;}
-let sceneP,postP,buf,hdrT,hdrF;
-try{ sceneP=prog(VERT,SCENE); postP=prog(VERT,POST); }catch(e){ showStat('Shader error: '+e.message,true); throw e; }
+let sceneP,postP,brightP,buf,hdrT,hdrF,brtT,brtF,BW,BH;
+try{ sceneP=prog(VERT,SCENE); postP=prog(VERT,POST); brightP=prog(VERT,BRIGHT); }catch(e){ showStat('Shader error: '+e.message,true); throw e; }
 buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
-const aScene=gl.getAttribLocation(sceneP,'p'), aPost=gl.getAttribLocation(postP,'p');
+const aScene=gl.getAttribLocation(sceneP,'p'), aPost=gl.getAttribLocation(postP,'p'),
+      aBright=gl.getAttribLocation(brightP,'p');
 function drawFS(a){gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.enableVertexAttribArray(a);
   gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);gl.drawArrays(gl.TRIANGLES,0,3);}
-const US=n=>gl.getUniformLocation(sceneP,n), UP=n=>gl.getUniformLocation(postP,n);
+const US=n=>gl.getUniformLocation(sceneP,n), UP=n=>gl.getUniformLocation(postP,n),
+      UB=n=>gl.getUniformLocation(brightP,n);
 let mipOK=false;
 function initTargets(w,h){
   if(!floatOK) return;
@@ -766,6 +800,16 @@ function initTargets(w,h){
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   hdrF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,hdrF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,hdrT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  // half-res bright-pass target; bloom is gathered from its mip chain
+  BW=Math.max(2,w>>1); BH=Math.max(2,h>>1);
+  if(brtT) gl.deleteTexture(brtT); if(brtF) gl.deleteFramebuffer(brtF);
+  brtT=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,brtT);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,BW,BH,0,gl.RGBA,gl.HALF_FLOAT,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,mipOK?gl.LINEAR_MIPMAP_LINEAR:gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  brtF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,brtF);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,brtT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 }
 // 0.72 starts near where the controller actually settles on a native-resolution canvas. Starting
 // at 0.90 meant the first seconds ran ~29ms, which dragged frameAvg up and tripped the degrade
@@ -1219,6 +1263,8 @@ function frame(){
   gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_scene'),scene);
   gl.uniform1f(US('u_groundY'),groundY);
   gl.uniform1f(US('u_shadow'),SHADOW);
+  // brighter, more positive sections separate further into two colourways
+  gl.uniform1f(US('u_twoTone'), 0.30+valence*0.45+epic*0.15);
   gl.uniform1f(US('u_twA'),twA); gl.uniform1f(US('u_twB'),twB);
   gl.uniform1f(US('u_twMix'), twMix>0 ? twMix*twMix*(3-2*twMix) : 0);
   gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
@@ -1231,9 +1277,19 @@ function frame(){
 
   if(floatOK){
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
-    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);          // feeds the wide, soft bloom
+    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);          // hdr mips feed depth of field
+    // BRIGHT PASS -> half res, thresholded, then mipped. Bloom gathers from this.
+    gl.useProgram(brightP); gl.bindFramebuffer(gl.FRAMEBUFFER,brtF); gl.viewport(0,0,BW,BH);
+    gl.uniform1i(UB('u_tex'),0); gl.uniform2f(UB('u_res'),BW,BH); gl.uniform2f(UB('u_src'),1/RW,1/RH);
+    // threshold tracks exposure, so bloom picks up what will actually blow out after tonemapping
+    gl.uniform1f(UB('u_thr'), 0.95/Math.max(0.35, 0.82+energy*0.45+pulseS*0.12+HITS.low*0.10));
+    drawFS(aBright);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,brtT);
+    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
     gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
-    gl.uniform1i(UP('u_tex'),0); gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
+    gl.uniform1i(UP('u_tex'),0); gl.uniform1i(UP('u_brt'),1);
+    gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
     gl.uniform2f(UP('u_texel'),1/RW,1/RH); gl.uniform1f(UP('u_mip'),mipOK?1:0);
     gl.uniform1f(UP('u_ss'),rscale>1.05?1:0);
     // focus on the form itself; everything behind it falls away into a soft wash
