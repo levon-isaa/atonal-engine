@@ -118,7 +118,7 @@ uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
-uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
+uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene,u_shadow;
 uniform float u_twA,u_twB,u_twMix;                  // ribbon twist cross-fade
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
@@ -498,9 +498,30 @@ void main(){
     float tp=(rd.y<-1e-4)?(u_groundY-ro.y)/rd.y:-1.0;
     if(tp>0.02 && (mid<0.0 || tp<t)){ t=tp; mid=2.0; }
   }
+  vec3 Lw=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
   vec3 back=bg(rd,uv);       // miss + aerial fade
   vec3 col;
-  if(mid<0.){ col=back; }
+  if(mid<0.){
+    col=back;
+    // SHADOW CATCHER — an invisible plane that contributes ONLY occlusion. The form gets a
+    // real contact shadow to sit on, with no floor surface and no horizon line: the backdrop
+    // simply darkens where the form blocks the key light. Restricted to a disc around the
+    // form, both because a shadow has no business out at the horizon and because it bounds
+    // the cost — outside the disc this costs a ray-plane test and nothing else.
+    if(u_shadow>0.001 && rd.y<-1e-4){
+      float tp=(u_groundY-ro.y)/rd.y;
+      if(tp>0.02){
+        vec3 pg=ro+rd*tp;
+        float rr=dot(pg.xz,pg.xz);
+        if(rr<16.0){
+          float sh=calcSha(pg,Lw);                 // directional cast shadow
+          float ao=calcAO(pg,vec3(0,1,0));         // tight contact darkening
+          float k=clamp(1.0-sh*ao,0.,1.)*exp(-rr*0.34);   // tight pool, not a wash
+          col*=mix(1.0, 1.0-u_shadow, k);
+        }
+      }
+    }
+  }
   else if(mid>1.5){                                  // ---- STUDIO FLOOR ----
     vec3 p=ro+rd*t, gn=vec3(0,1,0);
     vec3 A,B; palAB(A,B);
@@ -557,7 +578,18 @@ void main(){
     c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
-    vec3 refl=env(R,rgh);
+    // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
+    // point, so concave areas reflect light the geometry actually blocks — which is what makes
+    // chrome read as a thin shell instead of a solid object. March a short ray along R and
+    // suppress the reflection where the form occludes itself.
+    float rocc=1.0;
+    { float tr=0.035;
+      for(int i=0;i<10;i++){
+        float hh=mapD(p+R*tr);
+        if(hh<0.004){ rocc=0.0; break; }
+        rocc=min(rocc,6.0*hh/tr); tr+=clamp(hh,0.03,0.35); if(tr>2.2) break; }
+      rocc=clamp(rocc,0.,1.); }
+    vec3 refl=env(R,rgh)*mix(0.22,1.0,rocc);
     // Schlick-with-roughness: the standard IBL Fresnel. The old pow(1-NoV,2.6) ramp ignored
     // roughness entirely, so a matte surface still lit a bright reflective rim and a polished
     // one never reached full grazing reflectance. Edge-on, smooth materials now go fully
@@ -599,7 +631,9 @@ void main(){
   // was mixing the backdrop straight into it — measurably ~15-20% darker and tinted toward the
   // background colour. That is the rendering quality bleeding away into whatever is behind it.
   // Opening at 6.5 leaves the subject untouched while distant floor still dissolves completely.
-  col=mix(col, back, smoothstep(6.5,15.0,t));
+  // ONLY for rays that hit something. On a miss col IS the background already, and running the
+  // fade there overwrote the shadow catcher's work with an unshadowed copy of the backdrop.
+  if(mid>=0.0) col=mix(col, back, smoothstep(6.5,15.0,t));
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
 }`;
 
@@ -787,6 +821,7 @@ let camAng=0, formSpin=0, rollS=0;
 let twA=3, twB=3, twMix=0;
 let scene=0;                                          // 0 colour field (default), 1 studio
 let groundY=-1.05;
+let SHADOW=0.55;      // shadow-catcher strength
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
 // One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
 // most electronic music, so a turn lines up with the structure the Director cuts sections on.
@@ -823,6 +858,15 @@ let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 //   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
 //   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
 const REACH=[1.27,1.20,1.03,1.15,1.00,0.90];
+// Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
+// sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
+// unit below the form and the contact shadow had nothing to make contact with.
+const REACH_Y=[0.38,1.00,0.98,0.80,0.72,0.90];
+function frameReachY(){
+  const r0=REACH_Y[mode]!==undefined?REACH_Y[mode]:0.9, r1=REACH_Y[mode2]!==undefined?REACH_Y[mode2]:0.9;
+  const k=(phase===1)?(mix*mix*(3-2*mix)):0;
+  return r0+(r1-r0)*k;
+}
 function frameReach(){                                 // blended across a morph, as the shader does
   const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
   const k=(phase===1)?(mix*mix*(3-2*mix)):0;           // same smoothstep the melt uses
@@ -1118,7 +1162,10 @@ function frame(){
   // deliberately left out of the compensation instead of being cancelled by the camera
   const sBase=Math.max(reform,0.2)*(1.0+energy*0.10)*0.95;
   const framed=2.0*fEff*reach*sBase/fill;
-  groundY=-(reach*sBase+0.02);   // floor sits just under the actual silhouette
+  // tilt swings the form's depth toward its radius, so blend between the two by the tilt
+  const ct=Math.abs(Math.cos(VAR.tilt)), st2=Math.abs(Math.sin(VAR.tilt));
+  const yExt=frameReachY()*ct+reach*st2;
+  groundY=-(yExt*sBase+0.05);     // just under the form's underside
   const dolly=framed*(1-HITS.low*0.055-HITS.sub*0.045);
   const ca=camAng+camKick, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
@@ -1171,6 +1218,7 @@ function frame(){
   gl.uniform3f(US('u_bgA'),BGA[0],BGA[1],BGA[2]); gl.uniform3f(US('u_bgB'),BGB[0],BGB[1],BGB[2]);
   gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_scene'),scene);
   gl.uniform1f(US('u_groundY'),groundY);
+  gl.uniform1f(US('u_shadow'),SHADOW);
   gl.uniform1f(US('u_twA'),twA); gl.uniform1f(US('u_twB'),twB);
   gl.uniform1f(US('u_twMix'), twMix>0 ? twMix*twMix*(3-2*twMix) : 0);
   gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
