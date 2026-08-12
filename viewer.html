@@ -61,7 +61,7 @@
     <option value="chrome">Chrome</option><option value="frosted">Frosted</option>
     <option value="holo">Holographic</option><option value="neon">Neon</option></select></div>
   <div class="row"><label>Scene</label><select id="selScene">
-    <option value="studio" selected>Studio</option><option value="field">Colour field</option></select></div>
+    <option value="field" selected>Colour field</option><option value="studio">Studio</option></select></div>
   <div class="row"><label>Look</label><select id="selLook">
     <option value="studio" selected>Studio</option>
     <option value="label">Label</option><option value="riso">Riso</option>
@@ -781,7 +781,7 @@ const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0, rollS=0;
 // Ribbon twist: integer only (see the shader note), latched and cross-faded so it never pops.
 let twA=3, twB=3, twMix=0;
-let scene=1;                                          // 1 studio, 0 colour field
+let scene=0;                                          // 0 colour field (default), 1 studio
 let groundY=-1.05;
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
 // One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
