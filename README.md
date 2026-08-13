@@ -90,11 +90,35 @@ washed-out backdrop, since the renderer slams saturation to derive the ink. `mon
 deliberately neutral: it produces the stark black & white press look.
 
 ## Rendering notes
-Raymarched SDF → RGBA16F → post. Quality is adaptive: `rscale` tracks frame time
-(0.50–1.0) so it holds framerate on weaker GPUs. Bloom comes off the half-float mip chain
-(4 taps, wide and soft) with a 25-tap fallback when a GPU can't mipmap RGBA16F. AO and a
-short soft shadow give the form volume — both use `mapD()`, which undoes the deliberate
-0.5 scaling `map()` applies, otherwise free space reads as fully occluded.
+Raymarched SDF → RGBA16F → post. Quality is adaptive: `rscale` tracks frame time so it
+holds framerate on weaker GPUs. Bloom comes off a dedicated half-res bright pass and the
+half-float mip chain, with a 25-tap fallback when a GPU can't mipmap RGBA16F. AO and a
+soft shadow give the form volume — both use `mapD()`, which undoes the deliberate 0.5
+scaling `map()` applies, otherwise free space reads as fully occluded.
+
+**Shadows.** The `Colour field` scene has none: the forms float clear of any ground, so a
+projected shadow reads as a second object rather than as contact, and it was removed for
+the same reason the ground plane before it was. `Studio` has a real floor and a real cast
+shadow.
+
+`calcSha()` does **not** sphere trace. Its penumbra estimate is `min(k*h/t)` along the ray,
+and a min over sparse samples is discontinuous in the shaded point, so a sphere trace's
+metre-long steps across open floor printed terraced contour rings. It instead intersects the
+bounding sphere analytically — no hit means lit, at zero field evaluations — then spends a
+fixed *count* of samples across the chord, so no sample can pop in or out.
+
+The deeper cause of the same rings: `map()`'s bounding-sphere early-out returns the distance
+to a sphere of radius 1.45 while the branch below returns the distance to the real form, and
+the two disagree at the switch. A raymarch tolerates that (the value is still a conservative
+lower bound); anything reading the field's *value* sees a cliff. The switch is pushed out to
+0.85 in the studio scene, which puts the disagreement beyond where it can darken anything
+visible, and left tight in the colour field, which has no floor to show it and spends the
+budget on resolution instead.
+
+**Debug hooks.** `QLOCK = true` freezes the adaptive quality governor; `TFREEZE = <seconds>`
+pins the clock *and* every dt-integrated value, which is the only way to A/B two builds on an
+identical frame. Both exist because reasoning about render defects instead of measuring them
+has cost several wrong fixes here.
 
 ## Next
 Camera + world evolution driven further by the Director State (per-section framing,

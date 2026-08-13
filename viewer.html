@@ -119,7 +119,7 @@ uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
-uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene,u_shadow;
+uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
 uniform float u_twA,u_twB,u_twMix;                  // ribbon twist cross-fade
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
@@ -267,9 +267,30 @@ vec2 map(vec3 wp){
   p/=s;
   // bounding sphere: every form lives inside r=1.3, so empty space is skipped without
   // ever touching a fractal estimator. This is what keeps the heavy modes affordable.
+  //
+  // The threshold used to be 0.10, and that was the source of the floor's contour rings. This
+  // branch returns the distance to a sphere of radius 1.45 while the branch below returns the
+  // distance to the actual form, and at the switch those disagree by the gap between the two —
+  // roughly 0.45. A raymarch tolerates it because the value is still a conservative lower bound,
+  // so it only costs a few extra steps. But anything that reads the field's VALUE rather than
+  // marching on it sees a cliff, and the soft shadow's min(k*h/t) reads the value: samples
+  // crossing this shell took a sudden dip, and since the crossing radius sweeps smoothly with the
+  // shaded point, the dip swept with it. Concentric rings, printed on the floor, exactly tracking
+  // the bounding sphere. Proven by forcing the true field everywhere, which removed every ring.
+  //
+  // The gap does not shrink with distance, but its VISIBILITY does: the spurious darkening is
+  // 7*br*s/t, so pushing the switch out to 0.85 means no shaded point within ~6 units of the shell
+  // can be darkened by it at all. Everything past radius 2.3 still skips the estimator, which is
+  // where nearly all of the empty space the early-out exists to skip actually lives.
+  //
+  // Gated on the scene, because widening the shell is not free — it makes the camera march
+  // evaluate the real estimator across a thicker band, measured at roughly a fifth of the render
+  // scale. Only the studio floor can display the rings (it is the only surface that reads the
+  // field's value at a distance); the colour field has no floor, so it keeps the tight shell and
+  // spends that budget on resolution instead.
   float br=length(p)-1.45;
   float dObj;
-  if(br>0.10) dObj=br*s*0.5;
+  if(br>mix(0.10,0.85,u_scene)) dObj=br*s*0.5;
   else{
   float d=evalMode(p,u_mode);
   // SMOOTHERSTEP (6t^5-15t^4+10t^3) rather than smoothstep. smoothstep has zero first derivative
@@ -349,13 +370,52 @@ float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
 // inside the bounding sphere, so once the ray is outside it and travelling outward nothing can
 // ever occlude it and the point is fully lit. Steps can also be much longer now that escaping
 // is cheap.
-float calcSha(vec3 p,vec3 l){ float r=1.,t=0.09;
-  for(int i=0;i<28;i++){ vec3 q=p+l*t;
-    if(dot(q,q)>2.9*2.9 && dot(q,l)>0.0) return clamp(smoothstep(0.,1.,r),0.,1.);
-    float h=mapD(q);
-    if(h<0.004) return 0.05;
-    r=min(r,7.0*h/t); t+=clamp(h,0.03,0.34); if(t>7.0) break; }
-  return clamp(smoothstep(0.,1.,r),0.,1.); }
+// SOFT SHADOW — rewritten around the actual cause of the floor's terraced contour rings.
+//
+// The penumbra estimate is min(k*h/t) accumulated along the light ray, and A MIN OVER SPARSE
+// SAMPLES IS DISCONTINUOUS IN THE SHADED POINT. A sphere trace crossing open floor takes steps of
+// a unit or more, so which sample lands nearest the form jumps as the floor point slides, and the
+// running minimum jumps with it. Measured by disabling that one line: every contour vanished and a
+// clean hard silhouette remained, so the march and the field were never at fault. Two earlier
+// attempts to keep sphere tracing and repair the estimate analytically (closest approach between
+// samples, from the previous distance and then from the step taken) both failed — they make the
+// sampled value smoother but do nothing about the sample POSITIONS, which is where the jump is.
+//
+// So: don't sphere trace. Every form lives inside r=2.3, so
+//   1. intersect the light ray with that sphere analytically. No hit ahead means nothing can
+//      occlude and the point is lit — the whole open floor now returns without a single field
+//      evaluation, where before it paid for a full march to discover the same thing.
+//   2. inside the sphere only, step a FIXED 0.09. Sample positions then move continuously with
+//      the shaded point, so the running minimum does too, and the chord is short enough to bound
+//      the cost. Fixed steps cannot skip the surface here because the step is far below the
+//      penumbra scale this is trying to resolve.
+float calcSha(vec3 p,vec3 l){
+  const float R=2.6;
+  float b=dot(p,l), c=dot(p,p)-R*R, disc=b*b-c;
+  if(disc<0.0) return 1.0;                       // ray misses the bounding sphere: lit
+  float sq=sqrt(disc), t1=-b+sq;
+  if(t1<=0.05) return 1.0;                       // sphere is behind the shaded point: lit
+  float t0=max(-b-sq, 0.05), r=1.0;
+  // A FIXED COUNT across the chord, not a fixed step. With a fixed step the sample count changes
+  // by one as the chord grows, and the sample that pops in or out at the far end takes the running
+  // minimum with it — the faint rings that survived every fix above. Distributing a constant number
+  // of samples over [t0,t1] makes every sample position a continuous function of the shaded point
+  // and never adds or removes one, so nothing can pop. It also spends the samples where they are
+  // needed: a grazing ray gets a fine step, a chord straight through the form gets a coarse one.
+  const int N=40;
+  float ds=(t1-t0)/float(N);
+  for(int i=0;i<N;i++){
+    float t=t0+(float(i)+0.5)*ds;
+    float h=mapD(p+l*t);
+    if(h<0.0015) return 0.0;
+    r=min(r, 7.0*h/t); }
+  // The sphere test is itself a hard cutoff, and a hard cutoff is a discontinuity: a ray grazing
+  // the sphere takes one sample at h ~ R minus the form's radius, and 7h/t drops below 1 for any
+  // shaded point far enough away, so the boundary printed a single crisp arc across the floor.
+  // Window the result by the chord actually traversed — at tangency the chord is zero and this
+  // returns exactly the unoccluded 1.0 that the outside branch returns, so the two agree.
+  float w=smoothstep(0.0,0.8,t1-t0);
+  return mix(1.0, clamp(smoothstep(0.,1.,r),0.,1.), w); }
 // A rectangular SOFTBOX projected into direction space. Real studio renders read as
 // "high class" because glossy surfaces reflect structured light sources with clean edges —
 // a single analytic sun gives a chrome ball nothing to show.
@@ -525,24 +585,13 @@ void main(){
   vec3 col;
   if(mid<0.){
     col=back;
-    // SHADOW CATCHER — an invisible plane that contributes ONLY occlusion. The form gets a
-    // real contact shadow to sit on, with no floor surface and no horizon line: the backdrop
-    // simply darkens where the form blocks the key light. Restricted to a disc around the
-    // form, both because a shadow has no business out at the horizon and because it bounds
-    // the cost — outside the disc this costs a ray-plane test and nothing else.
-    if(u_shadow>0.001 && rd.y<-1e-4){
-      float tp=(u_groundY-ro.y)/rd.y;
-      if(tp>0.02){
-        vec3 pg=ro+rd*tp;
-        float rr=dot(pg.xz,pg.xz);
-        if(rr<16.0){
-          float sh=calcSha(pg,Lw);                 // directional cast shadow
-          float ao=calcAO(pg,vec3(0,1,0));         // tight contact darkening
-          float k=clamp(1.0-sh*ao,0.,1.)*exp(-rr*0.34);   // tight pool, not a wash
-          col*=mix(1.0, 1.0-u_shadow, k);
-        }
-      }
-    }
+    // SHADOW CATCHER REMOVED. It projected the form's occlusion onto an invisible plane, and in
+    // the colour field there is no floor for it to belong to: the result was a large dark pool
+    // across the bottom of the frame, reading as a second object rather than as a shadow. It also
+    // banded — a wide, smooth radial falloff laid over a near-flat backdrop quantises into
+    // concentric contour rings in 8-bit, which no amount of tuning the falloff removes. This is
+    // the same failure the ground plane above was deleted for. The form floats in the field; the
+    // Studio scene still has a real floor and a real cast shadow, where one actually belongs.
   }
   else if(mid>1.5){                                  // ---- STUDIO FLOOR ----
     vec3 p=ro+rd*t, gn=vec3(0,1,0);
@@ -669,89 +718,6 @@ void main(){
   // fade there overwrote the shadow catcher's work with an unshadowed copy of the backdrop.
   if(mid>=0.0) col=mix(col, back, smoothstep(6.5,15.0,t));
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
-  // real depth too, so the GPU particle pass can be occluded by the form instead of drawing
-  // over it. Normalised against the same 20-unit far plane the particle pass uses.
-  gl_FragDepth=clamp(t/20.0,0.0,1.0);
-}`;
-
-/* ===================== GPU PARTICLE SYSTEM =====================
-   Positions live in a float texture and are advected entirely on the GPU — the CPU never
-   touches a particle. Motion comes from CURL NOISE: the curl of a vector potential is
-   divergence-free by construction, so the field can never compress particles into points or
-   thin them into voids the way raw fbm advection does. That is what makes it read as a fluid
-   rather than as drifting dots, and it is why sin/cos oscillation is the wrong tool here. */
-const SIM=`#version 300 es
-precision highp float;
-out vec4 o;
-uniform sampler2D u_pos;
-uniform vec2 u_pres;
-uniform float u_dt,u_time,u_energy,u_chaos,u_swirl,u_shell,u_attract,u_hLow;
-float h31(vec3 p){p=fract(p*.1031);p+=dot(p,p.zyx+31.32);return fract((p.x+p.y)*p.z);}
-float n3(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*(3.-2.*f);
-  float a=h31(i),b=h31(i+vec3(1,0,0)),c=h31(i+vec3(0,1,0)),d=h31(i+vec3(1,1,0));
-  float e=h31(i+vec3(0,0,1)),g=h31(i+vec3(1,0,1)),hh=h31(i+vec3(0,1,1)),k=h31(i+vec3(1,1,1));
-  return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,g,f.x),mix(hh,k,f.x),f.y),f.z);}
-float fb(vec3 p){float v=0.,a=.5,s=0.;for(int i=0;i<3;i++){v+=a*n3(p);s+=a;p=p*2.07+11.3;a*=.5;}return v/s;}
-vec3 potential(vec3 p){ return vec3(fb(p), fb(p+vec3(31.4,17.7,9.2)), fb(p-vec3(7.1,23.9,41.3))); }
-vec3 curl(vec3 p){
-  const float e=0.11;
-  vec3 px0=potential(p-vec3(e,0,0)), px1=potential(p+vec3(e,0,0));
-  vec3 py0=potential(p-vec3(0,e,0)), py1=potential(p+vec3(0,e,0));
-  vec3 pz0=potential(p-vec3(0,0,e)), pz1=potential(p+vec3(0,0,e));
-  vec3 c=vec3((py1.z-py0.z)-(pz1.y-pz0.y),
-              (pz1.x-pz0.x)-(px1.z-px0.z),
-              (px1.y-px0.y)-(py1.x-py0.x))/(2.0*e);
-  return c;
-}
-void main(){
-  ivec2 ic=ivec2(gl_FragCoord.xy);
-  vec4 P=texelFetch(u_pos,ic,0);
-  vec3 p=P.xyz; float life=P.w;
-  float seed=float(ic.x)*0.017+float(ic.y)*0.113;
-  life-=u_dt*(0.10+u_energy*0.20);
-  if(life<=0.0 || dot(p,p)>36.0){                       // respawn on a shell around the form
-    vec3 r=vec3(h31(vec3(seed,u_time,1.7)),h31(vec3(seed,u_time,5.3)),h31(vec3(seed,u_time,9.1)))*2.0-1.0;
-    p=normalize(r+1e-4)*(u_shell*(0.85+0.5*h31(vec3(seed,u_time,3.3))));
-    life=0.65+0.35*h31(vec3(seed,u_time,2.2));
-  }
-  vec3 v=curl(p*(0.55+u_chaos*0.55)+vec3(0.0,u_time*0.05,0.0))*u_swirl;
-  float d=length(p)-u_shell;                            // hold the cloud around the form
-  v-=normalize(p+1e-5)*d*u_attract;
-  v+=normalize(p+1e-5)*u_hLow*0.9;                      // kick pushes the cloud outward
-  p+=v*u_dt;
-  o=vec4(p,life);
-}`;
-
-const PVERT=`#version 300 es
-precision highp float;
-uniform sampler2D u_pos; uniform vec2 u_pres;
-uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov,u_aspect,u_psize,u_rs;
-out float v_life; out float v_z;
-void main(){
-  int W=int(u_pres.x);
-  ivec2 c=ivec2(gl_VertexID%W, gl_VertexID/W);
-  vec4 P=texelFetch(u_pos,c,0);
-  vec3 rel=P.xyz-u_ro;
-  float z=dot(rel,u_fw);
-  if(z<0.05){ gl_Position=vec4(2.,2.,2.,1.); gl_PointSize=0.; v_life=0.; v_z=1.; return; }
-  float f=0.5/tan(u_fov*0.5);
-  vec2 sc=vec2(dot(rel,u_rt),dot(rel,u_up))*f/z;
-  gl_Position=vec4(sc.x/(0.5*u_aspect), sc.y/0.5, clamp(z/20.0,0.,1.)*2.0-1.0, 1.0);
-  gl_PointSize=max(1.0, u_psize*u_rs/max(z,0.3));
-  v_life=P.w; v_z=z;
-}`;
-
-const PFRAG=`#version 300 es
-precision highp float;
-in float v_life; in float v_z;
-out vec4 o;
-uniform vec3 u_tint; uniform float u_bright;
-void main(){
-  vec2 d=gl_PointCoord*2.0-1.0;
-  float r=dot(d,d); if(r>1.0) discard;
-  float a=(1.0-r)*(1.0-r)*clamp(v_life,0.,1.);         // soft round sprite, fades with life
-  a*=clamp(1.0-(v_z-2.0)/14.0,0.05,1.0);               // distance falloff
-  o=vec4(u_tint*u_bright*a, a);
 }`;
 
 const BRIGHT=`#version 300 es
@@ -901,20 +867,17 @@ function sh(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.co
 function prog(vs,fs){const p=gl.createProgram();gl.attachShader(p,sh(gl.VERTEX_SHADER,vs));
   gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);
   if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));return p;}
-let sceneP,postP,brightP,simP,partP,buf,hdrT,hdrF,brtT,brtF,BW,BH,hdrD;
-/* GPU particles: positions in a float texture, ping-ponged. PW*PH particles, CPU-untouched. */
-let PW=384, PH=384, posT=[null,null], posF=[null,null], posI=0, partsOK=false;
+let sceneP,postP,brightP,buf,hdrT,hdrF,brtT,brtF,BW,BH;
 try{ sceneP=prog(VERT,SCENE); postP=prog(VERT,POST); brightP=prog(VERT,BRIGHT);
-     simP=prog(VERT,SIM); partP=prog(PVERT,PFRAG); }catch(e){ showStat('Shader error: '+e.message,true); throw e; }
+     }catch(e){ showStat('Shader error: '+e.message,true); throw e; }
 buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
 const aScene=gl.getAttribLocation(sceneP,'p'), aPost=gl.getAttribLocation(postP,'p'),
-      aBright=gl.getAttribLocation(brightP,'p'), aSim=gl.getAttribLocation(simP,'p');
+      aBright=gl.getAttribLocation(brightP,'p');
 function drawFS(a){gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.enableVertexAttribArray(a);
   gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);gl.drawArrays(gl.TRIANGLES,0,3);}
 const US=n=>gl.getUniformLocation(sceneP,n), UP=n=>gl.getUniformLocation(postP,n),
-      UB=n=>gl.getUniformLocation(brightP,n), UM=n=>gl.getUniformLocation(simP,n),
-      UT=n=>gl.getUniformLocation(partP,n);
+      UB=n=>gl.getUniformLocation(brightP,n);
 let mipOK=false;
 function initTargets(w,h){
   if(!floatOK) return;
@@ -926,12 +889,6 @@ function initTargets(w,h){
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   hdrF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,hdrF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,hdrT,0);
-  // depth buffer: the scene writes gl_FragDepth, so the particle pass can depth-test against
-  // the form and be hidden behind it rather than drawing through it
-  if(hdrD) gl.deleteRenderbuffer(hdrD);
-  hdrD=gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER,hdrD);
-  gl.renderbufferStorage(gl.RENDERBUFFER,gl.DEPTH_COMPONENT24,w,h);
-  gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,hdrD);
   gl.bindFramebuffer(gl.FRAMEBUFFER,null);
   // half-res bright-pass target; bloom is gathered from its mip chain
   BW=Math.max(2,w>>1); BH=Math.max(2,h>>1);
@@ -962,31 +919,7 @@ function applyScale(){ RW=Math.max(2,Math.round(glc.width*rscale)); RH=Math.max(
 let dprScale=1.0;
 function resize(){ dpr=Math.min(devicePixelRatio||1,2)*dprScale; glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
 addEventListener('resize',resize);resize();
-function initParticles(){
-  if(!floatOK) return;
-  const n=PW*PH, data=new Float32Array(n*4);
-  for(let i=0;i<n;i++){                                   // seed on a shell, random lifetimes
-    let x=Math.random()*2-1,y=Math.random()*2-1,z=Math.random()*2-1;
-    const L=Math.hypot(x,y,z)||1; const r=1.5*(0.85+Math.random()*0.5);
-    data[i*4]=x/L*r; data[i*4+1]=y/L*r; data[i*4+2]=z/L*r; data[i*4+3]=Math.random();
-  }
-  for(let i=0;i<2;i++){
-    if(posT[i]) gl.deleteTexture(posT[i]); if(posF[i]) gl.deleteFramebuffer(posF[i]);
-    posT[i]=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,posT[i]);
-    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA32F,PW,PH,0,gl.RGBA,gl.FLOAT,i===0?data:null);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
-    posF[i]=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,posF[i]);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,posT[i],0);
-    if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE){
-      gl.bindFramebuffer(gl.FRAMEBUFFER,null); return; }
-  }
-  gl.bindFramebuffer(gl.FRAMEBUFFER,null); posI=0; partsOK=true;
-}
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
-initParticles();
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
@@ -1022,8 +955,6 @@ let camAng=0, formSpin=0, rollS=0;
 let twA=3, twB=3, twMix=0;
 let scene=0;                                          // 0 colour field (default), 1 studio
 let groundY=-1.05;
-let SHADOW=0.55;      // shadow-catcher strength
-let PARTICLES=true;
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
 // One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
 // most electronic music, so a turn lines up with the structure the Director cuts sections on.
@@ -1226,7 +1157,7 @@ const sm=(a,b,r,dt)=>a+(b-a)*(1-Math.exp(-r*dt));
    this line is interpretation; everything below only ever reads VS. Each dimension is
    critically-damped SPRING interpolated rather than exponentially smoothed: a spring carries
    velocity, so the state arrives with momentum and settles instead of easing flatly in. */
-const VS ={energy:0.3,aggression:0.2,brightness:0.4,chaos:0.2,particleDensity:0.4,
+const VS ={energy:0.3,aggression:0.2,brightness:0.4,chaos:0.2,
            cameraVelocity:0.2,geometryDeformation:0.3,materialReflectivity:0.4,sceneComplexity:0.4};
 const VSv=Object.fromEntries(Object.keys(VS).map(k=>[k,0]));   // spring velocities
 function springTo(target,dt,f){                                 // f = natural frequency (Hz-ish)
@@ -1240,7 +1171,13 @@ function springTo(target,dt,f){                                 // f = natural f
 let last=performance.now(), t0=last;
 function frame(){
   requestAnimationFrame(frame);
-  const now=performance.now(); let dt=Math.min(.05,(now-last)/1000); last=now; const time=(now-t0)/1000;
+  // TFREEZE pins the clock so the camera stops, which is the only way to A/B two builds on the
+  // same frame. Companion to QLOCK; both exist because reasoning about render defects instead of
+  // measuring them has cost several wrong fixes here.
+  const now=performance.now(); let dt=Math.min(.05,(now-last)/1000); last=now;
+  let time=(now-t0)/1000;
+  if(window.TFREEZE!=null){ time=window.TFREEZE; dt=0; }   // pins clock AND every dt-integrated
+  // value (camera angle, spin, springs) — pinning the clock alone leaves the orbit still moving.
   frameAvg += (Math.min(80,dt*1000)-frameAvg)*0.1;   // adaptive quality: scale render res to hold fps
   if(now-lastQ>500){ lastQ=now;
     // ceiling is 1.45: above 1.0 the march genuinely supersamples, which the post pass
@@ -1332,7 +1269,6 @@ function frame(){
   // interpretation -> visual state (never audio -> visuals)
   springTo({ energy, aggression:Math.min(1,tension*0.7+BND.high*0.5),
              brightness:bright, chaos:Math.min(1,flux*0.6+tension*0.5),
-             particleDensity:Math.min(1,0.25+energy*0.7+BND.air*0.3),
              cameraVelocity:Math.min(1,CM.spin*1.6+energy*0.4),
              geometryDeformation:Math.min(1,energy*0.5+tension*0.5),
              materialReflectivity:MAT.reflect, sceneComplexity:Math.min(1,0.3+energy*0.5+epic*0.3) }, dt, 0.55);
@@ -1421,8 +1357,6 @@ function frame(){
   const target = floatOK?hdrF:null;
   const sw = floatOK?RW:W, sh = floatOK?RH:H;                 // raymarch at reduced res
   gl.useProgram(sceneP); gl.bindFramebuffer(gl.FRAMEBUFFER,target); gl.viewport(0,0,sw,sh);
-  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.ALWAYS); gl.depthMask(true);
-  gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.uniform2f(US('u_res'),sw,sh); gl.uniform1f(US('u_time'),time);
   gl.uniform3f(US('u_ro'),roX,roY,roZ); gl.uniform3f(US('u_rt'),rx,ry,rz);
   gl.uniform3f(US('u_up'),ux,uy,uz); gl.uniform3f(US('u_fw'),fx,fy,fz); gl.uniform1f(US('u_fov'),fovY);
@@ -1453,7 +1387,6 @@ function frame(){
   gl.uniform3f(US('u_bgA'),BGA[0],BGA[1],BGA[2]); gl.uniform3f(US('u_bgB'),BGB[0],BGB[1],BGB[2]);
   gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_scene'),scene);
   gl.uniform1f(US('u_groundY'),groundY);
-  gl.uniform1f(US('u_shadow'),SHADOW);
   // brighter, more positive sections separate further into two colourways
   gl.uniform1f(US('u_twoTone'), 0.30+valence*0.45+epic*0.15);
   gl.uniform1f(US('u_twA'),twA); gl.uniform1f(US('u_twB'),twB);
@@ -1465,44 +1398,6 @@ function frame(){
   gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough);
   drawFS(aScene);
-  gl.disable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
-
-  /* ---- GPU PARTICLES: simulate on the GPU, then composite additively into the HDR scene,
-     depth-tested against the form so the cloud passes behind it as well as in front. ---- */
-  if(partsOK && floatOK && PARTICLES){
-    const nxt=posI^1;
-    gl.useProgram(simP); gl.bindFramebuffer(gl.FRAMEBUFFER,posF[nxt]); gl.viewport(0,0,PW,PH);
-    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,posT[posI]);
-    gl.uniform1i(UM('u_pos'),3); gl.uniform2f(UM('u_pres'),PW,PH);
-    gl.uniform1f(UM('u_dt'),Math.min(dt,0.033)); gl.uniform1f(UM('u_time'),time);
-    gl.uniform1f(UM('u_energy'),VS.energy); gl.uniform1f(UM('u_chaos'),VS.chaos);
-    gl.uniform1f(UM('u_swirl'),0.30+VS.chaos*0.85+VS.energy*0.35);
-    gl.uniform1f(UM('u_shell'),1.55+VS.sceneComplexity*0.35);
-    gl.uniform1f(UM('u_attract'),1.6+VS.energy*1.2);
-    gl.uniform1f(UM('u_hLow'),HITS.low);
-    drawFS(aSim);
-    posI=nxt;
-    // draw into the HDR buffer, over the scene
-    gl.useProgram(partP); gl.bindFramebuffer(gl.FRAMEBUFFER,floatOK?hdrF:null); gl.viewport(0,0,sw,sh);
-    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(false);
-    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE,gl.ONE);
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,posT[posI]);
-    gl.uniform1i(UT('u_pos'),3); gl.uniform2f(UT('u_pres'),PW,PH);
-    gl.uniform3f(UT('u_ro'),roX,roY,roZ); gl.uniform3f(UT('u_rt'),rx,ry,rz);
-    gl.uniform3f(UT('u_up'),ux,uy,uz); gl.uniform3f(UT('u_fw'),fx,fy,fz);
-    gl.uniform1f(UT('u_fov'),fovY); gl.uniform1f(UT('u_aspect'),sw/sh);
-    // point size is divided by view distance (~4 units), so a value of ~4 rendered a 1.3px
-    // sprite — present in the framebuffer and invisible to the eye. Sized for ~4-8px.
-    gl.uniform1f(UT('u_psize'),15.0+VS.sceneComplexity*14.0); gl.uniform1f(UT('u_rs'),rscale);
-    gl.uniform3f(UT('u_tint'),MO[0],MO[1],MO[2]);
-    // additive over a bright colour field: 0.06 was mathematically present and visually absent
-    // with real coverage the per-particle contribution has to come back down or 147k sprites
-    // integrate to a white wash
-    gl.uniform1f(UT('u_bright'),(0.035+VS.particleDensity*0.10)*(0.7+pulseS*0.6));
-    gl.drawArrays(gl.POINTS,0,PW*PH);
-    gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST); gl.depthMask(true);
-  }
 
   if(floatOK){
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
