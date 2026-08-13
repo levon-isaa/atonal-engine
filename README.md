@@ -75,9 +75,12 @@ frequency — `freq * amp` must stay bounded or the field stops being a valid SD
 raymarch creases.
 
 ## Viewer controls (top right)
-- **Shape** — `Auto · Director` lets the Director pick, or lock one of Organic / Helix / Gem / Petals / Twist.
+- **Shape** — `Auto · Director` lets the Director pick, or lock one of Pods / Ribbon /
+  Tower / Gyroscope / Space Frame / Shell.
 - **Material** — Pearl, Iridescent, Chrome, Frosted, Holographic, Neon.
-- **Look** — the *press grade*, i.e. the label aesthetic. `Label` (default), `Riso`,
+- **Scene** — `Colour field` (default) floats the form in the fluid backdrop with no ground.
+  `Studio` puts it in a lit cyclorama with a real floor and a cast shadow.
+- **Look** — the *press grade*, i.e. the label aesthetic. `Studio`, `Label`, `Riso`,
   `Xerox`, `Halftone`, `Chrome`, `Clean`. Drives duotone ink separation, posterisation,
   ordered dither, dot screen, misregistration/chromatic split and grain.
 - **Palette / Colors** — background colourway. `Auto · Director` takes the hue from the
