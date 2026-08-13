@@ -77,24 +77,17 @@ raymarch creases.
 ## Viewer controls (top right)
 - **Shape** — `Auto · Director` lets the Director pick, or lock one of Pods / Ribbon /
   Tower / Gyroscope / Space Frame / Shell.
-- **Material** — Pearl, Glass, Clay, Fur, Frosted, Holographic. Glass **marches its own
+- **Material** — Pearl, Glass, Clay, Frosted, Holographic. Glass **marches its own
   interior**: the field is negative inside the form, so `-mapD` carries the refracted ray to where
   it actually leaves. That gives thickness, which drives Beer-Lambert absorption so thin edges stay
   clear and the body deepens in colour, and a second refraction at the exit surface, where the
   dispersion is applied. Refracting once at the front surface treats the form as an infinitely thin
   shell — it bends the view but has no inside, which is why it read as a soap film.
   Clay has **no surface at all**: `tamp:0` early-outs the texture normal and `trough:0` early-outs
-  the roughness variation *and* zeroes the albedo grain, which is scaled by it. Fur has **real strand geometry** — the SDF
-  is displaced by squashed, squared noise inside a thin shell around the surface — plus a grazing
-  sheen and a wrapped diffuse so it has no hard terminator. Clay is fully matte: `spec:0` gates
+  the roughness variation *and* zeroes the albedo grain, which is scaled by it. Clay is fully matte: `spec:0` gates
   the direct lobe as well as the environment reflection, and it carries its own lower albedo,
   because the shared near-white base blew out across every lit face.
 
-Displacing the field raises its Lipschitz constant to about `1 + 2*A*F`, and the march may only
-step by `distance/L` or it cuts the corner off every strand and the surface creases. `u_hairStep`
-carries that bound, derived in JS from the same two numbers the shader displaces with. It is
-applied **only inside the strand shell** — scaling the whole field by it slows the entire approach
-through empty space and cost fur 42 fps down to 13.9.
 
 Surface detail is **procedural** — there are no image textures, so there is no map resolution to
 raise. Detail is amplitude x frequency, and the lever is the per-material base frequency `tscale`,
