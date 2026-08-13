@@ -747,7 +747,7 @@ out vec4 o;
 uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
 uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
-uniform float u_focus,u_dof;
+uniform float u_dbg;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
 float lum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}
@@ -769,6 +769,12 @@ float r2(vec2 p){return fract(dot(p,vec2(0.7548776662,0.5698402909)));}
 // energy-preserving. No knee here — doing it per mip sample was the bug.
 vec3 bloom(vec2 uv,vec2 t){
   if(u_mip>0.5){
+    // Tap weights left alone deliberately. Shifting weight off the tightest mip (1.2 -> 2.4 and
+    // friends) to move the glow from an outline to a broad lift was TRIED AND MEASURED, and it
+    // made the halo more than twice as bad: near-edge excess 11.8 -> 25.1 at a fixed threshold.
+    // A wider tap gathers from a much larger area of a large bright subject, so it deposits more
+    // energy everywhere including the bands right next to the silhouette. The threshold, not the
+    // tap radius, is the lever that controls how much of the form enters the bloom at all.
     return textureLod(u_brt,uv,1.2).rgb*0.42
          + textureLod(u_brt,uv,3.0).rgb*0.34
          + textureLod(u_brt,uv,5.0).rgb*0.24; }   // 3 taps, same total weight
@@ -789,6 +795,10 @@ vec3 duo(float l){
 }
 void main(){
   vec2 uv=gl_FragCoord.xy/u_res,t=u_texel;      // offsets in SOURCE texels so AA/sharpen actually bite
+  // DBGMASK: output the depth-derived silhouette instead of the image. Edge artefacts have to be
+  // measured against the EXACT silhouette, not one guessed from luminance, or the measurement
+  // inherits the very halo it is trying to find.
+  if(u_dbg>0.5){ o=vec4(vec3(texture(u_tex,uv).a<17.0?1.0:0.0),1.0); return; }
   vec3 col;
   if(u_ss>0.5){                                 // supersampled: resolve real samples with a 4-tap tent
     // Footprint must match the RATIO. One output pixel covers u_ssRatio source texels, so taps
@@ -798,28 +808,20 @@ void main(){
     col=(texture(u_tex,uv+vec2(-h.x,-h.y)).rgb+texture(u_tex,uv+vec2(h.x,-h.y)).rgb
         +texture(u_tex,uv+vec2(-h.x, h.y)).rgb+texture(u_tex,uv+vec2(h.x, h.y)).rgb)*0.25;
   } else col=fxaa(uv,t);
-  // DEPTH OF FIELD — the single strongest "expensive render" cue. Circle of confusion from
-  // the depth in alpha, blurred by reading further up the mip chain we already build.
-  if(u_dof>0.001 && u_mip>0.5){
-    float z=texture(u_tex,uv).a;
-    // a sharp focal BAND, not a plane: the whole form stays crisp, only what sits well
-    // behind it falls away. Blurring the subject reads as a soft render, not a shallow lens.
-    float coc=clamp((abs(z-u_focus)-0.55)*u_dof,0.,1.);
-    coc*=coc;
-    // the blurred tap was fetched for every pixel and then mixed at zero weight across the
-    // whole in-focus subject — skip it there instead of paying for it and discarding it
-    if(coc>0.002){
-      vec4 b=textureLod(u_tex,uv,coc*3.2);
-      // DEPTH-AWARE BLEND. b.a is the AVERAGE depth over the blurred neighbourhood (mip
-      // generation averages alpha along with colour). Where a background pixel sits next to
-      // the subject, that neighbourhood is dominated by the subject and is much NEARER than
-      // this pixel — blending it in is what smeared the form outward as a glowing halo.
-      // Rejecting the blur exactly where the neighbourhood disagrees on depth removes the
-      // halo while leaving open background fully blurred.
-      float agree=1.0-clamp((z-b.a)/(0.35*z+0.5), 0., 1.);
-      col=mix(col, b.rgb, clamp(coc*1.25,0.,1.)*agree);
-    }
-  }
+  // DEPTH OF FIELD REMOVED — measured out, not opinion. Its entire visible effect was the halo
+  // the user kept reporting around the silhouette. Ablating it and differencing frames on a frozen
+  // camera, by distance from the exact depth-derived silhouette:
+  //     1-6px  RMS 9.06   6-14px RMS 6.66   14-25px RMS 1.10   25-60px RMS 0.14   60+ RMS 0.13
+  // Beyond 25px it moved the image by an eighth of one 8-bit level, in BOTH scenes (studio: 0.08).
+  // The reason is structural: this is a mip-tap defocus, and both backdrops are smooth — the fluid
+  // colour field is low-frequency by construction and the studio cyclorama is a gradient. Blurring
+  // smooth content is a no-op, so the only thing in reach of the blur kernel with any contrast in
+  // it was the subject, and every visible pixel DOF produced was subject colour smeared outward.
+  // The depth-aware rejection added earlier cut that down but could not remove it: it tests the
+  // MIP-AVERAGED depth, and by ~10px out that average has settled to background depth while the
+  // mip texel still carries subject energy gathered from a wide neighbourhood. A mip cannot be
+  // un-averaged after the fact; fixing this properly means a per-tap-rejected gather, which is
+  // real cost for an effect measured at 0.13/255 of actual defocus. So it goes.
   if(u_chroma>0.001){                            // misregistration / lens split
     vec2 d=uv-0.5; float k=u_chroma*0.007*(0.25+dot(d,d)*3.0);
     col.r=texture(u_tex,uv+d*k).r; col.b=texture(u_tex,uv-d*k).b; }
@@ -922,6 +924,7 @@ addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
+const DX={bloom:1,chroma:1,sharpen:1,thr:1};   // per-term ablation switches for measuring edge artefacts
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -1076,13 +1079,13 @@ const inkB=()=>bgPair()[1];
 /* ---- LOOK: the press/print grade. This is what carries the label aesthetic. ---- */
 const LOOKS={
   // pristine product-render grade: no print texture at all, let the lighting do the work
-  studio:  {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.00,grain:0.10,contrast:-0.06,sat:0.08,sharp:0.22,dof:0.42},
-  clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.06,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30,dof:0.28},
-  label:   {ink:0.62,poster:0, dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42,dof:0.22},
-  riso:    {ink:0.88,poster:7, dither:0.80,half:0.00,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50,dof:0.12},
-  xerox:   {ink:1.00,poster:3, dither:1.10,half:0.00,chroma:0.20,grain:1.35,contrast:0.85,sat:-0.30,sharp:0.60,dof:0.00},
-  halftone:{ink:0.92,poster:5, dither:0.25,half:0.75,chroma:0.35,grain:0.70,contrast:0.55,sat:0.00,sharp:0.55,dof:0.00},
-  chrome:  {ink:0.22,poster:0, dither:0.15,half:0.00,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38,dof:0.35},
+  studio:  {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.00,grain:0.10,contrast:-0.06,sat:0.08,sharp:0.22},
+  clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.06,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30},
+  label:   {ink:0.62,poster:0, dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42},
+  riso:    {ink:0.88,poster:7, dither:0.80,half:0.00,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50},
+  xerox:   {ink:1.00,poster:3, dither:1.10,half:0.00,chroma:0.20,grain:1.35,contrast:0.85,sat:-0.30,sharp:0.60},
+  halftone:{ink:0.92,poster:5, dither:0.25,half:0.75,chroma:0.35,grain:0.70,contrast:0.55,sat:0.00,sharp:0.55},
+  chrome:  {ink:0.22,poster:0, dither:0.15,half:0.00,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38},
 };
 const LK =Object.assign({},LOOKS.studio), LKT=Object.assign({},LOOKS.studio);
 
@@ -1406,7 +1409,14 @@ function frame(){
     gl.useProgram(brightP); gl.bindFramebuffer(gl.FRAMEBUFFER,brtF); gl.viewport(0,0,BW,BH);
     gl.uniform1i(UB('u_tex'),0); gl.uniform2f(UB('u_res'),BW,BH); gl.uniform2f(UB('u_src'),1/RW,1/RH);
     // threshold tracks exposure, so bloom picks up what will actually blow out after tonemapping
-    gl.uniform1f(UB('u_thr'), 0.95/Math.max(0.35, 0.82+energy*0.45+pulseS*0.12+HITS.low*0.10));
+    // BLOOM THRESHOLD, raised 2.6x. At the old threshold most of a lit pearl body cleared the
+    // knee, so the bloom source was the whole form and what it drew was an outline traced around
+    // the silhouette — the glow the user reported. Measured against an exact depth-derived
+    // silhouette, near-edge excess (2-12px) fell 11.8 -> 1.5 over the background gradient, an 87%
+    // cut, while mean luminance INSIDE the silhouette moved 154.2 -> 153.4. Bloom's entire visible
+    // output was the ring; raising the threshold costs essentially nothing on the form itself and
+    // leaves genuine speculars, which sit far above the knee, still blooming.
+    gl.uniform1f(UB('u_thr'), DX.thr*2.6*0.95/Math.max(0.35, 0.82+energy*0.45+pulseS*0.12+HITS.low*0.10));
     drawFS(aBright);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,brtT);
     if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);
@@ -1418,16 +1428,16 @@ function frame(){
     gl.uniform1f(UP('u_ss'),rscale>1.05?1:0);
     gl.uniform1f(UP('u_ssRatio'),rscale);
     // focus on the form itself; everything behind it falls away into a soft wash
-    gl.uniform1f(UP('u_focus'),CM.dist*0.94); gl.uniform1f(UP('u_dof'),LK.dof);
+    gl.uniform1f(UP('u_dbg'),window.DBGMASK?1:0);
     // underground grade: darker, grittier, higher contrast
-    gl.uniform1f(UP('u_bloom'),0.34+energy*0.6+pulseS*0.24+HITS.high*0.22+HITS.air*0.14);
+    gl.uniform1f(UP('u_bloom'),(0.34+energy*0.6+pulseS*0.24+HITS.high*0.22+HITS.air*0.14)*DX.bloom);
     gl.uniform1f(UP('u_sat'),0.82+valence*0.25+LK.sat);
     gl.uniform1f(UP('u_vig'),0.75+darkness*0.35);
     gl.uniform1f(UP('u_expo'),0.82+energy*0.45+pulseS*0.12+HITS.low*0.10);
     gl.uniform1f(UP('u_contrast'),0.45+tension*0.30+LK.contrast); gl.uniform1f(UP('u_grain'),(0.35+darkness*0.30)*LK.grain);
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
     // press grade
-    gl.uniform1f(UP('u_sharpen'),LK.sharp); gl.uniform1f(UP('u_chroma'),LK.chroma);
+    gl.uniform1f(UP('u_sharpen'),LK.sharp*DX.sharpen); gl.uniform1f(UP('u_chroma'),LK.chroma*DX.chroma);
     gl.uniform1f(UP('u_ink'),LK.ink); gl.uniform1f(UP('u_poster'),LK.poster);
     gl.uniform1f(UP('u_dither'),LK.dither); gl.uniform1f(UP('u_half'),LK.half);
     const iA=inkA(), iB=inkB();
