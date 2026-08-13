@@ -78,8 +78,17 @@ raymarch creases.
 - **Shape** — `Auto · Director` lets the Director pick, or lock one of Pods / Ribbon /
   Tower / Gyroscope / Space Frame / Shell.
 - **Material** — Pearl, Glass, Clay, Fur, Frosted, Holographic. Glass refracts the *backdrop*
-  along the refracted ray with per-channel dispersion; Fur uses a grazing sheen plus a wrapped
-  diffuse so it has no hard terminator; Clay is smooth and matte with large-scale forming.
+  along the refracted ray with per-channel dispersion. Fur has **real strand geometry** — the SDF
+  is displaced by squashed, squared noise inside a thin shell around the surface — plus a grazing
+  sheen and a wrapped diffuse so it has no hard terminator. Clay is fully matte: `spec:0` gates
+  the direct lobe as well as the environment reflection, and it carries its own lower albedo,
+  because the shared near-white base blew out across every lit face.
+
+Displacing the field raises its Lipschitz constant to about `1 + 2*A*F`, and the march may only
+step by `distance/L` or it cuts the corner off every strand and the surface creases. `u_hairStep`
+carries that bound, derived in JS from the same two numbers the shader displaces with. It is
+applied **only inside the strand shell** — scaling the whole field by it slows the entire approach
+through empty space and cost fur 42 fps down to 13.9.
 
 Surface detail is **procedural** — there are no image textures, so there is no map resolution to
 raise. Detail is amplitude x frequency, and the lever is the per-material base frequency `tscale`,

@@ -117,6 +117,7 @@ uniform float u_spin;
 uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans,u_sheen;
+uniform float u_spec,u_hair,u_hairF,u_hairStep,u_alb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
@@ -325,13 +326,37 @@ vec2 map(vec3 wp){
   // read as jiggle even after the rotation was cleaned up. Slowed hard so the detail rides WITH
   // the form and the eye tracks the spin instead of the churn.
   d+=(fbm(p*nf+u_time*(0.030+u_hAir*0.09))-0.5)*na*(2.0/nf);
+  // FUR STRANDS — actual geometry, not a normal-map suggestion. Shading alone gives velvet: to
+  // read as fur the silhouette has to break up, and only real displacement does that.
+  // The noise domain is squashed 5:1 on y, so features come out ELONGATED — that is what makes
+  // them strands rather than pits. Squaring concentrates them into separated tufts with gaps
+  // between, which is what fur looks like; raw fbm gives an even corrugation.
+  // Confined to a shell around the surface (k) so the deep field is untouched and the extra cost
+  // is paid only by rays that are already close to landing. The ramp is smooth on purpose — a
+  // hard cut-in is a discontinuity in the field's VALUE, and the soft shadow reads values.
+  float hk=0.0;
+  if(u_hair>0.0001){
+    hk=1.0-smoothstep(0.02,0.13,d);
+    if(hk>0.001){
+      float st=fbm(p*vec3(u_hairF,u_hairF*0.20,u_hairF));
+      d-=st*st*u_hair*hk;
+    }
+  }
   // mid-band onset -> a shockwave ring travelling out through the surface
   if(u_shockA>0.002){
     float rr=length(p);
     float ring=exp(-pow(rr-u_shock*1.15,2.0)*7.0);
     d+=sin((rr-u_shock*1.15)*12.0)*ring*u_shockA*0.013;
   }
-  dObj=d*s*0.5;
+  // u_hairStep shrinks the reported distance where strands are on. Displacing by amplitude A at
+  // frequency F raises the field's Lipschitz constant to about 1+2*A*F, and a march may only step
+  // by distance/L or it cuts the corner off every strand and the surface creases. The JS derives
+  // the divisor from the same two numbers it uploads, so the two can never drift apart.
+  // Applied through hk, so it is paid ONLY inside the strand shell. Scaling the whole field by it
+  // instead — which is what the first version did — slowed the entire approach through empty space
+  // by the same factor and cost fur 42 fps down to 13.9, for a bound that only the last hundredth
+  // of a unit actually needs.
+  dObj=d*s*0.5*mix(1.0,u_hairStep,hk);
   }
   return vec2(dObj,1.0);
 }
@@ -653,7 +678,12 @@ void main(){
     vec3 pA,pB; palAB(pA,pB);
     float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30)+(av-0.5)*0.55, 0., 1.);
     vec3 tint=mix(u_mood, clamp(pB*1.12,0.,1.), smoothstep(0.18,0.82,sweep)*u_twoTone);
-    vec3 base=mix(vec3(0.9), tint, 0.68)*(1.0+(av-0.5)*u_txRough*0.16);
+    // u_alb is a per-material albedo scale. The shared 0.9 base is right for pearl and frosted,
+    // which are near-white by nature, but it left clay blowing out to paper white across every lit
+    // face — measured at 1.66% of the upper frame above 225/255, of which only a fifth came from
+    // the surface texture; the rest was simply a very bright diffuse clipping. Real clay is a
+    // mid-tone, and dropping the albedo is what makes it read as clay rather than lit plaster.
+    vec3 base=mix(vec3(0.9), tint, 0.68)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
     vec3 f0=mix(vec3(0.04), base, u_metal);
     // thin-film colour, shifted by the micro surface so it mottles like real pearl
     vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+av*0.7+u_time*0.03+u_iridHue+u_hAir*0.25)
@@ -678,7 +708,9 @@ void main(){
     vec3 c=base*(1.-u_metal)*( keyC*(0.95*NoLw*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
                              + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
-    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
+    // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
+    // not to zero, because it is how the section's valence reaches the form at all.
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
@@ -751,7 +783,10 @@ void main(){
     // D explodes as roughness -> 0 (a mirror lit by a point light is a singularity). Clamp the
     // lobe, or a smooth material fires single-pixel white sparks that bloom into blown blobs.
     vec3 spec=min(Fs*(D*G/(4.0*NoV)), vec3(24.0));
-    c += keyC*spec*(0.35+u_reflect*0.7)*sha*mix(0.5,1.0,occ);
+    // u_spec gates the DIRECT lobe separately from u_reflect. Dropping reflect to zero only
+    // removes the environment reflection; this term keeps a 0.35 floor, so a material asked to
+    // be free of reflections still carried a highlight. Clay sets it to zero.
+    c += keyC*spec*(0.35+u_reflect*0.7)*u_spec*sha*mix(0.5,1.0,occ);
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
@@ -1092,28 +1127,36 @@ let autoShape=false;   // shape only changes automatically if HUD = "Auto · Dir
 const MATS={
   // tscale = base detail frequency (fbmT stacks 5 octaves above it), tamp = surface tilt in
   // RADIANS, taniso = stretch for directional grain, trough = gloss variation.
-  // trans = refractive transmission (glass), sheen = grazing strand halo (fur).
+  // trans = refractive transmission (glass), sheen = grazing strand halo (fur),
+  // spec = direct specular lobe gate (clay sets it to 0 for a genuinely matte surface),
+  // hair = strand DISPLACEMENT amplitude in object units — real geometry, see map(),
+  // alb = albedo scale; the shared base is tuned for near-white materials, clay is a mid-tone.
   // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
-  pearl:   {metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,sheen:0.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
+  pearl:   {alb:1.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
   // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
   // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
   // reads as a soap bubble. Almost no surface tilt: texture on glass reads as a dirty window.
-  glass:   {metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,sheen:0.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
+  glass:   {alb:1.00,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,sheen:0.00,spec:1.00,hair:0.000, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
   // CLAY. First pass used a fine, deep grain (tscale 52, tamp 0.055) and rendered as pumice —
   // clay is SMOOTH. What little surface it has is large-scale forming, the trace of being pressed
   // into shape, not pitting, so the frequency drops by half and the tilt by more than three times.
   // Matte-and-unlit is the other wrong answer: real clay takes a lot of bounce light and has a
   // broad soft sheen, so reflect stays non-zero and roughness is high rather than total. A little
   // translucency gives the waxy quality that separates clay from chalk.
-  clay:    {metal:0.0,rough:0.78,reflect:0.17,irid:0.00,transl:0.26,emis:0.00,trans:0.00,sheen:0.00, tscale:24, tamp:0.017,taniso:1.00,trough:0.16},
+  clay:    {alb:0.62,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,sheen:0.00,spec:0.00,hair:0.000, tscale:24, tamp:0.011,taniso:1.00,trough:0.10},
   // FUR. The strand illusion comes from three things together: heavily ANISOTROPIC noise (taniso
   // 0.11 stretches the field along one axis so the grain runs in a direction instead of pitting),
   // a large tilt so the normal genuinely turns, and the sheen + wrapped diffuse terms above.
   // Reflect must stay low or the strands read as wet.
-  fur:     {metal:0.0,rough:0.90,reflect:0.10,irid:0.00,transl:0.30,emis:0.00,trans:0.00,sheen:0.55, tscale:210,tamp:0.115,taniso:0.11,trough:0.45},
-  frosted: {metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,sheen:0.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
-  holo:    {metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,sheen:0.00, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
+  fur:     {alb:0.88,metal:0.0,rough:0.90,reflect:0.10,irid:0.00,transl:0.30,emis:0.00,trans:0.00,sheen:0.55,spec:1.00,hair:0.036, tscale:210,tamp:0.075,taniso:0.11,trough:0.45},
+  frosted: {alb:1.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
+  holo:    {alb:1.00,metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
 };
+// Fewer, longer, thicker strands. The first pass used 85/0.020 and read as fine fuzz: the hairs
+// were ~4px against a ~450px form, so they textured the body but never broke the SILHOUETTE,
+// which is the cue that separates fur from velvet. Dropping the frequency and nearly doubling
+// the length trades count for visibility at the outline.
+const HAIR_F=62.0;                 // strand frequency in object units
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
 
 /* ---- BACKGROUND PALETTES (a = deep tone, b = accent) — hard, saturated label colourways ---- */
@@ -1461,6 +1504,12 @@ function frame(){
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
   gl.uniform1f(US('u_iridAmt'),MAT.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans); gl.uniform1f(US('u_sheen'),MAT.sheen);
+  gl.uniform1f(US('u_spec'),MAT.spec); gl.uniform1f(US('u_hair'),MAT.hair);
+  gl.uniform1f(US('u_alb'),MAT.alb);
+  gl.uniform1f(US('u_hairF'),HAIR_F);
+  // Same two numbers the shader displaces with, so the march bound can never drift from the
+  // displacement that made it necessary.
+  gl.uniform1f(US('u_hairStep'), 1.0/(1.0+2.0*MAT.hair*HAIR_F));
   gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough);
   drawFS(aScene);
