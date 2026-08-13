@@ -45,7 +45,21 @@ source .venv/bin/activate
 python analyze.py "track.mp3" -o out/director.json
 ```
 
-The server (`server.py`) serves the viewer at `/`, analyses at `POST /analyze`, and reports `GET /health`.
+The server (`server.py`) serves the viewer at `/`, analyses at `POST /analyze`, and reports
+`GET /health`. Pass `?job=<id>` on the POST and poll `GET /progress?job=<id>` for
+`{stage, p, next, eta}` — the viewer's progress bar is driven by this.
+
+**Progress weights are measured, not guessed.** Timed end to end on a 5.5-minute track:
+HPSS is 52% of the whole run and PANNs another 26%, with everything else under 8% each. A bar
+built on one tick per layer would spend nearly all its time on two ticks and look frozen. Both of
+those stages are opaque library calls that cannot report from inside themselves, so the server
+sends the fraction each stage *starts* at, the fraction it *ends* at, and how long it expects to
+take, and the client eases between the two. The expected total is extrapolated from the work
+already done rather than a hard-coded rate, so it calibrates to the machine it runs on.
+
+The client keeps one poll in flight at a time and clamps the displayed value monotonically:
+measured round trips reached 473ms against a 300ms interval, so requests overlapped, responses
+landed out of order, and the bar jumped backwards 27 times in a single analysis before that.
 The PANNs model auto-downloads to `~/panns_data/` on first run.
 
 ## Contract: director.json (schema `atonal.director/1`)

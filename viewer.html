@@ -27,6 +27,12 @@
   #stat{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:12;padding:8px 16px;
     background:rgba(14,14,17,.85);border:1px solid rgba(255,255,255,.12);border-radius:3px;font-size:10px;
     letter-spacing:.18em;text-transform:uppercase;color:#cfcfd4;display:none;backdrop-filter:blur(12px)}
+  #statBar{display:none;width:190px;height:3px;background:rgba(255,255,255,.16);border-radius:2px;
+    overflow:hidden;margin-left:4px}
+  #statFill{display:block;height:100%;width:0%;background:currentColor;border-radius:2px;
+    transition:width .18s linear}
+  #statPct{display:none;min-width:34px;text-align:right;opacity:.65;font-variant-numeric:tabular-nums}
+  #stat.busy #statBar,#stat.busy #statPct{display:block}
   .err{color:#ffb4b4!important}
   #ctrl{position:fixed;top:16px;right:18px;z-index:11;display:flex;flex-direction:column;gap:7px;align-items:flex-end}
   #ctrl .row{display:flex;align-items:center;gap:8px}
@@ -80,7 +86,7 @@
 </div>
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
-<div id="stat"><span id="statTxt">…</span></div>
+<div id="stat"><span id="statTxt">…</span><span id="statBar"><i id="statFill"></i></span><span id="statPct"></span></div>
 
 <div id="bar">
   <label class="btn" for="file">Load</label><input id="file" type="file" accept="audio/*">
@@ -1217,7 +1223,17 @@ function seek(x){ if(!audioBuffer)return; const was=isPlaying; if(isPlaying){try
   prevT=-1; resetOnsetCursors(pausedAt); if(was)play(); }
 
 function showStat(t,err){ const s=$('stat'); s.style.display='flex'; $('statTxt').textContent=t;
-  $('statTxt').className=err?'err':''; }
+  $('statTxt').className=err?'err':''; s.classList.remove('busy'); }
+// Progress bar. setProg(null) leaves progress mode; setProg(f) is a fraction 0..1.
+function setProg(f,label){
+  const s=$('stat');
+  if(f==null){ s.classList.remove('busy'); return; }
+  s.style.display='flex'; s.classList.add('busy');
+  const p=Math.max(0,Math.min(1,f));
+  $('statFill').style.width=(p*100).toFixed(1)+'%';
+  $('statPct').textContent=Math.round(p*100)+'%';
+  if(label) $('statTxt').textContent=label;
+}
 function hideStat(ms){ setTimeout(()=>$('stat').style.display='none',ms||0); }
 const fmt=s=>{s=Math.max(0,s|0);return (s/60|0)+':'+String(s%60).padStart(2,'0');};
 
@@ -1228,14 +1244,77 @@ async function loadFile(file){
   let buf;
   try{ buf=await file.arrayBuffer(); audioBuffer=await ctx.decodeAudioData(buf.slice(0)); }
   catch(e){ showStat('Could not decode audio',true); hideStat(2600); return; }
-  showStat('Analysing with AI Director…');
+  // ---- upload + analyse, with a real progress bar ----
+  // The bar is driven by two different real signals, not by a timer pretending to be one:
+  // the upload leg comes from XHR's own byte counter, and the analysis leg from the server,
+  // which reports the weighted fraction as each stage begins.
+  const job = 'j'+Math.random().toString(36).slice(2)+Date.now().toString(36);
+  const UPLOAD_SHARE = 0.12;      // uploading is small next to analysing; do not let it dominate
+  let poll=null, seen={p:0,next:0,eta:1,stage:''}, stageT0=0, inFlight=false, shown=0;
+  setProg(0,'Uploading…');
   try{
-    const resp=await fetch(SERVER+'/analyze',{method:'POST',headers:{'X-Filename':file.name},body:buf});
-    if(!resp.ok) throw new Error('server '+resp.status);
-    director=await resp.json();
+    director = await new Promise((resolve,reject)=>{
+      const xhr=new XMLHttpRequest();
+      xhr.open('POST', SERVER+'/analyze?job='+encodeURIComponent(job));
+      xhr.setRequestHeader('X-Filename', file.name);
+      xhr.upload.onprogress = e=>{
+        if(e.lengthComputable) setProg((e.loaded/e.total)*UPLOAD_SHARE,'Uploading…');
+      };
+      xhr.upload.onload = ()=>{
+        setProg(UPLOAD_SHARE,'Analysing…');
+        // Poll the side channel. The server reports where each stage STARTS and ENDS and how long
+        // it expects to take, and the client eases between the two — the single longest stage
+        // (harmonic/percussive separation) is an opaque library call that takes half the run and
+        // cannot report from inside itself, so without this the bar would sit still through most
+        // of the wait. Easing is clamped to the stage's end, so it can slow to a crawl but never
+        // overtake the truth and never goes backwards.
+        poll=setInterval(async()=>{
+          // Skip if the previous poll is still outstanding. Measured round trips reached 473ms
+          // against a 300ms interval, so requests overlapped and responses could land out of
+          // order — an older one then overwrote a newer one and the bar jumped BACKWARDS, 27
+          // times over one analysis. One in flight at a time removes the reordering at source.
+          if(!inFlight){
+            inFlight=true;
+            try{
+              const r=await fetch(SERVER+'/progress?job='+encodeURIComponent(job),{cache:'no-store'});
+              const d=await r.json();
+              if(d && typeof d.p==='number'){
+                if(d.stage!==seen.stage){ seen=d; stageT0=performance.now(); }
+                else { seen.p=d.p; seen.next=d.next; seen.eta=d.eta; }
+              }
+            }catch(e){ /* a dropped poll must never fail the analysis */ }
+            finally{ inFlight=false; }
+          }
+          const el=(performance.now()-stageT0)/1000;
+          const k=seen.eta>0 ? Math.min(1, el/seen.eta) : 1;
+          const eased=seen.p + (seen.next-seen.p)*(1-Math.pow(1-k,2));   // decelerates into the end
+          // Monotonic by construction, belt as well as braces: a progress bar that retreats reads
+          // as a fault even when the number behind it is correct.
+          shown=Math.max(shown, UPLOAD_SHARE + eased*(1-UPLOAD_SHARE));
+          setProg(shown,'Analysing'+(seen.stage&&seen.stage!=='queued'?' — '+seen.stage:'')+'…');
+        },300);
+      };
+      xhr.onload = ()=>{
+        if(xhr.status>=200 && xhr.status<300){
+          try{ resolve(JSON.parse(xhr.responseText)); }catch(e){ reject(new Error('bad response')); }
+        } else {
+          let m='server '+xhr.status;
+          try{ const j=JSON.parse(xhr.responseText); if(j.error) m=j.error; }catch(e){}
+          reject(new Error(m));
+        }
+      };
+      xhr.onerror = ()=>reject(new Error('unreachable'));
+      xhr.send(buf);
+    });
   }catch(e){
-    showStat('Server unreachable — run: python server.py  ('+SERVER+')',true); hideStat(6000); return;
+    if(poll) clearInterval(poll);
+    setProg(null);
+    const unreachable = e.message==='unreachable';
+    showStat(unreachable ? 'Server unreachable — run: python server.py  ('+SERVER+')' : e.message, true);
+    hideStat(6000); return;
   }
+  if(poll) clearInterval(poll);
+  setProg(1,'Analysed'); setProg(null);
   $('hGenre').textContent=director.genre.primary+'  ('+(director.genre.confidence)+')';
   $('hBpm').textContent=director.tempo.bpm+' BPM';
   buildTimelineUI();
