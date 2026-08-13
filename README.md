@@ -77,7 +77,18 @@ raymarch creases.
 ## Viewer controls (top right)
 - **Shape** — `Auto · Director` lets the Director pick, or lock one of Pods / Ribbon /
   Tower / Gyroscope / Space Frame / Shell.
-- **Material** — Pearl, Iridescent, Chrome, Frosted, Holographic, Neon.
+- **Material** — Pearl, Glass, Clay, Fur, Frosted, Holographic. Glass refracts the *backdrop*
+  along the refracted ray with per-channel dispersion; Fur uses a grazing sheen plus a wrapped
+  diffuse so it has no hard terminator; Clay is smooth and matte with large-scale forming.
+
+Surface detail is **procedural** — there are no image textures, so there is no map resolution to
+raise. Detail is amplitude x frequency, and the lever is the per-material base frequency `tscale`,
+not octave count: the fbm runs at gain 0.42, so octaves 6 and 7 would together carry about 4% of
+the amplitude for 40% more noise evaluations. Both "more octaves" and procedural mipmapping
+(fading octaves by `fwidth` footprint) were implemented, measured and reverted — the mipmapping
+moved pixel-scale energy inside the silhouette by 1.5-3.1% across four materials, one of them
+negative, which is noise. It has nothing to filter because the octaves fine enough to alias are
+the ones already carrying almost no amplitude.
 - **Scene** — `Colour field` (default) floats the form in the fluid backdrop with no ground.
   `Studio` puts it in a lit cyclorama with a real floor and a cast shadow.
 - **Look** — the *press grade*, i.e. the label aesthetic. `Studio`, `Label`, `Riso`,

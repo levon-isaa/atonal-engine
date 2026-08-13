@@ -57,9 +57,9 @@
     <option value="1">Tower</option><option value="2">Gyroscope</option>
     <option value="3">Space Frame</option><option value="5">Shell</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
-    <option value="pearl" selected>Pearl</option><option value="iridescent">Iridescent</option>
-    <option value="chrome">Chrome</option><option value="frosted">Frosted</option>
-    <option value="holo">Holographic</option><option value="neon">Neon</option></select></div>
+    <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
+    <option value="clay">Clay</option><option value="fur">Fur</option>
+    <option value="frosted">Frosted</option><option value="holo">Holographic</option></select></div>
   <div class="row"><label>Scene</label><select id="selScene">
     <option value="field" selected>Colour field</option><option value="studio">Studio</option></select></div>
   <div class="row"><label>Look</label><select id="selLook">
@@ -116,7 +116,7 @@ uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
 uniform float u_spin;
 uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
-uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
+uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans,u_sheen;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
@@ -146,6 +146,21 @@ float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;
 // Five spanning ~32:1 in frequency give a surface that carries coarse variation, mid grain and
 // fine tooth simultaneously, which is what reads as a real, high-resolution material. The
 // offset per octave decorrelates them so the layers do not stack into visible lattice beats.
+// SURFACE-DETAIL NOISE. Two things were tried here to deliver "higher resolution" texture and
+// both were measured and reverted; the note is kept so they are not re-derived.
+//
+// 1. MORE OCTAVES (5 -> 7). Detail is amplitude x frequency, and this series has gain 0.42, so
+//    octave 6 carries 0.42^5 and octave 7 carries 0.42^6 of the base — together about 4% of the
+//    total amplitude for 40% more noise evaluations. Octave count is simply not the lever.
+// 2. PROCEDURAL MIPMAPPING — fading each octave as its period approaches the pixel footprint,
+//    via fwidth of the object-space position. Correct in principle, and it would matter for a
+//    flat-gain series, but measured against a frozen frame it moved pixel-scale energy inside the
+//    silhouette by 1.5-3.1% across four materials, with one material NEGATIVE. That is noise.
+//    It has nothing to filter for the same reason as above: the octaves fine enough to alias are
+//    the ones already carrying almost no amplitude.
+//
+// The lever that does work is the BASE frequency, tscale, which is per-material and was raised
+// by roughly half. Detail lives in the first two or three octaves; everything past that is tooth.
 float fbmT(vec3 p){
   float v=0., a=0.5, s=0.0;
   // GAIN MUST BE BELOW 1/LACUNARITY. This noise drives a NORMAL, so what matters is the
@@ -655,7 +670,12 @@ void main(){
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
     vec3 amb=env(n,1.0)*1.22;
-    vec3 c=base*(1.-u_metal)*( keyC*(0.95*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
+    // WRAPPED DIFFUSE for fur. Light entering a strand layer scatters between strands and comes
+    // back out past the geometric terminator, so fur has no hard shadow line the way a solid does.
+    // Wrapping NoL is the standard cheap stand-in for that, and it is most of what stops fur
+    // reading as a moulded solid with fuzz painted on.
+    float NoLw=mix(NoL, NoL*0.5+0.5, u_sheen);
+    vec3 c=base*(1.-u_metal)*( keyC*(0.95*NoLw*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
                              + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
     c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
@@ -683,6 +703,34 @@ void main(){
     // painted a saturated rim (green whenever the section's random hue landed there); a real
     // pearl shows its colour in what it reflects.
     c += (irid-vec3(0.5))*refl*f0*u_reflect*u_iridAmt*0.55*(1.0+u_hAir*0.5)*mix(0.45,1.0,occ);
+    // TRANSMISSION (glass). What is not reflected goes THROUGH, so sample the environment along
+    // the REFRACTED direction rather than adding a wash of white. This is the whole difference
+    // between glass and a shiny pale ball: the background seen through the form bends, and the
+    // bend is strongest where the surface turns away from the eye. Weighted by 1-Fresnel because
+    // reflection and transmission share one energy budget — at grazing angles glass goes fully
+    // mirror, which is exactly the cue that reads as a hard transparent shell.
+    if(u_trans>0.001){
+      // DISPERSION. Glass refracts short wavelengths harder than long ones, and that splitting is
+      // the cue the eye actually uses to call something glass rather than glossy resin — a single
+      // refracted direction gives a clean but plastic-looking bend. Three etas, one per channel.
+      vec3 Rr=refract(-v,n,0.667*1.012);
+      vec3 Rt=refract(-v,n,0.667);
+      vec3 Rb=refract(-v,n,0.667*0.988);
+      float tir=dot(Rt,Rt);                        // zero on total internal reflection
+      // Sample the BACKDROP along the refracted ray, not the lighting environment. env() is the
+      // softbox rig that lights the form; what you actually see through glass is whatever is
+      // behind it, so refracting env() produced a dark opaque blob with no relationship to the
+      // scene. bg() is the same function the miss path uses, so the colour field genuinely bends
+      // through the form and the shape reads as transparent rather than as dark plastic.
+      vec3 dR=tir>0.0001?normalize(Rr):R, dG=tir>0.0001?normalize(Rt):R, dB=tir>0.0001?normalize(Rb):R;
+      vec3 through=vec3(bg(dR,uv).r, bg(dG,uv).g, bg(dB,uv).b);
+      float F=clamp(max(Fr.r,max(Fr.g,Fr.b)),0.,1.);
+      c=mix(c, through*mix(vec3(1.0),base,0.22)*1.04, u_trans*(1.0-F));
+    }
+    // SHEEN (fur). A strand layer seen edge-on presents far more surface to the light than one
+    // seen face-on, so fur carries a bright grazing halo that a microfacet lobe does not produce.
+    // Gated on NoL so it lights the fur rather than glowing on its own.
+    if(u_sheen>0.001) c += keyC*pow(1.0-NoV,2.2)*u_sheen*(0.25+0.75*NoL)*mix(0.4,1.0,occ);
     // translucent backlight (frosted)
     c += base*max(0.,dot(n,-L))*0.18*u_transl;
     // emissive glow (neon) — high-band stabs flare it, desaturated so it cannot band
@@ -1043,14 +1091,28 @@ let autoShape=false;   // shape only changes automatically if HUD = "Auto · Dir
 // ---- rich MATERIAL variations (HUD-selectable, eased for smooth switches) ----
 const MATS={
   // tscale = base detail frequency (fbmT stacks 5 octaves above it), tamp = surface tilt in
-  // RADIANS, taniso = stretch for brushed metal, trough = gloss variation.
+  // RADIANS, taniso = stretch for directional grain, trough = gloss variation.
+  // trans = refractive transmission (glass), sheen = grazing strand halo (fur).
   // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
-  pearl:      {metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00, tscale:64, tamp:0.020,taniso:1.00,trough:0.36},
-  iridescent: {metal:0.0,rough:0.22,reflect:0.50,irid:1.1,transl:0.30,emis:0.08, tscale:88, tamp:0.018,taniso:1.00,trough:0.32},
-  chrome:     {metal:1.0,rough:0.06,reflect:1.00,irid:0.1,transl:0.00,emis:0.00, tscale:150,tamp:0.018,taniso:0.09,trough:0.28},
-  frosted:    {metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00, tscale:110,tamp:0.070,taniso:1.00,trough:0.58},
-  holo:       {metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18, tscale:230,tamp:0.020,taniso:0.06,trough:0.30},
-  neon:       {metal:0.0,rough:0.30,reflect:0.35,irid:0.6,transl:0.40,emis:0.70, tscale:52, tamp:0.018,taniso:1.00,trough:0.26},
+  pearl:   {metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,sheen:0.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
+  // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
+  // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
+  // reads as a soap bubble. Almost no surface tilt: texture on glass reads as a dirty window.
+  glass:   {metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,sheen:0.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
+  // CLAY. First pass used a fine, deep grain (tscale 52, tamp 0.055) and rendered as pumice —
+  // clay is SMOOTH. What little surface it has is large-scale forming, the trace of being pressed
+  // into shape, not pitting, so the frequency drops by half and the tilt by more than three times.
+  // Matte-and-unlit is the other wrong answer: real clay takes a lot of bounce light and has a
+  // broad soft sheen, so reflect stays non-zero and roughness is high rather than total. A little
+  // translucency gives the waxy quality that separates clay from chalk.
+  clay:    {metal:0.0,rough:0.78,reflect:0.17,irid:0.00,transl:0.26,emis:0.00,trans:0.00,sheen:0.00, tscale:24, tamp:0.017,taniso:1.00,trough:0.16},
+  // FUR. The strand illusion comes from three things together: heavily ANISOTROPIC noise (taniso
+  // 0.11 stretches the field along one axis so the grain runs in a direction instead of pitting),
+  // a large tilt so the normal genuinely turns, and the sheen + wrapped diffuse terms above.
+  // Reflect must stay low or the strands read as wet.
+  fur:     {metal:0.0,rough:0.90,reflect:0.10,irid:0.00,transl:0.30,emis:0.00,trans:0.00,sheen:0.55, tscale:210,tamp:0.115,taniso:0.11,trough:0.45},
+  frosted: {metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,sheen:0.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
+  holo:    {metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,sheen:0.00, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
 };
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
 
@@ -1398,6 +1460,7 @@ function frame(){
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
   gl.uniform1f(US('u_iridAmt'),MAT.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
+  gl.uniform1f(US('u_trans'),MAT.trans); gl.uniform1f(US('u_sheen'),MAT.sheen);
   gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough);
   drawFS(aScene);
