@@ -117,7 +117,7 @@ uniform float u_spin;
 uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans,u_sheen;
-uniform float u_spec,u_hair,u_hairF,u_hairStep,u_alb;
+uniform float u_spec,u_hair,u_hairF,u_hairStep,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
@@ -742,22 +742,59 @@ void main(){
     // reflection and transmission share one energy budget — at grazing angles glass goes fully
     // mirror, which is exactly the cue that reads as a hard transparent shell.
     if(u_trans>0.001){
-      // DISPERSION. Glass refracts short wavelengths harder than long ones, and that splitting is
-      // the cue the eye actually uses to call something glass rather than glossy resin — a single
-      // refracted direction gives a clean but plastic-looking bend. Three etas, one per channel.
-      vec3 Rr=refract(-v,n,0.667*1.012);
-      vec3 Rt=refract(-v,n,0.667);
-      vec3 Rb=refract(-v,n,0.667*0.988);
+      vec3 Rt=refract(-v,n,0.667);                 // eta 1/1.5, ordinary glass
       float tir=dot(Rt,Rt);                        // zero on total internal reflection
+      // INTERIOR MARCH — this is what gives the glass depth. Refracting once at the front surface
+      // and reading the backdrop treats the form as an infinitely thin shell: it bends the view
+      // but has no inside, which is why it read as a soap film. The field is NEGATIVE inside the
+      // form, so -mapD is the distance to the boundary from within, and marching on that carries
+      // the refracted ray to where it actually leaves.
+      // Two things fall out of that and both are the "depth" being asked for:
+      //   - THICKNESS. How far the ray travelled through the solid, which drives Beer-Lambert
+      //     absorption below — thin edges stay clear, the body deepens in colour. This is the cue
+      //     that says solid rather than hollow.
+      //   - A SECOND REFRACTION. Real glass bends light twice, once entering and once leaving,
+      //     and the exit bend is the larger of the two visually because it is where the ray is
+      //     furthest from where it started.
+      float thick=0.0; vec3 eR,eG,eB;
+      if(tir>0.0001){
+        vec3 rd2=normalize(Rt);
+        vec3 q=p+rd2*0.012;
+        // 18 steps and a tight threshold, after trying to cut it to 10 with a coarse one on the
+        // theory that the exit NORMAL feeds a refraction rather than a silhouette and so needs
+        // less precision. Measured on a frozen frame the cheap version scored HIGHER internal
+        // structure — 6.67 against 5.20 — which is the trap: rays that stop before converging give
+        // scattered exit normals, and scattered normals produce contrast that looks like detail
+        // and is noise. It was not faster either. Precision here is not a quality knob to trade.
+        for(int i=0;i<18;i++){
+          float hh=-mapD(q);
+          if(hh<0.004) break;
+          float st=max(hh,0.012); q+=rd2*st; thick+=st;
+          if(thick>4.0) break; }
+        vec3 n2=-calcN(q);                         // boundary normal, flipped to face the ray
+        // Dispersion applied at the EXIT surface, three etas off one march. Marching three times
+        // would triple the cost of the most expensive material for a split that is dominated by
+        // the exit bend anyway.
+        eR=refract(rd2,n2,1.5*0.988); eG=refract(rd2,n2,1.5); eB=refract(rd2,n2,1.5*1.012);
+        vec3 fb=reflect(rd2,n2);                   // total internal reflection at the exit
+        eR=dot(eR,eR)>0.0001?normalize(eR):fb;
+        eG=dot(eG,eG)>0.0001?normalize(eG):fb;
+        eB=dot(eB,eB)>0.0001?normalize(eB):fb;
+      } else { eR=R; eG=R; eB=R; }
       // Sample the BACKDROP along the refracted ray, not the lighting environment. env() is the
       // softbox rig that lights the form; what you actually see through glass is whatever is
       // behind it, so refracting env() produced a dark opaque blob with no relationship to the
       // scene. bg() is the same function the miss path uses, so the colour field genuinely bends
       // through the form and the shape reads as transparent rather than as dark plastic.
-      vec3 dR=tir>0.0001?normalize(Rr):R, dG=tir>0.0001?normalize(Rt):R, dB=tir>0.0001?normalize(Rb):R;
-      vec3 through=vec3(bg(dR,uv).r, bg(dG,uv).g, bg(dB,uv).b);
+      // Dispersion costs ~12% of the glass frame, measured by collapsing it to one bg() call.
+      vec3 through=vec3(bg(eR,uv).r, bg(eG,uv).g, bg(eB,uv).b);
+      // BEER-LAMBERT. Absorption is exponential in path length, and it is the complement of the
+      // glass colour that gets absorbed, so a thick path saturates toward that colour instead of
+      // just going dark. u_absorb is per-material, so a future thicker or dirtier glass is a
+      // number rather than another branch.
+      vec3 att=exp(-(vec3(1.0)-clamp(base,0.,1.))*thick*u_absorb);
       float F=clamp(max(Fr.r,max(Fr.g,Fr.b)),0.,1.);
-      c=mix(c, through*mix(vec3(1.0),base,0.22)*1.04, u_trans*(1.0-F));
+      c=mix(c, through*att*1.04, u_trans*(1.0-F));
     }
     // SHEEN (fur). A strand layer seen edge-on presents far more surface to the light than one
     // seen face-on, so fur carries a bright grazing halo that a microfacet lobe does not produce.
@@ -1130,27 +1167,30 @@ const MATS={
   // trans = refractive transmission (glass), sheen = grazing strand halo (fur),
   // spec = direct specular lobe gate (clay sets it to 0 for a genuinely matte surface),
   // hair = strand DISPLACEMENT amplitude in object units — real geometry, see map(),
-  // alb = albedo scale; the shared base is tuned for near-white materials, clay is a mid-tone.
+  // alb = albedo scale; the shared base is tuned for near-white materials, clay is a mid-tone,
+  // absorb = Beer-Lambert absorption per unit of path length through the interior (glass).
   // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
-  pearl:   {alb:1.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
+  pearl:   {alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
   // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
   // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
   // reads as a soap bubble. Almost no surface tilt: texture on glass reads as a dirty window.
-  glass:   {alb:1.00,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,sheen:0.00,spec:1.00,hair:0.000, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
-  // CLAY. First pass used a fine, deep grain (tscale 52, tamp 0.055) and rendered as pumice —
-  // clay is SMOOTH. What little surface it has is large-scale forming, the trace of being pressed
-  // into shape, not pitting, so the frequency drops by half and the tilt by more than three times.
+  glass:   {alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,sheen:0.00,spec:1.00,hair:0.000, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
+  // CLAY. Surface texture is OFF outright — tamp 0 makes texNormal early-out, trough 0 makes
+  // texRough early-out AND zeroes the albedo grain, since that term is scaled by trough. So the
+  // shading normal is the raw geometric normal and the colour is uniform: nothing on it at all.
+  // Two earlier passes tried to keep some surface (fine grain read as pumice, then large-scale
+  // forming still caught the key light as bright streaks); neither is what clean means here.
   // Matte-and-unlit is the other wrong answer: real clay takes a lot of bounce light and has a
   // broad soft sheen, so reflect stays non-zero and roughness is high rather than total. A little
   // translucency gives the waxy quality that separates clay from chalk.
-  clay:    {alb:0.62,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,sheen:0.00,spec:0.00,hair:0.000, tscale:24, tamp:0.011,taniso:1.00,trough:0.10},
+  clay:    {alb:0.62,absorb:0.00,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,sheen:0.00,spec:0.00,hair:0.000, tscale:24, tamp:0.000,taniso:1.00,trough:0.00},
   // FUR. The strand illusion comes from three things together: heavily ANISOTROPIC noise (taniso
   // 0.11 stretches the field along one axis so the grain runs in a direction instead of pitting),
   // a large tilt so the normal genuinely turns, and the sheen + wrapped diffuse terms above.
   // Reflect must stay low or the strands read as wet.
-  fur:     {alb:0.88,metal:0.0,rough:0.90,reflect:0.10,irid:0.00,transl:0.30,emis:0.00,trans:0.00,sheen:0.55,spec:1.00,hair:0.036, tscale:210,tamp:0.075,taniso:0.11,trough:0.45},
-  frosted: {alb:1.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
-  holo:    {alb:1.00,metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
+  fur:     {alb:0.88,absorb:0.00,metal:0.0,rough:0.90,reflect:0.10,irid:0.00,transl:0.30,emis:0.00,trans:0.00,sheen:0.55,spec:1.00,hair:0.036, tscale:210,tamp:0.075,taniso:0.11,trough:0.45},
+  frosted: {alb:1.00,absorb:0.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
+  holo:    {alb:1.00,absorb:0.00,metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,sheen:0.00,spec:1.00,hair:0.000, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
 };
 // Fewer, longer, thicker strands. The first pass used 85/0.020 and read as fine fuzz: the hairs
 // were ~4px against a ~450px form, so they textured the body but never broke the SILHOUETTE,
@@ -1505,7 +1545,7 @@ function frame(){
   gl.uniform1f(US('u_iridAmt'),MAT.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans); gl.uniform1f(US('u_sheen'),MAT.sheen);
   gl.uniform1f(US('u_spec'),MAT.spec); gl.uniform1f(US('u_hair'),MAT.hair);
-  gl.uniform1f(US('u_alb'),MAT.alb);
+  gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
   gl.uniform1f(US('u_hairF'),HAIR_F);
   // Same two numbers the shader displaces with, so the march bound can never drift from the
   // displacement that made it necessary.

@@ -77,8 +77,14 @@ raymarch creases.
 ## Viewer controls (top right)
 - **Shape** — `Auto · Director` lets the Director pick, or lock one of Pods / Ribbon /
   Tower / Gyroscope / Space Frame / Shell.
-- **Material** — Pearl, Glass, Clay, Fur, Frosted, Holographic. Glass refracts the *backdrop*
-  along the refracted ray with per-channel dispersion. Fur has **real strand geometry** — the SDF
+- **Material** — Pearl, Glass, Clay, Fur, Frosted, Holographic. Glass **marches its own
+  interior**: the field is negative inside the form, so `-mapD` carries the refracted ray to where
+  it actually leaves. That gives thickness, which drives Beer-Lambert absorption so thin edges stay
+  clear and the body deepens in colour, and a second refraction at the exit surface, where the
+  dispersion is applied. Refracting once at the front surface treats the form as an infinitely thin
+  shell — it bends the view but has no inside, which is why it read as a soap film.
+  Clay has **no surface at all**: `tamp:0` early-outs the texture normal and `trough:0` early-outs
+  the roughness variation *and* zeroes the albedo grain, which is scaled by it. Fur has **real strand geometry** — the SDF
   is displaced by squashed, squared noise inside a thin shell around the surface — plus a grazing
   sheen and a wrapped diffuse so it has no hard terminator. Clay is fully matte: `spec:0` gates
   the direct lobe as well as the environment reflection, and it carries its own lower albedo,
