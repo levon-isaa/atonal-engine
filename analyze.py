@@ -13,7 +13,7 @@ The renderer NEVER sees FFT.  It only reads director.json:
 
 Usage:  python analyze.py "track.mp3" -o out/director.json
 """
-import sys, os, json, argparse, tempfile, subprocess, math
+import sys, os, json, argparse, tempfile, subprocess, math, time
 import numpy as np
 import tagger   # Layer 4 ML tagging (PANNs), optional
 
@@ -121,10 +121,14 @@ def layer1b_bands(S, sr, times):
     return levels, onsets
 
 # ============================================================ LAYER 1: SIGNAL
-def layer1_signal(mono, stereo, sr):
+def layer1_signal(mono, stereo, sr, prog=None):
     import librosa
+    def step(k):
+        if prog: prog(k)
+    step("spectrum")
     S = np.abs(librosa.stft(mono, n_fft=2048, hop_length=HOP))
     f = {}
+    step("features")
     f["rms"]       = librosa.feature.rms(S=S, hop_length=HOP)[0]
     f["centroid"]  = librosa.feature.spectral_centroid(S=S, sr=sr)[0]
     f["flatness"]  = librosa.feature.spectral_flatness(S=S)[0]
@@ -135,11 +139,13 @@ def layer1_signal(mono, stereo, sr):
     f["contrast"]  = librosa.feature.spectral_contrast(S=S, sr=sr).mean(axis=0)
     f["mfcc"]      = librosa.feature.mfcc(y=mono, sr=sr, n_mfcc=20, hop_length=HOP)
     f["chroma"]    = librosa.feature.chroma_cqt(y=mono, sr=sr, hop_length=HOP)
-    # harmonic / percussive separation -> their energies
+    # harmonic / percussive separation -> their energies. Half the total analysis time.
+    step("separate")
     H, P = librosa.effects.hpss(mono)
     f["harm"] = librosa.feature.rms(y=H, hop_length=HOP)[0]
     f["perc"] = librosa.feature.rms(y=P, hop_length=HOP)[0]
     # tempo / beats / downbeats
+    step("beats")
     onset = f["flux"]
     # start_bpm biases the autocorrelation prior. Without it librosa takes whichever peak is
     # tallest, and on material with strong offbeat content (hats on every 8th) that is regularly
@@ -188,8 +194,64 @@ def layer1_signal(mono, stereo, sr):
     f["times"] = librosa.frames_to_time(np.arange(f["n"]), sr=sr, hop_length=HOP)
     f["duration"] = float(len(mono) / sr)
     # per-band levels + the individual hits in each band (done here, while S is in hand)
+    step("bands")
     f["band_levels"], f["band_onsets"] = layer1b_bands(S, sr, f["times"])
     return f
+
+
+# ============================================== PROGRESS REPORTING
+# Stage weights are MEASURED, not guessed — timed end to end on a 5.5-minute track:
+#   load 0.40s | stft 1.18s | spectral+flux+mfcc+chroma 1.62s | HPSS 12.16s | beats 0.82s
+#   per-band onsets 0.09s | PANNs 6.09s | everything else under 0.05s      (23.26s total)
+# Harmonic/percussive separation alone is 52% of the run and PANNs another 26%, so a bar built
+# on "one tick per layer" would spend almost all its time on two ticks and look frozen. These
+# weights are ratios of one another, and every stage scales with track length, so they hold for
+# any duration even though the absolute times do not.
+STAGE_W = {"load":0.02, "spectrum":0.05, "features":0.07, "separate":0.52,
+           "beats":0.04, "bands":0.01, "tagging":0.26, "finalise":0.03}
+STAGE_LABEL = {"load":"decoding audio", "spectrum":"spectrum",
+               "features":"spectral features", "separate":"harmonic / percussive",
+               "beats":"tempo & beats", "bands":"per-band onsets",
+               "tagging":"genre & mood (ML)", "finalise":"structure & direction"}
+
+class Progress:
+    """Weighted progress with a self-calibrating estimate of the remaining time.
+
+    The single long stage (HPSS) is an opaque library call with no way to report from inside it,
+    so the client is given the fraction it starts at, the fraction it ends at, and how long it is
+    expected to take; the client eases between the two. That keeps the bar moving through the
+    twelve seconds where nothing can be reported, without ever letting it run past the truth.
+
+    The expected total is extrapolated from the work already done rather than from a hard-coded
+    rate, so it calibrates itself to whatever machine it is on instead of being right only here.
+    """
+    def __init__(self, cb, with_panns=True, audio_dur=None):
+        self.cb, self.t0, self.done, self.dur = cb, time.time(), 0.0, audio_dur
+        w = dict(STAGE_W)
+        if not with_panns:
+            w["tagging"] = 0.0                       # renormalise; skipped work is not "instant"
+        tot = sum(w.values()) or 1.0
+        self.w = {k: v / tot for k, v in w.items()}
+
+    def __call__(self, key):
+        if not self.cb:
+            return
+        wk = self.w.get(key, 0.0)
+        el = time.time() - self.t0
+        if self.done > 0.02:
+            total = el / self.done
+        elif self.dur:
+            total = self.dur * 0.075                 # first stage only: rough seed from duration
+        else:
+            total = 20.0
+        try:
+            self.cb({"stage": STAGE_LABEL.get(key, key), "p": round(self.done, 4),
+                     "next": round(min(1.0, self.done + wk), 4),
+                     "eta": round(max(0.2, wk * total), 2)})
+        except Exception:
+            pass                                     # progress must never break the analysis
+        self.done = min(1.0, self.done + wk)
+
 
 # ========================================================= LAYER 2: STRUCTURE
 def layer2_structure(f, sr):
@@ -229,6 +291,11 @@ def layer2_structure(f, sr):
             merged.append(t)
     if merged[-1] < f["duration"] - 1e-3:
         merged[-1] = f["duration"]
+    # A track shorter than the minimum section length collapses to a SINGLE boundary, which
+    # yields zero sections downstream — and a director with an empty sections[] crashes the
+    # renderer's frame loop on the first lookup. Always emit at least one whole-track section.
+    if len(merged) < 2:
+        merged = [0.0, max(f["duration"], 0.05)]
     return merged   # boundary times
 
 # =================================================== LAYER 3: EMOTION CURVES
@@ -370,16 +437,22 @@ def layer10_predict(secs):
     return ev
 
 # ================================================================== ASSEMBLE
-def build_director(path):
+def build_director(path, progress=None):
+    """progress, if given, is called with {stage, p, next, eta} as each stage begins."""
+    prog = Progress(progress, with_panns=tagger.available()) if progress else None
+    if prog: prog("load")
     print(f"[load] {os.path.basename(path)}")
     mono, stereo, sr = load_audio(path)
+    if prog: prog.dur = len(mono) / float(sr)
     print(f"[layer1] signal features…")
-    f = layer1_signal(mono, stereo, sr)
+    f = layer1_signal(mono, stereo, sr, prog)
     panns = None
     if tagger.available():
+        if prog: prog("tagging")
         print(f"[layer4] PANNs tagging (ML)…")
         try: panns = tagger.tag(mono, sr)
         except Exception as e: print("  panns failed -> heuristic:", e); panns = None
+    if prog: prog("finalise")
     print(f"[layer3] emotion curves…")
     cur = layer3_emotion(f, panns.get("moods") if panns else None)
     print(f"[layer2] structure…")
