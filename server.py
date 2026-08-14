@@ -12,7 +12,7 @@ CORS is open so the browser renderer (any origin, incl. file://) can call it.
 Run:  python server.py   (default http://127.0.0.1:8770)
 """
 import os, json, time, tempfile, traceback, threading, hashlib
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import analyze, tagger
 
@@ -107,18 +107,65 @@ class H(BaseHTTPRequestHandler):
         if self.path.startswith("/health"):
             self._json(200, {"ok": True, "panns": tagger.available()})
             return
-        # serve the viewer so everything is same-origin (open http://127.0.0.1:PORT/)
-        path = self.path.split("?")[0]
-        fname = "viewer.html" if path in ("/", "/viewer.html") else None
-        if fname:
-            fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), fname)
-            if os.path.exists(fp):
-                body = open(fp, "rb").read()
-                self.send_response(200); self._cors()
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers(); self.wfile.write(body); return
-        self._json(200, {"service": "atonal-director", "post": "/analyze"})
+        # Static serving, same-origin so the viewer and the studio can both call /analyze.
+        # "/" stays the ATONAL viewer; the studio is an ADDITIONAL page, not a replacement.
+        path = unquote(self.path.split("?")[0])
+        if path in ("/", "/viewer.html"):
+            rel = "viewer.html"
+        elif path == "/studio":
+            rel = "studio.html"
+        else:
+            rel = path.lstrip("/")
+        served = self._serve_static(rel)
+        if served:
+            return
+        self._json(200, {"service": "atonal-director", "post": "/analyze",
+                         "pages": ["/", "/studio"]})
+
+    # Only these roots are reachable. The studio needs to load ES modules and the vendored
+    # three.js, which means real static serving — so the surface is restricted by prefix rather
+    # than left open over the whole working directory (which holds out/cache, the venv and .git).
+    _STATIC_OK = ("viewer.html", "studio.html", "studio/", "vendor/")
+    _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+             ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+             ".json": "application/json", ".svg": "image/svg+xml", ".wasm": "application/wasm",
+             ".png": "image/png", ".jpg": "image/jpeg", ".hdr": "application/octet-stream"}
+
+    def _serve_static(self, rel):
+        if not rel:
+            return False
+        root = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+        fp = os.path.realpath(os.path.join(root, rel))
+        # NORMALISE FIRST, THEN CHECK THE ALLOWLIST — in that order, and on the resolved path.
+        # Testing the raw request instead is a directory traversal: "vendor/../server.py" starts
+        # with an allowed prefix AND still resolves inside the project root, so a prefix test on
+        # the request plus a containment test on the result both pass while the path has left the
+        # prefix entirely. That served every source file in the repo. realpath also collapses
+        # symlinks, so a link planted inside studio/ cannot redirect out either.
+        try:
+            inside = os.path.relpath(fp, root)
+        except ValueError:                       # different drive on Windows
+            return False
+        if inside == os.pardir or inside.startswith(os.pardir + os.sep) or os.path.isabs(inside):
+            return False
+        if not inside.replace(os.sep, "/").startswith(self._STATIC_OK):
+            return False
+        if not os.path.isfile(fp):
+            return False
+        try:
+            with open(fp, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            return False
+        ctype = self._MIME.get(os.path.splitext(fp)[1].lower(), "application/octet-stream")
+        self.send_response(200); self._cors()
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        # The vendored library is immutable for a given file; the app code is edited constantly,
+        # so only the former is allowed to sit in the browser cache.
+        self.send_header("Cache-Control", "public, max-age=86400" if inside.replace(os.sep, "/").startswith("vendor/") else "no-cache")
+        self.end_headers(); self.wfile.write(body)
+        return True
 
     def do_POST(self):
         if not self.path.startswith("/analyze"):
