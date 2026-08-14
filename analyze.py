@@ -36,6 +36,29 @@ def load_audio(path):
     return mono, stereo, sr
 
 # --------------------------------------------------------------------- utilities
+TEMPO_LO, TEMPO_HI = 70.0, 160.0    # the range essentially all dance/electronic music lives in
+
+
+def _fold_tempo(bpm):
+    """Fold a tempo into TEMPO_LO..TEMPO_HI by octaves.
+
+    Beat trackers routinely report a tempo one octave out (half- or double-time). Folding is
+    safe because a half-time reading describes the same beat grid at a different metrical level,
+    so the visual pacing is what changes, not the alignment. Guarded against a runaway loop on a
+    degenerate input (silence can yield 0 or inf).
+    """
+    if not np.isfinite(bpm) or bpm <= 1e-3:
+        return 120.0
+    for _ in range(8):
+        if bpm < TEMPO_LO:
+            bpm *= 2.0
+        elif bpm > TEMPO_HI:
+            bpm /= 2.0
+        else:
+            break
+    return float(round(bpm, 2))
+
+
 def nrm(a, lo=5, hi=95):
     """Robust 0..1 normalise using percentiles (resists outliers)."""
     a = np.asarray(a, dtype=np.float64)
@@ -118,10 +141,29 @@ def layer1_signal(mono, stereo, sr):
     f["perc"] = librosa.feature.rms(y=P, hop_length=HOP)[0]
     # tempo / beats / downbeats
     onset = f["flux"]
-    tempo, beats = librosa.beat.beat_track(onset_envelope=onset, sr=sr, hop_length=HOP, trim=False)
-    f["tempo"] = float(np.atleast_1d(tempo)[0])
+    # start_bpm biases the autocorrelation prior. Without it librosa takes whichever peak is
+    # tallest, and on material with strong offbeat content (hats on every 8th) that is regularly
+    # a 3:2 relative of the true tempo rather than the usual octave: measured 140 -> 92.3 and
+    # 126 -> 83.4, both almost exactly two thirds. The renderer locks its spin to this number,
+    # so a metrical error is directly visible as the form turning at the wrong speed.
+    tempo, beats = librosa.beat.beat_track(onset_envelope=onset, sr=sr, hop_length=HOP,
+                                           start_bpm=128.0, trim=False)
+    bpm = float(np.atleast_1d(tempo)[0])
+    beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP)
+    # Cross-check against the beat grid actually returned. beat_track can report a tempo that
+    # disagrees with the spacing of its own beats; the median inter-beat interval is the more
+    # trustworthy of the two because it is what the onset evidence supports.
+    if len(beat_times) >= 4:
+        ibi = float(np.median(np.diff(beat_times)))
+        if ibi > 1e-3:
+            grid_bpm = 60.0 / ibi
+            # only trust the grid when it disagrees by more than a few percent (i.e. a real
+            # metrical disagreement, not estimator noise)
+            if abs(grid_bpm - bpm) / max(bpm, 1e-6) > 0.04:
+                bpm = grid_bpm
+    f["tempo"] = _fold_tempo(bpm)
     f["beat_frames"] = beats
-    f["beat_times"]  = librosa.frames_to_time(beats, sr=sr, hop_length=HOP).tolist()
+    f["beat_times"]  = beat_times.tolist()
     # tempo stability: dynamic tempo std (API name moved across librosa versions)
     try:
         _tempo_fn = getattr(librosa.feature, "tempo", None) or librosa.beat.tempo
