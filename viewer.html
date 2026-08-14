@@ -27,6 +27,12 @@
   #stat{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:12;padding:8px 16px;
     background:rgba(14,14,17,.85);border:1px solid rgba(255,255,255,.12);border-radius:3px;font-size:10px;
     letter-spacing:.18em;text-transform:uppercase;color:#cfcfd4;display:none;backdrop-filter:blur(12px)}
+  #statBar{display:none;width:190px;height:3px;background:rgba(255,255,255,.16);border-radius:2px;
+    overflow:hidden;margin-left:4px}
+  #statFill{display:block;height:100%;width:0%;background:currentColor;border-radius:2px;
+    transition:width .18s linear}
+  #statPct{display:none;min-width:34px;text-align:right;opacity:.65;font-variant-numeric:tabular-nums}
+  #stat.busy #statBar,#stat.busy #statPct{display:block}
   .err{color:#ffb4b4!important}
   #ctrl{position:fixed;top:16px;right:18px;z-index:11;display:flex;flex-direction:column;gap:7px;align-items:flex-end}
   #ctrl .row{display:flex;align-items:center;gap:8px}
@@ -57,9 +63,11 @@
     <option value="1">Tower</option><option value="2">Gyroscope</option>
     <option value="3">Space Frame</option><option value="5">Shell</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
-    <option value="pearl" selected>Pearl</option><option value="iridescent">Iridescent</option>
-    <option value="chrome">Chrome</option><option value="frosted">Frosted</option>
-    <option value="holo">Holographic</option><option value="neon">Neon</option></select></div>
+    <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
+    <option value="clay">Clay</option>
+    <option value="frosted">Frosted</option><option value="holo">Holographic</option></select></div>
+  <div class="row"><label>Scene</label><select id="selScene">
+    <option value="field" selected>Colour field</option><option value="studio">Studio</option></select></div>
   <div class="row"><label>Look</label><select id="selLook">
     <option value="studio" selected>Studio</option>
     <option value="label">Label</option><option value="riso">Riso</option>
@@ -78,7 +86,7 @@
 </div>
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
-<div id="stat"><span id="statTxt">…</span></div>
+<div id="stat"><span id="statTxt">…</span><span id="statBar"><i id="statFill"></i></span><span id="statPct"></span></div>
 
 <div id="bar">
   <label class="btn" for="file">Load</label><input id="file" type="file" accept="audio/*">
@@ -113,15 +121,18 @@ precision highp float;
 out vec4 o;
 uniform vec2 u_res; uniform float u_time;
 uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
-uniform float u_count,u_twist,u_r0,u_r1,u_thick,u_bulge,u_hub,u_spin;
-uniform float u_ring,u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
-uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_bright,u_env,u_pulse,u_flux,u_bgAmt;
-uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis;
+uniform float u_spin;
+uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
+uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
+uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans;
+uniform float u_spec,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
-uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY;
+uniform float u_twoTone;                               // colourway separation across the form
+uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
+uniform float u_twA,u_twB,u_twMix;                  // ribbon twist cross-fade
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
-uniform float u_bLow,u_bMid,u_bHigh,u_bAir;
+uniform float u_bLow,u_bHigh,u_bAir;
 uniform float u_shock,u_shockA;
 // emotion -> geometry: these drive the construction parameters of the forms
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
@@ -139,11 +150,41 @@ float sdRBox(vec3 p,vec3 b,float r){vec3 d=abs(p)-b+r;return length(max(d,0.))+m
 float sdTorus(vec3 p,vec2 t){vec2 q=vec2(length(p.xz)-t.x,p.y);return length(q)-t.y;}
 float smax(float a,float b,float k){return -smin(-a,-b,k);}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}
+// TEXTURE NOISE — 5 octaves, normalised. A procedural material has no texel grid to raise, so
+// its resolution IS its octave count: 2 octaves can only ever produce soft blobs at one scale.
+// Five spanning ~32:1 in frequency give a surface that carries coarse variation, mid grain and
+// fine tooth simultaneously, which is what reads as a real, high-resolution material. The
+// offset per octave decorrelates them so the layers do not stack into visible lattice beats.
+// SURFACE-DETAIL NOISE. Two things were tried here to deliver "higher resolution" texture and
+// both were measured and reverted; the note is kept so they are not re-derived.
+//
+// 1. MORE OCTAVES (5 -> 7). Detail is amplitude x frequency, and this series has gain 0.42, so
+//    octave 6 carries 0.42^5 and octave 7 carries 0.42^6 of the base — together about 4% of the
+//    total amplitude for 40% more noise evaluations. Octave count is simply not the lever.
+// 2. PROCEDURAL MIPMAPPING — fading each octave as its period approaches the pixel footprint,
+//    via fwidth of the object-space position. Correct in principle, and it would matter for a
+//    flat-gain series, but measured against a frozen frame it moved pixel-scale energy inside the
+//    silhouette by 1.5-3.1% across four materials, with one material NEGATIVE. That is noise.
+//    It has nothing to filter for the same reason as above: the octaves fine enough to alias are
+//    the ones already carrying almost no amplitude.
+//
+// The lever that does work is the BASE frequency, tscale, which is per-material and was raised
+// by roughly half. Detail lives in the first two or three octaves; everything past that is tooth.
+float fbmT(vec3 p){
+  float v=0., a=0.5, s=0.0;
+  // GAIN MUST BE BELOW 1/LACUNARITY. This noise drives a NORMAL, so what matters is the
+  // gradient, and octave k contributes gradient ~ (gain*lacunarity)^k. At gain 0.55 with
+  // lacunarity 2.13 that is 1.17^k — RISING, so the finest octave dominated the normal and
+  // every material read as sandblasted whatever the amplitude. At 0.42 it is 0.89^k: the
+  // coarse form leads, and the fine octaves add tooth underneath it instead of burying it.
+  for(int i=0;i<5;i++){ v+=a*n3(p); s+=a; p=p*2.13+17.3; a*=0.42; }
+  return v/s;
+}
 /* ============ COMPLEX GEOMETRIC FORMS ============
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
-float mArray(vec3 p){                                  // RIBBON — a wide band swept round the axis
+float ribbonAt(vec3 p,float twN){                                  // RIBBON — a wide band swept round the axis
   // Replaces the old turbine (a polar array of pitched blades + hub + ring). That form read as
   // machinery: hard repeated blades, a dead hub in the middle, and a torus that never belonged
   // to the rest of it. This is one continuous surface instead — a band swept around the axis
@@ -152,10 +193,10 @@ float mArray(vec3 p){                                  // RIBBON — a wide band
   float a=atan(p.z,p.x);
   float r=length(p.xz)-0.92;                           // signed distance to the sweep circle
   vec2 q=vec2(r,p.y);
+  float tw=twN;
   // INTEGER twist count only. A half twist gives a true Mobius band but leaves a seam where
   // atan wraps at +/-pi, because the cross-section arrives back rotated by an odd multiple of
   // pi and no longer matches itself.
-  float tw=floor(clamp(u_gDense*0.35+2.0,2.0,5.0));
   q*=rot(a*tw + u_gTwist*0.9);
   vec2 half_=vec2(0.048+u_gThick*0.050, 0.26+u_gCut*0.09);
   vec2 d2=abs(q)-half_+0.042;
@@ -165,6 +206,16 @@ float mArray(vec3 p){                                  // RIBBON — a wide band
   // 0.55 still did at 2+ twists. The distortion grows with the twist rate, so the safety factor
   // has to grow with it too rather than being a constant.
   return band/(1.0+tw*0.55);
+}
+// The twist count MUST be an integer or the cross-section fails to meet itself at the atan
+// wrap. Driving it straight off energy therefore made it snap 2->3->4 mid-track and the whole
+// form re-shaped in a single frame — that is the 'changes very strange' problem. It is now
+// latched, changed only at section boundaries, and cross-faded between the two counts exactly
+// like a mode morph, so the change reads as a transformation instead of a pop.
+float mArray(vec3 p){
+  float d=ribbonAt(p,u_twA);
+  if(u_twMix>0.001) d=mix(d,ribbonAt(p,u_twB),u_twMix);
+  return d;
 }
 float mStack(vec3 p){                                  // TOWER — stacked slabs, progressive twist
   const float N=8.0; float H=2.00/N;
@@ -240,9 +291,30 @@ vec2 map(vec3 wp){
   p/=s;
   // bounding sphere: every form lives inside r=1.3, so empty space is skipped without
   // ever touching a fractal estimator. This is what keeps the heavy modes affordable.
+  //
+  // The threshold used to be 0.10, and that was the source of the floor's contour rings. This
+  // branch returns the distance to a sphere of radius 1.45 while the branch below returns the
+  // distance to the actual form, and at the switch those disagree by the gap between the two —
+  // roughly 0.45. A raymarch tolerates it because the value is still a conservative lower bound,
+  // so it only costs a few extra steps. But anything that reads the field's VALUE rather than
+  // marching on it sees a cliff, and the soft shadow's min(k*h/t) reads the value: samples
+  // crossing this shell took a sudden dip, and since the crossing radius sweeps smoothly with the
+  // shaded point, the dip swept with it. Concentric rings, printed on the floor, exactly tracking
+  // the bounding sphere. Proven by forcing the true field everywhere, which removed every ring.
+  //
+  // The gap does not shrink with distance, but its VISIBILITY does: the spurious darkening is
+  // 7*br*s/t, so pushing the switch out to 0.85 means no shaded point within ~6 units of the shell
+  // can be darkened by it at all. Everything past radius 2.3 still skips the estimator, which is
+  // where nearly all of the empty space the early-out exists to skip actually lives.
+  //
+  // Gated on the scene, because widening the shell is not free — it makes the camera march
+  // evaluate the real estimator across a thicker band, measured at roughly a fifth of the render
+  // scale. Only the studio floor can display the rings (it is the only surface that reads the
+  // field's value at a distance); the colour field has no floor, so it keeps the tight shell and
+  // spends that budget on resolution instead.
   float br=length(p)-1.45;
   float dObj;
-  if(br>0.10) dObj=br*s*0.5;
+  if(br>mix(0.10,0.85,u_scene)) dObj=br*s*0.5;
   else{
   float d=evalMode(p,u_mode);
   // SMOOTHERSTEP (6t^5-15t^4+10t^3) rather than smoothstep. smoothstep has zero first derivative
@@ -262,12 +334,6 @@ vec2 map(vec3 wp){
   // read as jiggle even after the rotation was cleaned up. Slowed hard so the detail rides WITH
   // the form and the eye tracks the spin instead of the churn.
   d+=(fbm(p*nf+u_time*(0.030+u_hAir*0.09))-0.5)*na*(2.0/nf);
-  // mid-band onset -> a shockwave ring travelling out through the surface
-  if(u_shockA>0.002){
-    float rr=length(p);
-    float ring=exp(-pow(rr-u_shock*1.15,2.0)*7.0);
-    d+=sin((rr-u_shock*1.15)*12.0)*ring*u_shockA*0.013;
-  }
   dObj=d*s*0.5;
   }
   return vec2(dObj,1.0);
@@ -289,9 +355,9 @@ vec3 objP(vec3 p){
 vec3 texNormal(vec3 op,vec3 n){
   if(u_txAmp<0.0005) return n;
   vec3 sc=vec3(u_txScale,u_txScale*u_txAniso,u_txScale);
-  float e=0.35;
-  float f0=fbm(op*sc);
-  vec3 g=vec3(fbm(op*sc+vec3(e,0,0))-f0, fbm(op*sc+vec3(0,e,0))-f0, fbm(op*sc+vec3(0,0,e))-f0);
+  float e=0.10;                                   // small enough to resolve the top octave
+  float f0=fbmT(op*sc);
+  vec3 g=vec3(fbmT(op*sc+vec3(e,0,0))-f0, fbmT(op*sc+vec3(0,e,0))-f0, fbmT(op*sc+vec3(0,0,e))-f0);
   g-=n*dot(g,n);                                  // tangential only -> a bump, not a dent
   float gl=length(g); if(gl<1e-5) return n;
   // use the gradient DIRECTION and let u_txAmp be the tilt in radians. Scaling by the raw
@@ -300,7 +366,7 @@ vec3 texNormal(vec3 op,vec3 n){
 }
 float texRough(vec3 op,float base){
   if(u_txRough<0.001) return base;
-  float v=fbm(op*vec3(u_txScale,u_txScale*u_txAniso,u_txScale)*0.42);
+  float v=fbmT(op*vec3(u_txScale,u_txScale*u_txAniso,u_txScale)*0.42);
   return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
 }
 vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*0.0018;
@@ -322,13 +388,52 @@ float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
 // inside the bounding sphere, so once the ray is outside it and travelling outward nothing can
 // ever occlude it and the point is fully lit. Steps can also be much longer now that escaping
 // is cheap.
-float calcSha(vec3 p,vec3 l){ float r=1.,t=0.09;
-  for(int i=0;i<28;i++){ vec3 q=p+l*t;
-    if(dot(q,q)>2.9*2.9 && dot(q,l)>0.0) return clamp(smoothstep(0.,1.,r),0.,1.);
-    float h=mapD(q);
-    if(h<0.004) return 0.05;
-    r=min(r,7.0*h/t); t+=clamp(h,0.03,0.34); if(t>7.0) break; }
-  return clamp(smoothstep(0.,1.,r),0.,1.); }
+// SOFT SHADOW — rewritten around the actual cause of the floor's terraced contour rings.
+//
+// The penumbra estimate is min(k*h/t) accumulated along the light ray, and A MIN OVER SPARSE
+// SAMPLES IS DISCONTINUOUS IN THE SHADED POINT. A sphere trace crossing open floor takes steps of
+// a unit or more, so which sample lands nearest the form jumps as the floor point slides, and the
+// running minimum jumps with it. Measured by disabling that one line: every contour vanished and a
+// clean hard silhouette remained, so the march and the field were never at fault. Two earlier
+// attempts to keep sphere tracing and repair the estimate analytically (closest approach between
+// samples, from the previous distance and then from the step taken) both failed — they make the
+// sampled value smoother but do nothing about the sample POSITIONS, which is where the jump is.
+//
+// So: don't sphere trace. Every form lives inside r=2.3, so
+//   1. intersect the light ray with that sphere analytically. No hit ahead means nothing can
+//      occlude and the point is lit — the whole open floor now returns without a single field
+//      evaluation, where before it paid for a full march to discover the same thing.
+//   2. inside the sphere only, step a FIXED 0.09. Sample positions then move continuously with
+//      the shaded point, so the running minimum does too, and the chord is short enough to bound
+//      the cost. Fixed steps cannot skip the surface here because the step is far below the
+//      penumbra scale this is trying to resolve.
+float calcSha(vec3 p,vec3 l){
+  const float R=2.6;
+  float b=dot(p,l), c=dot(p,p)-R*R, disc=b*b-c;
+  if(disc<0.0) return 1.0;                       // ray misses the bounding sphere: lit
+  float sq=sqrt(disc), t1=-b+sq;
+  if(t1<=0.05) return 1.0;                       // sphere is behind the shaded point: lit
+  float t0=max(-b-sq, 0.05), r=1.0;
+  // A FIXED COUNT across the chord, not a fixed step. With a fixed step the sample count changes
+  // by one as the chord grows, and the sample that pops in or out at the far end takes the running
+  // minimum with it — the faint rings that survived every fix above. Distributing a constant number
+  // of samples over [t0,t1] makes every sample position a continuous function of the shaded point
+  // and never adds or removes one, so nothing can pop. It also spends the samples where they are
+  // needed: a grazing ray gets a fine step, a chord straight through the form gets a coarse one.
+  const int N=40;
+  float ds=(t1-t0)/float(N);
+  for(int i=0;i<N;i++){
+    float t=t0+(float(i)+0.5)*ds;
+    float h=mapD(p+l*t);
+    if(h<0.0015) return 0.0;
+    r=min(r, 7.0*h/t); }
+  // The sphere test is itself a hard cutoff, and a hard cutoff is a discontinuity: a ray grazing
+  // the sphere takes one sample at h ~ R minus the form's radius, and 7h/t drops below 1 for any
+  // shaded point far enough away, so the boundary printed a single crisp arc across the floor.
+  // Window the result by the chord actually traversed — at tangency the chord is zero and this
+  // returns exactly the unoccluded 1.0 that the outside branch returns, so the two agree.
+  float w=smoothstep(0.0,0.8,t1-t0);
+  return mix(1.0, clamp(smoothstep(0.,1.,r),0.,1.), w); }
 // A rectangular SOFTBOX projected into direction space. Real studio renders read as
 // "high class" because glossy surfaces reflect structured light sources with clean edges —
 // a single analytic sun gives a chrome ball nothing to show.
@@ -395,6 +500,15 @@ void palAB(out vec3 A,out vec3 B){
 vec3 bg(vec3 rd, vec2 sv){
   vec3 A,B; palAB(A,B);
   float h=clamp(rd.y*0.5+0.5,0.,1.);
+  // STUDIO: a lit cyclorama the form sits IN. Returns before any fbm, so the fluid field costs
+  // nothing when it is not on screen.
+  if(u_scene>0.5){
+    vec3 lo=mix(vec3(0.93),B,0.10);                        // bright toward the horizon
+    vec3 hi=mix(vec3(0.58),B,0.20);                        // deeper up top
+    vec3 c=mix(lo,hi,smoothstep(0.42,1.0,h));
+    c*=mix(1.0,0.72,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
+    return c*(0.85+u_bgAmt*0.25);
+  }
   // ---- FLUID: two rounds of domain warping. Warping the noise's INPUT by more noise is what
   // turns a static cloud into something that folds and shears like ink in water; a single fbm
   // only ever pulses in place. Drift speed rides arousal, so the field is calm under an intro
@@ -480,16 +594,56 @@ void main(){
   float dth=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
   float t=0.02+dth*0.012,mid=-1.;                 // dithered start kills stair-step banding
   for(int i=0;i<112;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
-    if(h.x<0.0015*t){mid=h.y;break;} t+=h.x*0.62; if(t>18.)break; }
+    if(h.x<0.0015*t){mid=h.y;break;}
+    // map() returns a HALF-scaled field, so h.x is at most half the true clearance. Near the
+    // surface the 0.62 factor guards the displaced field; out in empty space (where h.x is
+    // large and the value comes straight off the bounding sphere) that is doubly conservative
+    // and burns steps crossing nothing. 1.35*h.x is still only ~0.68 of the true distance.
+    t+=h.x*(h.x>0.20 ? 1.35 : 0.62);
+    if(t>18.)break; }
   // GROUND PLANE REMOVED. It existed to catch a cast shadow, and that shadow never worked here:
   // the forms float clear of it, so what landed was a soft grey pool with a horizon behind it,
   // and every attempt to fix the shadow only moved the artefact around. Without a shadow the
   // plane is just an arbitrary horizon line dividing the frame, so it goes too and the form now
   // floats in the colour field. This also drops a shadow march for every floor pixel, which was
   // the most expensive thing in the lower half of the frame.
-  vec3 back=bg(rd,uv);       // the background is now the whole frame: miss + aerial fade
+  // STUDIO FLOOR, intersected analytically. Marching an infinite plane makes grazing rays
+  // converge too slowly, so they hit the step cap at varying distances and the floor bands into
+  // rings — a plane has a closed form, so use it. The plane sits just under the form (JS derives
+  // u_groundY from the same reach the framing uses), which is what makes the contact shadow
+  // actually land instead of spreading into the grey pool this replaced.
+  if(u_scene>0.5){
+    float tp=(rd.y<-1e-4)?(u_groundY-ro.y)/rd.y:-1.0;
+    if(tp>0.02 && (mid<0.0 || tp<t)){ t=tp; mid=2.0; }
+  }
+  vec3 Lw=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
+  vec3 back=bg(rd,uv);       // miss + aerial fade
   vec3 col;
-  if(mid<0.){ col=back; }
+  if(mid<0.){
+    col=back;
+    // SHADOW CATCHER REMOVED. It projected the form's occlusion onto an invisible plane, and in
+    // the colour field there is no floor for it to belong to: the result was a large dark pool
+    // across the bottom of the frame, reading as a second object rather than as a shadow. It also
+    // banded — a wide, smooth radial falloff laid over a near-flat backdrop quantises into
+    // concentric contour rings in 8-bit, which no amount of tuning the falloff removes. This is
+    // the same failure the ground plane above was deleted for. The form floats in the field; the
+    // Studio scene still has a real floor and a real cast shadow, where one actually belongs.
+  }
+  else if(mid>1.5){                                  // ---- STUDIO FLOOR ----
+    vec3 p=ro+rd*t, gn=vec3(0,1,0);
+    vec3 A,B; palAB(A,B);
+    vec3 alb=mix(vec3(0.82),B,0.10);
+    vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
+    vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
+    float sha=calcSha(p,L);                          // cast shadow
+    float occ=calcAO(p,gn);                          // contact darkening
+    vec3 amb=env(gn,1.0)*0.95;
+    // Contact shadow has to be DARK right under the form or it reads as a grey smudge. Both
+    // terms are driven near zero in full occlusion, and AO is sharpened so the darkest part sits
+    // tight against the silhouette instead of spreading.
+    float ao2=occ*occ;
+    col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.02,1.0,sha) + amb*mix(0.04,1.0,ao2) );
+  }
   else{
     vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
     vec3 op=objP(p);
@@ -502,13 +656,30 @@ void main(){
     // extra microfacet spread, so folding it into roughness removes the sparkle without
     // softening surfaces that are genuinely flat. Chrome (rough 0.06) is unusable without it.
     vec3 dnx=dFdx(n), dny=dFdy(n);
+    // Cap left at 0.030. Raising it to 0.075 to absorb the richer 5-octave normal measured
+    // WORSE, not better — but the metric (frame-to-frame pixel change) cannot separate genuine
+    // shimmer from sharp reflections legitimately sweeping across a rotating chrome surface, so
+    // it could not justify the change either way. Keeping the value that was tuned by eye.
     float kvar=min(0.030, 0.5*(dot(dnx,dnx)+dot(dny,dny)));
     rgh=min(1.0, sqrt(rgh*rgh+kvar));
     float NoV=clamp(dot(n,v),1e-4,1.);
     float fr=pow(1.-NoV,2.6);
     // albedo carries the same grain, so the body is not one flat colour
-    float av=fbm(op*u_txScale*0.30);
-    vec3 base=mix(vec3(0.9), u_mood, 0.68)*(1.0+(av-0.5)*u_txRough*0.16);
+    float av=fbmT(op*u_txScale*0.30);
+    // TWO-TONE. A single u_mood makes the whole form one hue, which is why a frame reads
+    // flatter than the reference — those get their life from several colourways at once.
+    // Sweep in OBJECT space (so the split belongs to the form and turns with it) between the
+    // section's mood and the palette accent, with the surface grain breaking up the boundary
+    // so it reads as material rather than a gradient laid over the top.
+    vec3 pA,pB; palAB(pA,pB);
+    float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30)+(av-0.5)*0.55, 0., 1.);
+    vec3 tint=mix(u_mood, clamp(pB*1.12,0.,1.), smoothstep(0.18,0.82,sweep)*u_twoTone);
+    // u_alb is a per-material albedo scale. The shared 0.9 base is right for pearl and frosted,
+    // which are near-white by nature, but it left clay blowing out to paper white across every lit
+    // face — measured at 1.66% of the upper frame above 225/255, of which only a fifth came from
+    // the surface texture; the rest was simply a very bright diffuse clipping. Real clay is a
+    // mid-tone, and dropping the albedo is what makes it read as clay rather than lit plaster.
+    vec3 base=mix(vec3(0.9), tint, 0.68)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
     vec3 f0=mix(vec3(0.04), base, u_metal);
     // thin-film colour, shifted by the micro surface so it mottles like real pearl
     vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+av*0.7+u_time*0.03+u_iridHue+u_hAir*0.25)
@@ -524,14 +695,27 @@ void main(){
     // diffuse body (fades out for metals) — occluded + self-shadowed.
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
-    vec3 amb=env(n,1.0)*0.95;
-    vec3 c=base*(1.-u_metal)*( keyC*(0.80*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
+    vec3 amb=env(n,1.0)*1.22;
+    vec3 c=base*(1.-u_metal)*( keyC*(0.95*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
                              + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
-    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ);
+    // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
+    // not to zero, because it is how the section's valence reaches the form at all.
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
-    vec3 refl=env(R,rgh);
+    // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
+    // point, so concave areas reflect light the geometry actually blocks — which is what makes
+    // chrome read as a thin shell instead of a solid object. March a short ray along R and
+    // suppress the reflection where the form occludes itself.
+    float rocc=1.0;
+    { float tr=0.035;
+      for(int i=0;i<10;i++){
+        float hh=mapD(p+R*tr);
+        if(hh<0.004){ rocc=0.0; break; }
+        rocc=min(rocc,6.0*hh/tr); tr+=clamp(hh,0.03,0.35); if(tr>2.2) break; }
+      rocc=clamp(rocc,0.,1.); }
+    vec3 refl=env(R,rgh)*mix(0.22,1.0,rocc);
     // Schlick-with-roughness: the standard IBL Fresnel. The old pow(1-NoV,2.6) ramp ignored
     // roughness entirely, so a matte surface still lit a bright reflective rim and a polished
     // one never reached full grazing reflectance. Edge-on, smooth materials now go fully
@@ -542,6 +726,67 @@ void main(){
     // painted a saturated rim (green whenever the section's random hue landed there); a real
     // pearl shows its colour in what it reflects.
     c += (irid-vec3(0.5))*refl*f0*u_reflect*u_iridAmt*0.55*(1.0+u_hAir*0.5)*mix(0.45,1.0,occ);
+    // TRANSMISSION (glass). What is not reflected goes THROUGH, so sample the environment along
+    // the REFRACTED direction rather than adding a wash of white. This is the whole difference
+    // between glass and a shiny pale ball: the background seen through the form bends, and the
+    // bend is strongest where the surface turns away from the eye. Weighted by 1-Fresnel because
+    // reflection and transmission share one energy budget — at grazing angles glass goes fully
+    // mirror, which is exactly the cue that reads as a hard transparent shell.
+    if(u_trans>0.001){
+      vec3 Rt=refract(-v,n,0.667);                 // eta 1/1.5, ordinary glass
+      float tir=dot(Rt,Rt);                        // zero on total internal reflection
+      // INTERIOR MARCH — this is what gives the glass depth. Refracting once at the front surface
+      // and reading the backdrop treats the form as an infinitely thin shell: it bends the view
+      // but has no inside, which is why it read as a soap film. The field is NEGATIVE inside the
+      // form, so -mapD is the distance to the boundary from within, and marching on that carries
+      // the refracted ray to where it actually leaves.
+      // Two things fall out of that and both are the "depth" being asked for:
+      //   - THICKNESS. How far the ray travelled through the solid, which drives Beer-Lambert
+      //     absorption below — thin edges stay clear, the body deepens in colour. This is the cue
+      //     that says solid rather than hollow.
+      //   - A SECOND REFRACTION. Real glass bends light twice, once entering and once leaving,
+      //     and the exit bend is the larger of the two visually because it is where the ray is
+      //     furthest from where it started.
+      float thick=0.0; vec3 eR,eG,eB;
+      if(tir>0.0001){
+        vec3 rd2=normalize(Rt);
+        vec3 q=p+rd2*0.012;
+        // 18 steps and a tight threshold, after trying to cut it to 10 with a coarse one on the
+        // theory that the exit NORMAL feeds a refraction rather than a silhouette and so needs
+        // less precision. Measured on a frozen frame the cheap version scored HIGHER internal
+        // structure — 6.67 against 5.20 — which is the trap: rays that stop before converging give
+        // scattered exit normals, and scattered normals produce contrast that looks like detail
+        // and is noise. It was not faster either. Precision here is not a quality knob to trade.
+        for(int i=0;i<18;i++){
+          float hh=-mapD(q);
+          if(hh<0.004) break;
+          float st=max(hh,0.012); q+=rd2*st; thick+=st;
+          if(thick>4.0) break; }
+        vec3 n2=-calcN(q);                         // boundary normal, flipped to face the ray
+        // Dispersion applied at the EXIT surface, three etas off one march. Marching three times
+        // would triple the cost of the most expensive material for a split that is dominated by
+        // the exit bend anyway.
+        eR=refract(rd2,n2,1.5*0.988); eG=refract(rd2,n2,1.5); eB=refract(rd2,n2,1.5*1.012);
+        vec3 fb=reflect(rd2,n2);                   // total internal reflection at the exit
+        eR=dot(eR,eR)>0.0001?normalize(eR):fb;
+        eG=dot(eG,eG)>0.0001?normalize(eG):fb;
+        eB=dot(eB,eB)>0.0001?normalize(eB):fb;
+      } else { eR=R; eG=R; eB=R; }
+      // Sample the BACKDROP along the refracted ray, not the lighting environment. env() is the
+      // softbox rig that lights the form; what you actually see through glass is whatever is
+      // behind it, so refracting env() produced a dark opaque blob with no relationship to the
+      // scene. bg() is the same function the miss path uses, so the colour field genuinely bends
+      // through the form and the shape reads as transparent rather than as dark plastic.
+      // Dispersion costs ~12% of the glass frame, measured by collapsing it to one bg() call.
+      vec3 through=vec3(bg(eR,uv).r, bg(eG,uv).g, bg(eB,uv).b);
+      // BEER-LAMBERT. Absorption is exponential in path length, and it is the complement of the
+      // glass colour that gets absorbed, so a thick path saturates toward that colour instead of
+      // just going dark. u_absorb is per-material, so a future thicker or dirtier glass is a
+      // number rather than another branch.
+      vec3 att=exp(-(vec3(1.0)-clamp(base,0.,1.))*thick*u_absorb);
+      float F=clamp(max(Fr.r,max(Fr.g,Fr.b)),0.,1.);
+      c=mix(c, through*att*1.04, u_trans*(1.0-F));
+    }
     // translucent backlight (frosted)
     c += base*max(0.,dot(n,-L))*0.18*u_transl;
     // emissive glow (neon) — high-band stabs flare it, desaturated so it cannot band
@@ -562,24 +807,54 @@ void main(){
     // D explodes as roughness -> 0 (a mirror lit by a point light is a singularity). Clamp the
     // lobe, or a smooth material fires single-pixel white sparks that bloom into blown blobs.
     vec3 spec=min(Fs*(D*G/(4.0*NoV)), vec3(24.0));
-    c += keyC*spec*(0.35+u_reflect*0.7)*sha*mix(0.5,1.0,occ);
+    // u_spec gates the DIRECT lobe separately from u_reflect. Dropping reflect to zero only
+    // removes the environment reflection; this term keeps a 0.35 floor, so a material asked to
+    // be free of reflections still carried a highlight. Clay sets it to zero.
+    c += keyC*spec*(0.35+u_reflect*0.7)*u_spec*sha*mix(0.5,1.0,occ);
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
   // the floor dissolves into the backdrop well beyond the subject: no visible horizon line,
   // which is what sells a seamless cyclorama rather than 'object on a plane'
   // Only the form is left to fade, so the floor's separate range is gone with it.
-  col=mix(col, back, smoothstep(3.6,15.0,t)*0.96);
+  // AERIAL FADE starts BEYOND the subject. The form sits at t~3..6, so a fade opening at 3.0
+  // was mixing the backdrop straight into it — measurably ~15-20% darker and tinted toward the
+  // background colour. That is the rendering quality bleeding away into whatever is behind it.
+  // Opening at 6.5 leaves the subject untouched while distant floor still dissolves completely.
+  // ONLY for rays that hit something. On a miss col IS the background already, and running the
+  // fade there overwrote the shadow catcher's work with an unshadowed copy of the backdrop.
+  if(mid>=0.0) col=mix(col, back, smoothstep(6.5,15.0,t));
   o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
+}`;
+
+const BRIGHT=`#version 300 es
+precision highp float;
+out vec4 o;
+uniform sampler2D u_tex; uniform vec2 u_res, u_src; uniform float u_thr;
+vec3 bp(vec3 c,float thr){                       // soft-knee bright pass on a LINEAR HDR value
+  float l=dot(c,vec3(.2126,.7152,.0722));
+  float k=max(0.,l-thr); k=k*k/(k+0.5);
+  return c*(k/max(l,1e-4));
+}
+void main(){
+  vec2 uv=gl_FragCoord.xy/u_res, t=u_src*0.5;
+  // Threshold each tap BEFORE averaging. Thresholding blurred samples (what sampling the mip
+  // chain directly did) lets a small, very bright highlight average below the threshold and
+  // vanish — so specular pinpoints never bloomed, which is what made highlights read as bright
+  // pixels rather than as light.
+  o=vec4((bp(texture(u_tex,uv+vec2(-t.x,-t.y)).rgb,u_thr)
+         +bp(texture(u_tex,uv+vec2( t.x,-t.y)).rgb,u_thr)
+         +bp(texture(u_tex,uv+vec2(-t.x, t.y)).rgb,u_thr)
+         +bp(texture(u_tex,uv+vec2( t.x, t.y)).rgb,u_thr))*0.25, 1.);
 }`;
 
 const POST=`#version 300 es
 precision highp float;
 out vec4 o;
-uniform sampler2D u_tex; uniform vec2 u_res, u_texel;
+uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
-uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss;
-uniform float u_focus,u_dof;
+uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
+uniform float u_dbg;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
 float lum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}
@@ -597,18 +872,25 @@ vec3 fxaa(vec2 uv,vec2 r){
   float lb=luma(b); return (lb<lmin||lb>lmax)?a:b;
 }
 float r2(vec2 p){return fract(dot(p,vec2(0.7548776662,0.5698402909)));}
-vec3 knee(vec3 c){float l=lum(c);float k=max(0.,l-0.80);k=k*k/(k+.5);return c*(k/max(l,1e-4));}
-// wide, soft, cinematic bloom straight off the mip chain — 4 taps instead of 49
+// Bloom now reads an ALREADY-thresholded buffer, so this is a pure gather: wide, soft, and
+// energy-preserving. No knee here — doing it per mip sample was the bug.
 vec3 bloom(vec2 uv,vec2 t){
   if(u_mip>0.5){
-    return knee(textureLod(u_tex,uv,2.0).rgb)*0.34
-         + knee(textureLod(u_tex,uv,3.5).rgb)*0.30
-         + knee(textureLod(u_tex,uv,5.0).rgb)*0.22
-         + knee(textureLod(u_tex,uv,6.5).rgb)*0.14; }
-  vec3 s=vec3(0.);float w=0.;
-  for(int i=-2;i<=2;i++)for(int j=-2;j<=2;j++){vec2 of=vec2(float(i),float(j));float g=exp(-dot(of,of)*.22);
-    s+=knee(texture(u_tex,uv+of*t*5.0).rgb)*g;w+=g;}
-  return s/max(w,1e-4);}
+    // Tap weights left alone deliberately. Shifting weight off the tightest mip (1.2 -> 2.4 and
+    // friends) to move the glow from an outline to a broad lift was TRIED AND MEASURED, and it
+    // made the halo more than twice as bad: near-edge excess 11.8 -> 25.1 at a fixed threshold.
+    // A wider tap gathers from a much larger area of a large bright subject, so it deposits more
+    // energy everywhere including the bands right next to the silhouette. The threshold, not the
+    // tap radius, is the lever that controls how much of the form enters the bloom at all.
+    return textureLod(u_brt,uv,1.2).rgb*0.42
+         + textureLod(u_brt,uv,3.0).rgb*0.34
+         + textureLod(u_brt,uv,5.0).rgb*0.24; }   // 3 taps, same total weight
+  vec3 sum=vec3(0.); float w=0.;
+  for(int i=-2;i<=2;i++)for(int j=-2;j<=2;j++){
+    vec2 of=vec2(float(i),float(j)); float g=exp(-dot(of,of)*.22);
+    sum+=texture(u_brt,uv+of*t*5.0).rgb*g; w+=g; }
+  return sum/max(w,1e-4);
+}
 const float BAY[16]=float[16](0.,8.,2.,10.,12.,4.,14.,6.,3.,11.,1.,9.,15.,7.,13.,5.);
 float bayer(vec2 p){ivec2 i=ivec2(mod(p,4.0));return BAY[i.y*4+i.x]/16.0-0.46875;}
 mat2 rot2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
@@ -620,22 +902,33 @@ vec3 duo(float l){
 }
 void main(){
   vec2 uv=gl_FragCoord.xy/u_res,t=u_texel;      // offsets in SOURCE texels so AA/sharpen actually bite
+  // DBGMASK: output the depth-derived silhouette instead of the image. Edge artefacts have to be
+  // measured against the EXACT silhouette, not one guessed from luminance, or the measurement
+  // inherits the very halo it is trying to find.
+  if(u_dbg>0.5){ o=vec4(vec3(texture(u_tex,uv).a<17.0?1.0:0.0),1.0); return; }
   vec3 col;
   if(u_ss>0.5){                                 // supersampled: resolve real samples with a 4-tap tent
-    vec2 h=t*0.5;                               // (true SSAA beats any edge-reconstruction filter)
+    // Footprint must match the RATIO. One output pixel covers u_ssRatio source texels, so taps
+    // at a fixed +/-0.5 source texel only ever filtered a 1-texel window and left most of the
+    // extra samples outside the kernel — paying for supersampling without collecting it.
+    vec2 h=t*0.5*u_ssRatio;
     col=(texture(u_tex,uv+vec2(-h.x,-h.y)).rgb+texture(u_tex,uv+vec2(h.x,-h.y)).rgb
         +texture(u_tex,uv+vec2(-h.x, h.y)).rgb+texture(u_tex,uv+vec2(h.x, h.y)).rgb)*0.25;
   } else col=fxaa(uv,t);
-  // DEPTH OF FIELD — the single strongest "expensive render" cue. Circle of confusion from
-  // the depth in alpha, blurred by reading further up the mip chain we already build.
-  if(u_dof>0.001 && u_mip>0.5){
-    float z=texture(u_tex,uv).a;
-    // a sharp focal BAND, not a plane: the whole form stays crisp, only what sits well
-    // behind it falls away. Blurring the subject reads as a soft render, not a shallow lens.
-    float coc=clamp((abs(z-u_focus)-0.55)*u_dof,0.,1.);
-    coc*=coc;
-    col=mix(col, textureLod(u_tex,uv,coc*3.2).rgb, clamp(coc*1.25,0.,1.));
-  }
+  // DEPTH OF FIELD REMOVED — measured out, not opinion. Its entire visible effect was the halo
+  // the user kept reporting around the silhouette. Ablating it and differencing frames on a frozen
+  // camera, by distance from the exact depth-derived silhouette:
+  //     1-6px  RMS 9.06   6-14px RMS 6.66   14-25px RMS 1.10   25-60px RMS 0.14   60+ RMS 0.13
+  // Beyond 25px it moved the image by an eighth of one 8-bit level, in BOTH scenes (studio: 0.08).
+  // The reason is structural: this is a mip-tap defocus, and both backdrops are smooth — the fluid
+  // colour field is low-frequency by construction and the studio cyclorama is a gradient. Blurring
+  // smooth content is a no-op, so the only thing in reach of the blur kernel with any contrast in
+  // it was the subject, and every visible pixel DOF produced was subject colour smeared outward.
+  // The depth-aware rejection added earlier cut that down but could not remove it: it tests the
+  // MIP-AVERAGED depth, and by ~10px out that average has settled to background depth while the
+  // mip texel still carries subject energy gathered from a wide neighbourhood. A mip cannot be
+  // un-averaged after the fact; fixing this properly means a per-tap-rejected gather, which is
+  // real cost for an effect measured at 0.13/255 of actual defocus. So it goes.
   if(u_chroma>0.001){                            // misregistration / lens split
     vec2 d=uv-0.5; float k=u_chroma*0.007*(0.25+dot(d,d)*3.0);
     col.r=texture(u_tex,uv+d*k).r; col.b=texture(u_tex,uv-d*k).b; }
@@ -683,14 +976,17 @@ function sh(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.co
 function prog(vs,fs){const p=gl.createProgram();gl.attachShader(p,sh(gl.VERTEX_SHADER,vs));
   gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);
   if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));return p;}
-let sceneP,postP,buf,hdrT,hdrF;
-try{ sceneP=prog(VERT,SCENE); postP=prog(VERT,POST); }catch(e){ showStat('Shader error: '+e.message,true); throw e; }
+let sceneP,postP,brightP,buf,hdrT,hdrF,brtT,brtF,BW,BH;
+try{ sceneP=prog(VERT,SCENE); postP=prog(VERT,POST); brightP=prog(VERT,BRIGHT);
+     }catch(e){ showStat('Shader error: '+e.message,true); throw e; }
 buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
-const aScene=gl.getAttribLocation(sceneP,'p'), aPost=gl.getAttribLocation(postP,'p');
+const aScene=gl.getAttribLocation(sceneP,'p'), aPost=gl.getAttribLocation(postP,'p'),
+      aBright=gl.getAttribLocation(brightP,'p');
 function drawFS(a){gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.enableVertexAttribArray(a);
   gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);gl.drawArrays(gl.TRIANGLES,0,3);}
-const US=n=>gl.getUniformLocation(sceneP,n), UP=n=>gl.getUniformLocation(postP,n);
+const US=n=>gl.getUniformLocation(sceneP,n), UP=n=>gl.getUniformLocation(postP,n),
+      UB=n=>gl.getUniformLocation(brightP,n);
 let mipOK=false;
 function initTargets(w,h){
   if(!floatOK) return;
@@ -701,7 +997,18 @@ function initTargets(w,h){
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   hdrF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,hdrF);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,hdrT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,hdrT,0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  // half-res bright-pass target; bloom is gathered from its mip chain
+  BW=Math.max(2,w>>1); BH=Math.max(2,h>>1);
+  if(brtT) gl.deleteTexture(brtT); if(brtF) gl.deleteFramebuffer(brtF);
+  brtT=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,brtT);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,BW,BH,0,gl.RGBA,gl.HALF_FLOAT,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,mipOK?gl.LINEAR_MIPMAP_LINEAR:gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  brtF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,brtF);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,brtT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 }
 // 0.72 starts near where the controller actually settles on a native-resolution canvas. Starting
 // at 0.90 meant the first seconds ran ~29ms, which dragged frameAvg up and tripped the degrade
@@ -724,7 +1031,8 @@ addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
-let frameAvg=16, lastQ=0;                            // adaptive quality (frame-time driven)
+const DX={bloom:1,chroma:1,sharpen:1,thr:1};   // per-term ablation switches for measuring edge artefacts
+let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
 // composition presets -> continuous shape params (eased between sections)
@@ -753,6 +1061,10 @@ const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0, rollS=0;
+// Ribbon twist: integer only (see the shader note), latched and cross-faded so it never pops.
+let twA=3, twB=3, twMix=0;
+let scene=0;                                          // 0 colour field (default), 1 studio
+let groundY=-1.05;
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
 // One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
 // most electronic music, so a turn lines up with the structure the Director cuts sections on.
@@ -789,6 +1101,15 @@ let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 //   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
 //   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
 const REACH=[1.27,1.20,1.03,1.15,1.00,0.90];
+// Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
+// sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
+// unit below the form and the contact shadow had nothing to make contact with.
+const REACH_Y=[0.38,1.00,0.98,0.80,0.72,0.90];
+function frameReachY(){
+  const r0=REACH_Y[mode]!==undefined?REACH_Y[mode]:0.9, r1=REACH_Y[mode2]!==undefined?REACH_Y[mode2]:0.9;
+  const k=(phase===1)?(mix*mix*(3-2*mix)):0;
+  return r0+(r1-r0)*k;
+}
 function frameReach(){                                 // blended across a morph, as the shader does
   const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
   const k=(phase===1)?(mix*mix*(3-2*mix)):0;           // same smoothstep the melt uses
@@ -828,13 +1149,30 @@ function setMode(m){ if(m===mode&&phase===0) return; mode2=m; mix=0; phase=1; } 
 let autoShape=false;   // shape only changes automatically if HUD = "Auto · Director"
 // ---- rich MATERIAL variations (HUD-selectable, eased for smooth switches) ----
 const MATS={
-  //          metal rough reflect irid transl emis | tscale=detail freq, tamp=tilt(rad), taniso=stretch, trough=gloss variation
-  pearl:      {metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00, tscale:70, tamp:0.0035,taniso:1.00,trough:0.22},
-  iridescent: {metal:0.0,rough:0.22,reflect:0.50,irid:1.1,transl:0.30,emis:0.08, tscale:95, tamp:0.0035,taniso:1.00,trough:0.20},
-  chrome:     {metal:1.0,rough:0.06,reflect:1.00,irid:0.1,transl:0.00,emis:0.00, tscale:150,tamp:0.004,taniso:0.10,trough:0.12},
-  frosted:    {metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00, tscale:120,tamp:0.030,taniso:1.00,trough:0.30},
-  holo:       {metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18, tscale:240,tamp:0.005,taniso:0.06,trough:0.14},
-  neon:       {metal:0.0,rough:0.30,reflect:0.35,irid:0.6,transl:0.40,emis:0.70, tscale:55, tamp:0.0030,taniso:1.00,trough:0.14},
+  // tscale = base detail frequency (fbmT stacks 5 octaves above it), tamp = surface tilt in
+  // RADIANS, taniso = stretch for directional grain, trough = gloss variation.
+  // trans = refractive transmission (glass),
+  // spec = direct specular lobe gate (clay sets it to 0 for a genuinely matte surface),
+  // alb = albedo scale; the shared base is tuned for near-white materials, clay is a mid-tone,
+  // absorb = Beer-Lambert absorption per unit of path length through the interior (glass).
+  // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
+  pearl:   {alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,spec:1.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
+  // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
+  // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
+  // reads as a soap bubble. Almost no surface tilt: texture on glass reads as a dirty window.
+  glass:   {alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
+  // CLAY. Surface texture is OFF outright — tamp 0 makes texNormal early-out, trough 0 makes
+  // texRough early-out AND zeroes the albedo grain, since that term is scaled by trough. So the
+  // shading normal is the raw geometric normal and the colour is uniform: nothing on it at all.
+  // Two earlier passes tried to keep some surface (fine grain read as pumice, then large-scale
+  // forming still caught the key light as bright streaks); neither is what clean means here.
+  // Both reflect and spec are zero: dropping reflect alone only removes the environment
+  // reflection, while the direct lobe is scaled by (0.35 + reflect*0.7) and keeps a floor. What
+  // stops it reading as dead is the translucency, which gives the waxy quality that separates
+  // clay from chalk, plus a high-but-not-total roughness so it still takes bounce light.
+  clay:    {alb:0.62,absorb:0.00,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,spec:0.00, tscale:24, tamp:0.000,taniso:1.00,trough:0.00},
+  frosted: {alb:1.00,absorb:0.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,spec:1.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
+  holo:    {alb:1.00,absorb:0.00,metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,spec:1.00, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
 };
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
 
@@ -863,13 +1201,13 @@ const inkB=()=>bgPair()[1];
 /* ---- LOOK: the press/print grade. This is what carries the label aesthetic. ---- */
 const LOOKS={
   // pristine product-render grade: no print texture at all, let the lighting do the work
-  studio:  {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.00,grain:0.10,contrast:-0.06,sat:0.08,sharp:0.22,dof:0.42},
-  clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.06,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30,dof:0.28},
-  label:   {ink:0.62,poster:0, dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42,dof:0.22},
-  riso:    {ink:0.88,poster:7, dither:0.80,half:0.00,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50,dof:0.12},
-  xerox:   {ink:1.00,poster:3, dither:1.10,half:0.00,chroma:0.20,grain:1.35,contrast:0.85,sat:-0.30,sharp:0.60,dof:0.00},
-  halftone:{ink:0.92,poster:5, dither:0.25,half:0.75,chroma:0.35,grain:0.70,contrast:0.55,sat:0.00,sharp:0.55,dof:0.00},
-  chrome:  {ink:0.22,poster:0, dither:0.15,half:0.00,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38,dof:0.35},
+  studio:  {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.00,grain:0.10,contrast:-0.06,sat:0.08,sharp:0.22},
+  clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.06,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30},
+  label:   {ink:0.62,poster:0, dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42},
+  riso:    {ink:0.88,poster:7, dither:0.80,half:0.00,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50},
+  xerox:   {ink:1.00,poster:3, dither:1.10,half:0.00,chroma:0.20,grain:1.35,contrast:0.85,sat:-0.30,sharp:0.60},
+  halftone:{ink:0.92,poster:5, dither:0.25,half:0.75,chroma:0.35,grain:0.70,contrast:0.55,sat:0.00,sharp:0.55},
+  chrome:  {ink:0.22,poster:0, dither:0.15,half:0.00,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38},
 };
 const LK =Object.assign({},LOOKS.studio), LKT=Object.assign({},LOOKS.studio);
 
@@ -882,8 +1220,12 @@ function sampleCurve(name,t){
   if(i<0) return arr[0]; if(i>=arr.length-1) return arr[arr.length-1];
   return arr[i]*(1-fdr)+arr[i+1]*fdr;
 }
+const FALLBACK_SECTION={t0:0,t1:1e9,label:'—',mood:'pearl',energy:0.3,tension:0.2,valence:0.5,
+  camera:'orbit',composition:'radial',palette:[0.62,0.68,0.92],intent:''};
 function currentSection(t){
-  const s=director.sections; for(let i=0;i<s.length;i++) if(t>=s[i].t0&&t<s[i].t1) return s[i];
+  const s=director&&director.sections;
+  if(!s||!s.length) return FALLBACK_SECTION;   // never hand undefined back to the frame loop
+  for(let i=0;i<s.length;i++) if(t>=s[i].t0&&t<s[i].t1) return s[i];
   return s[s.length-1];
 }
 function nextPrediction(t){
@@ -901,7 +1243,17 @@ function seek(x){ if(!audioBuffer)return; const was=isPlaying; if(isPlaying){try
   prevT=-1; resetOnsetCursors(pausedAt); if(was)play(); }
 
 function showStat(t,err){ const s=$('stat'); s.style.display='flex'; $('statTxt').textContent=t;
-  $('statTxt').className=err?'err':''; }
+  $('statTxt').className=err?'err':''; s.classList.remove('busy'); }
+// Progress bar. setProg(null) leaves progress mode; setProg(f) is a fraction 0..1.
+function setProg(f,label){
+  const s=$('stat');
+  if(f==null){ s.classList.remove('busy'); return; }
+  s.style.display='flex'; s.classList.add('busy');
+  const p=Math.max(0,Math.min(1,f));
+  $('statFill').style.width=(p*100).toFixed(1)+'%';
+  $('statPct').textContent=Math.round(p*100)+'%';
+  if(label) $('statTxt').textContent=label;
+}
 function hideStat(ms){ setTimeout(()=>$('stat').style.display='none',ms||0); }
 const fmt=s=>{s=Math.max(0,s|0);return (s/60|0)+':'+String(s%60).padStart(2,'0');};
 
@@ -912,14 +1264,77 @@ async function loadFile(file){
   let buf;
   try{ buf=await file.arrayBuffer(); audioBuffer=await ctx.decodeAudioData(buf.slice(0)); }
   catch(e){ showStat('Could not decode audio',true); hideStat(2600); return; }
-  showStat('Analysing with AI Director…');
+  // ---- upload + analyse, with a real progress bar ----
+  // The bar is driven by two different real signals, not by a timer pretending to be one:
+  // the upload leg comes from XHR's own byte counter, and the analysis leg from the server,
+  // which reports the weighted fraction as each stage begins.
+  const job = 'j'+Math.random().toString(36).slice(2)+Date.now().toString(36);
+  const UPLOAD_SHARE = 0.12;      // uploading is small next to analysing; do not let it dominate
+  let poll=null, seen={p:0,next:0,eta:1,stage:''}, stageT0=0, inFlight=false, shown=0;
+  setProg(0,'Uploading…');
   try{
-    const resp=await fetch(SERVER+'/analyze',{method:'POST',headers:{'X-Filename':file.name},body:buf});
-    if(!resp.ok) throw new Error('server '+resp.status);
-    director=await resp.json();
+    director = await new Promise((resolve,reject)=>{
+      const xhr=new XMLHttpRequest();
+      xhr.open('POST', SERVER+'/analyze?job='+encodeURIComponent(job));
+      xhr.setRequestHeader('X-Filename', file.name);
+      xhr.upload.onprogress = e=>{
+        if(e.lengthComputable) setProg((e.loaded/e.total)*UPLOAD_SHARE,'Uploading…');
+      };
+      xhr.upload.onload = ()=>{
+        setProg(UPLOAD_SHARE,'Analysing…');
+        // Poll the side channel. The server reports where each stage STARTS and ENDS and how long
+        // it expects to take, and the client eases between the two — the single longest stage
+        // (harmonic/percussive separation) is an opaque library call that takes half the run and
+        // cannot report from inside itself, so without this the bar would sit still through most
+        // of the wait. Easing is clamped to the stage's end, so it can slow to a crawl but never
+        // overtake the truth and never goes backwards.
+        poll=setInterval(async()=>{
+          // Skip if the previous poll is still outstanding. Measured round trips reached 473ms
+          // against a 300ms interval, so requests overlapped and responses could land out of
+          // order — an older one then overwrote a newer one and the bar jumped BACKWARDS, 27
+          // times over one analysis. One in flight at a time removes the reordering at source.
+          if(!inFlight){
+            inFlight=true;
+            try{
+              const r=await fetch(SERVER+'/progress?job='+encodeURIComponent(job),{cache:'no-store'});
+              const d=await r.json();
+              if(d && typeof d.p==='number'){
+                if(d.stage!==seen.stage){ seen=d; stageT0=performance.now(); }
+                else { seen.p=d.p; seen.next=d.next; seen.eta=d.eta; }
+              }
+            }catch(e){ /* a dropped poll must never fail the analysis */ }
+            finally{ inFlight=false; }
+          }
+          const el=(performance.now()-stageT0)/1000;
+          const k=seen.eta>0 ? Math.min(1, el/seen.eta) : 1;
+          const eased=seen.p + (seen.next-seen.p)*(1-Math.pow(1-k,2));   // decelerates into the end
+          // Monotonic by construction, belt as well as braces: a progress bar that retreats reads
+          // as a fault even when the number behind it is correct.
+          shown=Math.max(shown, UPLOAD_SHARE + eased*(1-UPLOAD_SHARE));
+          setProg(shown,'Analysing'+(seen.stage&&seen.stage!=='queued'?' — '+seen.stage:'')+'…');
+        },300);
+      };
+      xhr.onload = ()=>{
+        if(xhr.status>=200 && xhr.status<300){
+          try{ resolve(JSON.parse(xhr.responseText)); }catch(e){ reject(new Error('bad response')); }
+        } else {
+          let m='server '+xhr.status;
+          try{ const j=JSON.parse(xhr.responseText); if(j.error) m=j.error; }catch(e){}
+          reject(new Error(m));
+        }
+      };
+      xhr.onerror = ()=>reject(new Error('unreachable'));
+      xhr.send(buf);
+    });
   }catch(e){
-    showStat('Server unreachable — run: python server.py  ('+SERVER+')',true); hideStat(6000); return;
+    if(poll) clearInterval(poll);
+    setProg(null);
+    const unreachable = e.message==='unreachable';
+    showStat(unreachable ? 'Server unreachable — run: python server.py  ('+SERVER+')' : e.message, true);
+    hideStat(6000); return;
   }
+  if(poll) clearInterval(poll);
+  setProg(1,'Analysed'); setProg(null);
   $('hGenre').textContent=director.genre.primary+'  ('+(director.genre.confidence)+')';
   $('hBpm').textContent=director.tempo.bpm+' BPM';
   buildTimelineUI();
@@ -936,10 +1351,31 @@ function buildTimelineUI(){
 
 /* ======================= FRAME ======================= */
 const sm=(a,b,r,dt)=>a+(b-a)*(1-Math.exp(-r*dt));
+/* VISUAL STATE — the single multidimensional vector the renderer consumes. Everything above
+   this line is interpretation; everything below only ever reads VS. Each dimension is
+   critically-damped SPRING interpolated rather than exponentially smoothed: a spring carries
+   velocity, so the state arrives with momentum and settles instead of easing flatly in. */
+const VS ={energy:0.3,aggression:0.2,brightness:0.4,chaos:0.2,
+           cameraVelocity:0.2,geometryDeformation:0.3,materialReflectivity:0.4,sceneComplexity:0.4};
+const VSv=Object.fromEntries(Object.keys(VS).map(k=>[k,0]));   // spring velocities
+function springTo(target,dt,f){                                 // f = natural frequency (Hz-ish)
+  const w=2*Math.PI*f, z=1.0;                                   // critically damped
+  const d=Math.min(dt,0.05);
+  for(const k in VS){
+    const a=w*w*(target[k]-VS[k]) - 2*z*w*VSv[k];
+    VSv[k]+=a*d; VS[k]+=VSv[k]*d;
+  }
+}
 let last=performance.now(), t0=last;
 function frame(){
   requestAnimationFrame(frame);
-  const now=performance.now(); let dt=Math.min(.05,(now-last)/1000); last=now; const time=(now-t0)/1000;
+  // TFREEZE pins the clock so the camera stops, which is the only way to A/B two builds on the
+  // same frame. Companion to QLOCK; both exist because reasoning about render defects instead of
+  // measuring them has cost several wrong fixes here.
+  const now=performance.now(); let dt=Math.min(.05,(now-last)/1000); last=now;
+  let time=(now-t0)/1000;
+  if(window.TFREEZE!=null){ time=window.TFREEZE; dt=0; }   // pins clock AND every dt-integrated
+  // value (camera angle, spin, springs) — pinning the clock alone leaves the orbit still moving.
   frameAvg += (Math.min(80,dt*1000)-frameAvg)*0.1;   // adaptive quality: scale render res to hold fps
   if(now-lastQ>500){ lastQ=now;
     // ceiling is 1.45: above 1.0 the march genuinely supersamples, which the post pass
@@ -964,12 +1400,19 @@ function frame(){
     // gates at the old thresholds a transient stall (the 8s analyse, a tab switch) knocked the
     // canvas down and then ~21ms sat inside the dead zone — too fast to degrade, too slow to
     // restore — so it stayed blurred indefinitely. The dead zone was a one-way trap.
-    if(frameAvg>24){
+    // TARGET IS EDGE QUALITY, NOT 60fps. The old gate only raised rscale under 17.2ms, i.e. it
+    // demanded ~58fps at the HIGHER cost before it would supersample at all — unreachable here,
+    // so rscale sat at 1.0 permanently and every frame shipped with FXAA-only edges. That is
+    // the "rough edges" everyone sees. Supersampling is the single largest quality lever there
+    // is, so it is now bought at up to ~43fps: raise under 23ms, degrade only over 29ms, with a
+    // dead band between. Measured on this machine: rscale 1.45 costs ~21.5ms (46fps), so it
+    // reaches the cap and holds it.
+    if(QLOCK){} else if(frameAvg>29){
       if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
-      else if(frameAvg>30 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
-    } else if(frameAvg<21){
+      else if(dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
+    } else if(frameAvg<23){
       if(dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
-      else if(frameAvg<17.2 && rscale<1.20){ rscale=Math.min(1.20,rscale+0.06); applyScale(); }
+      else if(rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); }
     } }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
@@ -999,7 +1442,9 @@ function frame(){
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
     moodTarget=s.palette||MO;
-    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy); }
+    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy);
+      const want=2+Math.round(Math.max(0,Math.min(1,s.energy))*2);   // 2..4 twists, per SECTION
+      if(want!==twA && twMix===0){ twB=want; twMix=1e-4; } }
     // predictive anticipation: ramp before a drop
     const p=nextPrediction(t);
     if(p){ const eta=p.t-t;
@@ -1019,12 +1464,19 @@ function frame(){
   // which lands as a jump cut; 0.55 carries it over ~3s so the move is felt, not seen.
   CM.dist=sm(CM.dist,camTarget.dist,0.55,dt); CM.height=sm(CM.height,camTarget.height,0.55,dt);
   CM.fov=sm(CM.fov,camTarget.fov,0.55,dt); CM.spin=sm(CM.spin,camTarget.spin,0.45,dt);
+  // interpretation -> visual state (never audio -> visuals)
+  springTo({ energy, aggression:Math.min(1,tension*0.7+BND.high*0.5),
+             brightness:bright, chaos:Math.min(1,flux*0.6+tension*0.5),
+             cameraVelocity:Math.min(1,CM.spin*1.6+energy*0.4),
+             geometryDeformation:Math.min(1,energy*0.5+tension*0.5),
+             materialReflectivity:MAT.reflect, sceneComplexity:Math.min(1,0.3+energy*0.5+epic*0.3) }, dt, 0.55);
   pulse*=Math.exp(-6.0*dt);
   pulseS += (pulse-pulseS)*(1-Math.exp(-16*dt));      // smoothed attack -> no hard beat snap
   // per-band envelopes: decay the transient, then smooth its attack so hits land soft
   for(const b of BANDS){ HIT[b]*=Math.exp(-DECAY[b]*dt);
     HITS[b]+=(HIT[b]-HITS[b])*(1-Math.exp(-ATTACK[b]*dt)); }
-  shockT+=dt; shockA*=Math.exp(-2.4*dt);              // ring travels out and fades
+  shockT+=dt; shockA*=Math.exp(-2.4*dt);
+  if(twMix>0){ twMix=Math.min(1,twMix+dt/1.4); if(twMix>=1){ twA=twB; twMix=0; } }              // ring travels out and fades
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
   // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
   // individual sounds nudge the rotation — articulate, but damped so it never jitters
@@ -1081,6 +1533,10 @@ function frame(){
   // deliberately left out of the compensation instead of being cancelled by the camera
   const sBase=Math.max(reform,0.2)*(1.0+energy*0.10)*0.95;
   const framed=2.0*fEff*reach*sBase/fill;
+  // tilt swings the form's depth toward its radius, so blend between the two by the tilt
+  const ct=Math.abs(Math.cos(VAR.tilt)), st2=Math.abs(Math.sin(VAR.tilt));
+  const yExt=frameReachY()*ct+reach*st2;
+  groundY=-(yExt*sBase+0.05);     // just under the form's underside
   const dolly=framed*(1-HITS.low*0.055-HITS.sub*0.045);
   const ca=camAng+camKick, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
@@ -1102,11 +1558,7 @@ function frame(){
   gl.uniform2f(US('u_res'),sw,sh); gl.uniform1f(US('u_time'),time);
   gl.uniform3f(US('u_ro'),roX,roY,roZ); gl.uniform3f(US('u_rt'),rx,ry,rz);
   gl.uniform3f(US('u_up'),ux,uy,uz); gl.uniform3f(US('u_fw'),fx,fy,fz); gl.uniform1f(US('u_fov'),fovY);
-  gl.uniform1f(US('u_count'),Math.max(3,SH.count*VAR.countMul)); gl.uniform1f(US('u_twist'),SH.twist+VAR.twist+tension*0.35);
-  gl.uniform1f(US('u_r0'),SH.r0); gl.uniform1f(US('u_r1'),SH.r1*(1.0+energy*0.12));
-  gl.uniform1f(US('u_thick'),SH.thick*VAR.thickMul); gl.uniform1f(US('u_bulge'),SH.bulge); gl.uniform1f(US('u_hub'),SH.hub);
   gl.uniform1f(US('u_spin'),spin);
-  gl.uniform1f(US('u_ring'),VAR.ring); gl.uniform1f(US('u_wob'),VAR.wob);
   gl.uniform1f(US('u_tilt'),VAR.tilt); gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_mode'),mode); gl.uniform1f(US('u_mode2'),mode2); gl.uniform1f(US('u_mix'),(phase===1?mix:0));
   gl.uniform1f(US('u_reform'),reform);
@@ -1117,7 +1569,7 @@ function frame(){
   gl.uniform1f(US('u_hSub'),HITS.sub); gl.uniform1f(US('u_hLow'),HITS.low);
   gl.uniform1f(US('u_hMid'),HITS.mid); gl.uniform1f(US('u_hHigh'),HITS.high);
   gl.uniform1f(US('u_hAir'),HITS.air);
-  gl.uniform1f(US('u_bLow'),BND.low); gl.uniform1f(US('u_bMid'),BND.mid);
+  gl.uniform1f(US('u_bLow'),BND.low);
   gl.uniform1f(US('u_bHigh'),BND.high); gl.uniform1f(US('u_bAir'),BND.air);
   gl.uniform1f(US('u_shock'),shockT); gl.uniform1f(US('u_shockA'),shockA);
   gl.uniform1f(US('u_valence'),valence); gl.uniform1f(US('u_warmth'),warmth); gl.uniform1f(US('u_epic'),epic);
@@ -1131,33 +1583,59 @@ function frame(){
   // aperture size — valence opens the shell up, darkness closes it in
   gl.uniform1f(US('u_gCut'), Math.max(0.0, 0.25+valence*0.8-darkness*0.35));
   gl.uniform3f(US('u_bgA'),BGA[0],BGA[1],BGA[2]); gl.uniform3f(US('u_bgB'),BGB[0],BGB[1],BGB[2]);
-  gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_groundY'),-1.28);
-  gl.uniform1f(US('u_darkness'),darkness); gl.uniform1f(US('u_bright'),bright);
+  gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_scene'),scene);
+  gl.uniform1f(US('u_groundY'),groundY);
+  // brighter, more positive sections separate further into two colourways
+  gl.uniform1f(US('u_twoTone'), 0.30+valence*0.45+epic*0.15);
+  gl.uniform1f(US('u_twA'),twA); gl.uniform1f(US('u_twB'),twB);
+  gl.uniform1f(US('u_twMix'), twMix>0 ? twMix*twMix*(3-2*twMix) : 0);
+  gl.uniform1f(US('u_darkness'),darkness);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
   gl.uniform1f(US('u_iridAmt'),MAT.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
+  gl.uniform1f(US('u_trans'),MAT.trans);
+  gl.uniform1f(US('u_spec'),MAT.spec);
+  gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
   gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough);
   drawFS(aScene);
 
   if(floatOK){
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
-    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);          // feeds the wide, soft bloom
+    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);          // hdr mips feed depth of field
+    // BRIGHT PASS -> half res, thresholded, then mipped. Bloom gathers from this.
+    gl.useProgram(brightP); gl.bindFramebuffer(gl.FRAMEBUFFER,brtF); gl.viewport(0,0,BW,BH);
+    gl.uniform1i(UB('u_tex'),0); gl.uniform2f(UB('u_res'),BW,BH); gl.uniform2f(UB('u_src'),1/RW,1/RH);
+    // threshold tracks exposure, so bloom picks up what will actually blow out after tonemapping
+    // BLOOM THRESHOLD, raised 2.6x. At the old threshold most of a lit pearl body cleared the
+    // knee, so the bloom source was the whole form and what it drew was an outline traced around
+    // the silhouette — the glow the user reported. Measured against an exact depth-derived
+    // silhouette, near-edge excess (2-12px) fell 11.8 -> 1.5 over the background gradient, an 87%
+    // cut, while mean luminance INSIDE the silhouette moved 154.2 -> 153.4. Bloom's entire visible
+    // output was the ring; raising the threshold costs essentially nothing on the form itself and
+    // leaves genuine speculars, which sit far above the knee, still blooming.
+    gl.uniform1f(UB('u_thr'), DX.thr*2.6*0.95/Math.max(0.35, 0.82+energy*0.45+pulseS*0.12+HITS.low*0.10));
+    drawFS(aBright);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,brtT);
+    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
     gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
-    gl.uniform1i(UP('u_tex'),0); gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
+    gl.uniform1i(UP('u_tex'),0); gl.uniform1i(UP('u_brt'),1);
+    gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
     gl.uniform2f(UP('u_texel'),1/RW,1/RH); gl.uniform1f(UP('u_mip'),mipOK?1:0);
     gl.uniform1f(UP('u_ss'),rscale>1.05?1:0);
+    gl.uniform1f(UP('u_ssRatio'),rscale);
     // focus on the form itself; everything behind it falls away into a soft wash
-    gl.uniform1f(UP('u_focus'),CM.dist*0.94); gl.uniform1f(UP('u_dof'),LK.dof);
+    gl.uniform1f(UP('u_dbg'),window.DBGMASK?1:0);
     // underground grade: darker, grittier, higher contrast
-    gl.uniform1f(UP('u_bloom'),0.34+energy*0.6+pulseS*0.24+HITS.high*0.22+HITS.air*0.14);
+    gl.uniform1f(UP('u_bloom'),(0.34+energy*0.6+pulseS*0.24+HITS.high*0.22+HITS.air*0.14)*DX.bloom);
     gl.uniform1f(UP('u_sat'),0.82+valence*0.25+LK.sat);
     gl.uniform1f(UP('u_vig'),0.75+darkness*0.35);
     gl.uniform1f(UP('u_expo'),0.82+energy*0.45+pulseS*0.12+HITS.low*0.10);
     gl.uniform1f(UP('u_contrast'),0.45+tension*0.30+LK.contrast); gl.uniform1f(UP('u_grain'),(0.35+darkness*0.30)*LK.grain);
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
     // press grade
-    gl.uniform1f(UP('u_sharpen'),LK.sharp); gl.uniform1f(UP('u_chroma'),LK.chroma);
+    gl.uniform1f(UP('u_sharpen'),LK.sharp*DX.sharpen); gl.uniform1f(UP('u_chroma'),LK.chroma*DX.chroma);
     gl.uniform1f(UP('u_ink'),LK.ink); gl.uniform1f(UP('u_poster'),LK.poster);
     gl.uniform1f(UP('u_dither'),LK.dither); gl.uniform1f(UP('u_half'),LK.half);
     const iA=inkA(), iB=inkB();
@@ -1224,6 +1702,7 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
+$('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ palAuto=true; return; }
   palAuto=false;
