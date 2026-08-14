@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
 /**
  * LightingManager — image-based environment plus a three-point rig.
@@ -54,6 +55,27 @@ export class LightingManager {
     this.scene.environment = this._envRT.texture;
     this.scene.environmentIntensity = intensity;
     env.dispose?.();
+  }
+
+  /**
+   * Load a user .hdr as the environment.
+   *
+   * The equirect goes through PMREM rather than being assigned directly: a raw equirectangular
+   * texture has no roughness mip chain, so every material samples mip 0 and a rough surface
+   * reflects a razor-sharp room. PMREM prefilters it per roughness level, which is what makes
+   * the difference between "matte" and "mirror" mean anything.
+   *
+   * @param {ArrayBuffer} buffer raw .hdr bytes
+   */
+  async setEnvironmentFromHDR(buffer, intensity = 1.0) {
+    const tex = new RGBELoader().parse(buffer);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    this._disposeEnv();
+    this._envRT = this._pmrem.fromEquirectangular(tex);
+    this.scene.environment = this._envRT.texture;
+    this.scene.environmentIntensity = intensity;
+    tex.dispose();                       // PMREM has taken a copy; the source is dead weight
+    return true;
   }
 
   apply(l) {

@@ -48,7 +48,7 @@
   #topbar{position:fixed;top:16px;left:20px;z-index:12;display:flex;gap:10px;align-items:center}
   #brand{font-size:10px;letter-spacing:.34em;text-transform:uppercase;color:#8a8b91}
   #brand b{color:#fff;font-weight:400}
-  #file{display:none}
+  #file,#hdr,#bgimg{display:none}
 
   #stat{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:13;padding:8px 16px;
     background:rgba(14,14,17,.88);border:1px solid rgba(255,255,255,.12);border-radius:3px;font-size:10px;
@@ -72,6 +72,8 @@
 <div id="stat"></div>
 <div id="boot"><h2>SVG → 3D</h2><p>Drop an SVG anywhere, or use Source → Upload</p></div>
 <input id="file" type="file" accept=".svg,image/svg+xml">
+<input id="hdr" type="file" accept=".hdr">
+<input id="bgimg" type="file" accept="image/*">
 <div id="panels"></div>
 
 <!-- Import map so the vendored addons can resolve their bare 'three' specifier without a

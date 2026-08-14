@@ -19,18 +19,25 @@ export const defaultState = () => ({
     transmission: 0.0, clearcoat: 0.0, clearcoatRoughness: 0.1, reflectivity: 0.5,
     normalIntensity: 0.0, ior: 1.5,
   },
+  // Calibrated against the chrome preset, which is the harshest case: a near-mirror reflects the
+  // environment AND takes the full key, so it clips first. At key 3.0 with env 1.0 the default
+  // view was a flat white silhouette — every surface above 1.0 and tone-mapped to the same
+  // value, which reads as a broken renderer rather than as polished metal. The environment now
+  // carries the look and the key is a highlight on top of it, not the primary source.
   lighting: {
-    environment: 'studio', envIntensity: 1.0, envRotation: 0.0,
-    keyIntensity: 3.0, keyAzimuth: 0.6, keyElevation: 0.9, keySoftness: 0.5,
-    fillIntensity: 0.6, rimIntensity: 1.2, ambient: 0.25,
+    environment: 'studio', envIntensity: 0.9, envRotation: 0.0,
+    keyIntensity: 1.5, keyAzimuth: 0.6, keyElevation: 0.9, keySoftness: 0.5,
+    fillIntensity: 0.35, rimIntensity: 0.7, ambient: 0.12,
     shadowIntensity: 0.8, shadows: true,
   },
   camera: { type: 'perspective', fov: 45, distance: 4, autoFrame: true },
   animation: { enabled: true, type: 'rotation', speed: 0.25, axis: 'Y', direction: 1, amplitude: 0.15 },
   effects: {
-    bloom: 0.3, bloomThreshold: 0.85, bloomRadius: 0.4,
+    // Threshold 0.85 caught most of a bright metal's body, not just its highlights, and bloomed
+    // the whole form into a glowing blob. 0.95 restricts it to what is genuinely near-clipping.
+    bloom: 0.22, bloomThreshold: 0.95, bloomRadius: 0.4,
     depthOfField: 0.0, focus: 4.0, aperture: 0.02,
-    vignette: 0.25, grain: 0.05, chromatic: 0.0,
+    vignette: 0.25, grain: 0.05, chromatic: 0.0, motionBlur: 0.0,
     exposure: 1.0, contrast: 1.0, saturation: 1.0,
   },
   background: { type: 'solid', color: '#111111', colorB: '#2a2a33', opacity: 1.0, image: null },

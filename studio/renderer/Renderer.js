@@ -113,6 +113,7 @@ export class Renderer {
     this.gl.setSize(w, h, false);
     this.post.setSize(w, h, this._pr);
     this.cameraMgr.sync(w / h);
+    this.sceneMgr.setViewportAspect(w / h);
   }
 
   start() {

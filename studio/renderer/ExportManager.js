@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
 
 /**
  * ExportManager — writes out what the scene actually is, not what the canvas happens to hold.
@@ -71,6 +72,26 @@ export class ExportManager {
     const buf = await exporter.parseAsync(src, { binary: true });
     this._save(new Blob([buf], { type: 'model/gltf-binary' }), `model-${this._stamp()}.glb`);
     return { bytes: buf.byteLength };
+  }
+
+  /**
+   * USDZ — the format iOS Quick Look opens directly, so this is the AR path.
+   *
+   * USDZ is Z-up while three.js is Y-up, and the exporter does not rotate for you: shipped
+   * as-is the logo lies flat on its back in Quick Look. A cloned wrapper carries the correction
+   * so the live scene is not disturbed by an export.
+   */
+  async usdz() {
+    const src = this.r.geometryMgr.group;
+    if (!src.children.length) throw new Error('Nothing to export — load an SVG first.');
+    const THREE = await import('three');
+    const wrap = new THREE.Group();
+    const clone = src.clone(true);
+    clone.rotation.x -= Math.PI / 2;      // Y-up -> Z-up
+    wrap.add(clone);
+    const arr = await new USDZExporter().parseAsync(wrap);
+    this._save(new Blob([arr], { type: 'model/vnd.usdz+zip' }), `model-${this._stamp()}.usdz`);
+    return { bytes: arr.byteLength };
   }
 
   /**

@@ -80,8 +80,9 @@ export function buildPanels(host, store, api) {
     const { wrap, body } = section('Lighting');
     const l = store.get('lighting');
     select(body, { label: 'Environment', value: l.environment,
-      options: [{ value: 'studio', label: 'Studio' }, { value: 'none', label: 'None' }],
-      onChange: (v) => { api.setEnvironment(v); store.set('lighting', { environment: v }); }});
+      options: [{ value: 'studio', label: 'Studio' }, { value: 'hdri', label: 'Custom HDRI' }, { value: 'none', label: 'None' }],
+      onChange: (v) => { if (v === 'hdri') { api.pickHDR(); return; } api.setEnvironment(v); store.set('lighting', { environment: v }); }});
+    buttons(body, { items: [{ label: 'Load .hdr', onClick: () => api.pickHDR() }] });
     slider(body, { label: 'Env intensity', min: 0, max: 3, step: 0.01, value: l.envIntensity,
       onChange: (v) => store.set('lighting', { envIntensity: v }) });
     slider(body, { label: 'Env rotation', min: 0, max: 1, step: 0.005, value: l.envRotation,
@@ -160,6 +161,7 @@ export function buildPanels(host, store, api) {
     s('Vignette', 'vignette', 0, 1, 0.01);
     s('Grain', 'grain', 0, 1, 0.01);
     s('Chromatic', 'chromatic', 0, 1, 0.01);
+    s('Motion blur', 'motionBlur', 0, 0.92, 0.01);
     s('Exposure', 'exposure', 0.1, 3, 0.01);
     s('Contrast', 'contrast', 0.5, 2, 0.01);
     s('Saturation', 'saturation', 0, 2, 0.01);
@@ -172,12 +174,14 @@ export function buildPanels(host, store, api) {
     const b = store.get('background');
     select(body, { label: 'Type', value: b.type, options: [
       { value: 'solid', label: 'Solid' }, { value: 'gradient', label: 'Gradient' },
-      { value: 'transparent', label: 'Transparent' }, { value: 'environment', label: 'Environment' }],
+      { value: 'transparent', label: 'Transparent' }, { value: 'environment', label: 'Environment' },
+      { value: 'image', label: 'Image' }],
       onChange: (v) => store.set('background', { type: v }) });
     color(body, { label: 'Color', value: b.color, onChange: (v) => store.set('background', { color: v }) });
     color(body, { label: 'Color B', value: b.colorB, onChange: (v) => store.set('background', { colorB: v }) });
     slider(body, { label: 'Opacity', min: 0, max: 1, step: 0.01, value: b.opacity,
       onChange: (v) => store.set('background', { opacity: v }) });
+    buttons(body, { items: [{ label: 'Load image', onClick: () => api.pickBackgroundImage() }] });
     host.append(wrap);
   }
 
@@ -193,6 +197,7 @@ export function buildPanels(host, store, api) {
     ]});
     buttons(body, { label: 'Scene', items: [
       { label: 'GLB', onClick: () => api.exportGLB() },
+      { label: 'USDZ', onClick: () => api.exportUSDZ() },
       { label: 'Record', onClick: () => api.toggleVideo() },
     ]});
     host.append(wrap);

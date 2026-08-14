@@ -57,6 +57,12 @@ const api = {
     try { const r = await exporter.glb(); status(`Saved GLB (${(r.bytes / 1024).toFixed(0)} KB)`); }
     catch (err) { status(err.message, true, 3600); }
   },
+  exportUSDZ: async () => {
+    try { const r = await exporter.usdz(); status(`Saved USDZ (${(r.bytes / 1024).toFixed(0)} KB)`); }
+    catch (err) { status(err.message, true, 3600); }
+  },
+  pickHDR: () => $('hdr').click(),
+  pickBackgroundImage: () => $('bgimg').click(),
   toggleVideo: () => {
     try {
       if (exporter.recording) { exporter.stopVideo(); return; }
@@ -73,6 +79,36 @@ $('file').addEventListener('change', (e) => {
   if (!f) return;
   f.text().then((t) => ingest(t, f.name));
   e.target.value = '';        // so re-picking the same file fires again
+});
+
+$('hdr').addEventListener('change', async (e) => {
+  const f = e.target.files?.[0]; e.target.value = '';
+  if (!f) return;
+  status('Prefiltering HDRI…', false, 0);
+  try {
+    await renderer.lightingMgr.setEnvironmentFromHDR(await f.arrayBuffer(), store.get('lighting').envIntensity);
+    store.set('lighting', { environment: 'hdri' });
+    renderer.lightingMgr.apply(store.get('lighting'));   // re-apply: setEnvironment resets intensity
+    status(`Environment — ${f.name}`);
+  } catch (err) {
+    status(`Could not read that .hdr — ${err.message}`, true, 4000);
+  }
+});
+
+$('bgimg').addEventListener('change', (e) => {
+  const f = e.target.files?.[0]; e.target.value = '';
+  if (!f) return;
+  const img = new Image();
+  const url = URL.createObjectURL(f);
+  img.onload = () => {
+    renderer.sceneMgr.setBackgroundImage(img);
+    store.set('background', { type: 'image' });
+    renderer.sceneMgr.setViewportAspect(canvas.clientWidth / Math.max(1, canvas.clientHeight));
+    URL.revokeObjectURL(url);
+    status(`Background — ${f.name}`);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); status('Could not decode that image', true, 3000); };
+  img.src = url;
 });
 
 // Drag and drop anywhere on the viewport.

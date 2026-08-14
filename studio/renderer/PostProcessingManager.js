@@ -5,6 +5,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { MotionBlurPass } from './MotionBlurPass.js';
 
 /**
  * Grade pass — vignette, grain, chromatic aberration, exposure/contrast/saturation in one
@@ -70,14 +71,21 @@ export class PostProcessingManager {
     this.bloom = new UnrealBloomPass(new THREE.Vector2(size.w, size.h), 0.3, 0.4, 0.85);
     this.bokeh = new BokehPass(scene, camera, { focus: 4.0, aperture: 0.0002, maxblur: 0.01 });
     this.grade = new ShaderPass(GradeShader);
+    this.motion = new MotionBlurPass(size.w, size.h);
     this.output = new OutputPass();      // tone map + sRGB, must be last
 
     this.composer.addPass(this.renderPass);
+    // Motion blur sits BEFORE bloom: accumulating after bloom would feed bloom's own output back
+    // into the history and compound it every frame until the highlights bloom into a solid
+    // white field. Blurring the raw render and letting bloom read the blurred result is also
+    // what a real long exposure does — the glow follows the smear.
+    this.composer.addPass(this.motion);
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.bokeh);
     this.composer.addPass(this.grade);
     this.composer.addPass(this.output);
     this.bokeh.enabled = false;
+    this.motion.enabled = false;
     this.bloom.enabled = true;
   }
 
@@ -99,6 +107,9 @@ export class PostProcessingManager {
       u.maxblur.value = 0.01 * e.depthOfField;
     }
 
+    this.motion.amount = e.motionBlur ?? 0;
+    this.motion.enabled = (e.motionBlur ?? 0) > 0.001;
+
     const g = this.grade.uniforms;
     g.uVignette.value = e.vignette;
     g.uGrain.value = e.grain;
@@ -112,6 +123,7 @@ export class PostProcessingManager {
     this.composer.setSize(w, h);
     this.composer.setPixelRatio(pr);
     this.bloom.setSize(w, h);
+    this.motion.setSize(Math.round(w * pr), Math.round(h * pr));
   }
 
   render(dt) {
@@ -124,5 +136,6 @@ export class PostProcessingManager {
     this.bloom.dispose?.();
     this.bokeh.dispose?.();
     this.grade.dispose?.();
+    this.motion.dispose?.();
   }
 }
