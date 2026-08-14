@@ -21,6 +21,8 @@
   #tlS i{position:absolute;top:0;bottom:0;border-left:1px solid rgba(255,255,255,.25)}
   #tc{font-size:10px;color:#8a8b91;min-width:92px;text-align:right;font-variant-numeric:tabular-nums}
   #file{display:none}
+  #bar .grp{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:#5a5a5d}
+  #bar button.on{background:rgba(200,184,255,.20);border-color:rgba(200,184,255,.48);color:#e8e0ff}
   #drop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;z-index:9;pointer-events:none}
   #drop h2{margin:0;font-size:12px;letter-spacing:.4em;text-transform:uppercase;color:#8a8b91}
   #drop p{margin:0;font-size:10px;letter-spacing:.16em;color:#5a5a5d;text-transform:uppercase}
@@ -89,8 +91,11 @@
 <div id="stat"><span id="statTxt">…</span><span id="statBar"><i id="statFill"></i></span><span id="statPct"></span></div>
 
 <div id="bar">
+  <span class="grp">Source</span>
   <label class="btn" for="file">Load</label><input id="file" type="file" accept="audio/*">
   <button id="play">Play</button>
+  <button id="auto" class="on" title="Director's automatic orbit — drag the canvas to take over">Auto</button>
+  <button id="reset" title="Return to the Director's framing (or double-click the canvas)">Reset view</button>
   <button id="shot" title="Save the current frame as a PNG">Frame</button>
   <button id="rec" title="Record the canvas to a WebM video">Record</button>
   <div id="tl"><div id="tlF"></div><div id="tlS"></div></div>
@@ -1079,6 +1084,9 @@ let twA=3, twB=3, twMix=0;
 let scene=0;                                          // 0 colour field (default), 1 studio
 let groundY=-1.05;
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
+/* ---- USER CAMERA: drag to orbit, wheel to zoom, all composed ON TOP of the Director ---- */
+let autoRotate=true, dragging=false;
+let userAz=0, userEl=0, userZoom=1, userAzV=0, userElV=0;
 // One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
 // most electronic music, so a turn lines up with the structure the Director cuts sections on.
 // Lower it for a faster spin: 16 = 4 bars, 8 = 2 bars.
@@ -1511,8 +1519,16 @@ function frame(){
   // form sat permanently trembling around its own axis instead of turning. The beat still
   // lands, via scale (u_pulse / u_hLow) and the shockwave ring, which are radial and so do not
   // fight the rotation.
-  camAng  += (CM.spin*(0.45+energy*0.45) + 0.008)*dt;
+  // AUTO-ROTATE is a gate on the Director's orbit only. Everything else the Director decides —
+  // framing distance, height, roll, the dolly on the kick — keeps running, because those are
+  // composition decisions rather than "movement the user might want to take over".
+  if(autoRotate) camAng += (CM.spin*(0.45+energy*0.45) + 0.008)*dt;
   camKick  += ((HITS.low*0.014 + HITS.sub*0.010) - camKick)*(1-Math.exp(-4.0*dt));
+  // Drag inertia: the grab ends but the orbit keeps carrying and settles, which is what makes a
+  // camera feel like it has weight instead of stopping dead with the pointer.
+  if(!dragging){ userAzV *= Math.exp(-3.2*dt); userElV *= Math.exp(-3.2*dt);
+                 userAz += userAzV*dt; userEl += userElV*dt; }
+  userEl = Math.max(-1.15, Math.min(1.15, userEl));   // never past the poles, where up flips
   const spin = formSpin;
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
   // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
@@ -1550,8 +1566,16 @@ function frame(){
   const ct=Math.abs(Math.cos(VAR.tilt)), st2=Math.abs(Math.sin(VAR.tilt));
   const yExt=frameReachY()*ct+reach*st2;
   groundY=-(yExt*sBase+0.05);     // just under the form's underside
-  const dolly=framed*(1-HITS.low*0.055-HITS.sub*0.045);
-  const ca=camAng+camKick, roX=Math.sin(ca)*dolly, roY=CM.height, roZ=Math.cos(ca)*dolly;
+  // userZoom multiplies the DERIVED framing distance rather than replacing it, so the framing
+  // logic still normalises across shapes and the zoom stays a relative adjustment on top.
+  const dolly=framed*(1-HITS.low*0.055-HITS.sub*0.045)*userZoom;
+  // The drag offsets are added to the Director's angle, not swapped in for it. That is what
+  // lets you pull the camera round mid-track and have the orbit continue from where you left
+  // it, instead of the two fighting over the same variable.
+  const ca=camAng+camKick+userAz;
+  const ce=userEl;
+  const cosE=Math.cos(ce);
+  const roX=Math.sin(ca)*dolly*cosE, roY=CM.height+Math.sin(ce)*dolly, roZ=Math.cos(ca)*dolly*cosE;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
   let rx=fz,ry=0,rz=-fx; const rl=Math.hypot(rx,ry,rz)||1; rx/=rl;ry/=rl;rz/=rl;
   let ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
@@ -1708,6 +1732,85 @@ $('rec').addEventListener('click',()=>{
   recorder.start(1000);                 // 1s timeslices: a crash still leaves usable footage
   $('rec').textContent='Stop'; $('rec').style.color='#ff4d6a';
   showStat('Recording — press Stop to save'); hideStat(1800);
+});
+
+/* ======================= CAMERA INPUT ======================= */
+/* Pointer Events rather than mouse+touch pairs: one code path covers mouse, trackpad and touch,
+   and setPointerCapture keeps the drag alive when the pointer leaves the canvas — without it a
+   fast flick that exits the window leaves the camera stuck mid-drag. */
+(() => {
+  const c = glc;
+  let lastX = 0, lastY = 0, lastT = 0, id = null, moved = 0;
+  c.style.cursor = 'grab';
+
+  c.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    id = e.pointerId; dragging = true; moved = 0;
+    lastX = e.clientX; lastY = e.clientY; lastT = e.timeStamp;
+    userAzV = userElV = 0;                 // a new grab cancels the previous throw
+    // Capture is an optimisation, not a requirement: it keeps a fast drag alive past the window
+    // edge. It throws if the pointer is no longer active — which happens if the button is
+    // released between the event firing and this handler running — and an exception here would
+    // abandon the drag with `dragging` stuck true and the cursor wrong. The drag works without
+    // it, so failure is not worth propagating.
+    try { c.setPointerCapture(id); } catch { /* drag continues uncaptured */ }
+    c.style.cursor = 'grabbing';
+  });
+
+  c.addEventListener('pointermove', (e) => {
+    if (!dragging || e.pointerId !== id) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    const dtms = e.timeStamp - lastT;
+    lastX = e.clientX; lastY = e.clientY; lastT = e.timeStamp;
+    moved += Math.abs(dx) + Math.abs(dy);
+    // Scale by viewport height so the same physical drag turns the camera the same amount on
+    // any window size.
+    const k = 3.0 / Math.max(1, innerHeight);
+    userAz -= dx * k;
+    userEl = Math.max(-1.15, Math.min(1.15, userEl + dy * k));
+    // Release velocity from the REAL time between events, not an assumed 60Hz frame. Dividing
+    // by a hardcoded 1/60 makes the throw a function of the pointer's report rate rather than
+    // the hand's actual speed: on a slow event stream it over-scales enormously (a two-event
+    // synthetic drag threw the camera through several revolutions and pinned elevation at the
+    // clamp), and on a 120Hz trackpad it under-scales. Clamped as well, so one anomalous
+    // sub-millisecond gap cannot produce a spin nothing can damp in time.
+    const inv = 1000 / Math.max(8, Math.min(100, dtms || 16));
+    userAzV = Math.max(-3, Math.min(3, -dx * k * inv));
+    userElV = Math.max(-3, Math.min(3,  dy * k * inv));
+  });
+
+  const end = (e) => {
+    if (e.pointerId !== id) return;
+    dragging = false; id = null;
+    c.style.cursor = 'grab';
+    // A click that never moved is a click, not a throw — kill the inertia so a stray tap does
+    // not send the camera spinning.
+    if (moved < 3) { userAzV = 0; userElV = 0; }
+  };
+  c.addEventListener('pointerup', end);
+  c.addEventListener('pointercancel', end);
+
+  c.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    // Exponential so each notch is the same proportional step whether you are close or far;
+    // clamped so the camera can never end up inside the form or lost in space.
+    userZoom = Math.max(0.45, Math.min(3.0, userZoom * Math.exp(e.deltaY * 0.0012)));
+  }, { passive: false });
+
+  // Double-click restores the Director's own framing.
+  c.addEventListener('dblclick', () => {
+    userAz = 0; userEl = 0; userZoom = 1; userAzV = 0; userElV = 0;
+  });
+})();
+
+$('auto').addEventListener('click',()=>{
+  autoRotate=!autoRotate;
+  $('auto').classList.toggle('on',autoRotate);
+  showStat(autoRotate?'Auto orbit on':'Auto orbit paused — drag to look around'); hideStat(1500);
+});
+$('reset').addEventListener('click',()=>{
+  userAz=0; userEl=0; userZoom=1; userAzV=0; userElV=0;
+  showStat('View reset'); hideStat(1100);
 });
 
 /* ======================= INPUT ======================= */
