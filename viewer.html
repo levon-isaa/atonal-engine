@@ -20,7 +20,7 @@
   #tlS{position:absolute;inset:0}
   #tlS i{position:absolute;top:0;bottom:0;border-left:1px solid rgba(255,255,255,.25)}
   #tc{font-size:10px;color:#8a8b91;min-width:92px;text-align:right;font-variant-numeric:tabular-nums}
-  #file{display:none}
+  #file,#svgfile{display:none}
   #bar .grp{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:#5a5a5d}
   #bar button.on{background:rgba(200,184,255,.20);border-color:rgba(200,184,255,.48);color:#e8e0ff}
   #drop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;z-index:9;pointer-events:none}
@@ -63,7 +63,8 @@
     <option value="auto">Auto · Director</option>
     <option value="4" selected>Pods</option><option value="0">Ribbon</option>
     <option value="1">Tower</option><option value="2">Gyroscope</option>
-    <option value="3">Space Frame</option><option value="5">Shell</option></select></div>
+    <option value="3">Space Frame</option><option value="5">Shell</option>
+    <option value="svg">Custom SVG…</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
     <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
     <option value="clay">Clay</option>
@@ -92,7 +93,7 @@
 
 <div id="bar">
   <span class="grp">Source</span>
-  <label class="btn" for="file">Load</label><input id="file" type="file" accept="audio/*">
+  <label class="btn" for="file">Load</label><label class="btn" for="svgfile" title="Upload an SVG and extrude it as a new shape">SVG</label><input id="file" type="file" accept="audio/*"><input id="svgfile" type="file" accept=".svg,image/svg+xml">
   <button id="play">Play</button>
   <button id="auto" class="on" title="Director's automatic orbit — drag the canvas to take over">Auto</button>
   <button id="reset" title="Return to the Director's framing (or double-click the canvas)">Reset view</button>
@@ -141,6 +142,8 @@ uniform float u_bLow,u_bHigh,u_bAir;
 uniform float u_shock,u_shockA;
 // emotion -> geometry: these drive the construction parameters of the forms
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
+uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
+uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
@@ -274,7 +277,30 @@ float mAperture(vec3 p){                               // SHELL — chamfered po
   float bore=min(length(p.yz)-rad,min(length(p.xz)-rad,length(p.xy)-rad));
   return smax(shell,-bore,0.035);
 }
+/* ---- CUSTOM SVG ----
+   The uploaded artwork arrives as a 2D signed distance field baked into a texture, so the
+   raymarcher can treat it like any other primitive: sample the plane distance, then extrude.
+   A texture rather than analytic paths because an SDF march evaluates the field millions of
+   times per frame — walking a path list per sample would be thousands of times slower, and the
+   field only has to be built once per upload.
+   Outside the texture the sample is meaningless (clamped edge), so the distance there is
+   reconstructed from the border padding plus how far the point lies beyond the edge. Without
+   that the field flattens off past the border and the march walks straight through it. */
+float mSVG(vec3 p){
+  vec2 q=p.xy;
+  vec2 uv=q*0.5+0.5;
+  vec2 cl=clamp(uv,0.0,1.0);
+  float d2=texture(u_svg,cl).r;
+  // add the planar distance from the clamped point back to the real one
+  d2+=length((uv-cl)*2.0);
+  float dz=abs(p.z)-u_svgDepth;
+  float b=u_svgBevel;
+  d2+=b; dz+=b;                       // inflate, then deflate by b -> a rounded edge
+  vec2 w=vec2(d2,dz);
+  return min(max(d2,dz),0.0)+length(max(w,0.0))-b;
+}
 float evalMode(vec3 p,float m){
+  if(u_svgOn>0.5) return mSVG(p);   // an uploaded shape replaces the generated set entirely
   if(m<0.5)       return mArray(p);
   else if(m<1.5)  return mStack(p);
   else if(m<2.5)  return mRings(p);
@@ -1126,12 +1152,18 @@ const REACH=[1.27,1.20,1.03,1.15,1.00,0.90];
 // sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
 // unit below the form and the contact shadow had nothing to make contact with.
 const REACH_Y=[0.38,1.00,0.98,0.80,0.72,0.90];
+// The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
+// svgReach is measured from the field itself at upload time — the real silhouette radius, not an
+// assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
+let svgReach=0.7, svgReachY=0.7;
 function frameReachY(){
+  if(svgOn) return svgReachY;
   const r0=REACH_Y[mode]!==undefined?REACH_Y[mode]:0.9, r1=REACH_Y[mode2]!==undefined?REACH_Y[mode2]:0.9;
   const k=(phase===1)?(mix*mix*(3-2*mix)):0;
   return r0+(r1-r0)*k;
 }
 function frameReach(){                                 // blended across a morph, as the shader does
+  if(svgOn) return svgReach;
   const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
   const k=(phase===1)?(mix*mix*(3-2*mix)):0;           // same smoothstep the melt uses
   return r0+(r1-r0)*k;
@@ -1612,6 +1644,12 @@ function frame(){
   gl.uniform1f(US('u_valence'),valence); gl.uniform1f(US('u_warmth'),warmth); gl.uniform1f(US('u_epic'),epic);
   /* ---- EMOTION -> CONSTRUCTION: how each form is BUILT is the expression ---- */
   // twist/pitch of arrays and stacks — tension winds them up, arousal adds motion
+  gl.uniform1i(US('u_svg'),3);
+  if(svgTex){ gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,svgTex); gl.activeTexture(gl.TEXTURE0); }
+  gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
+  // depth and bevel breathe with the music like every other form here
+  gl.uniform1f(US('u_svgDepth'),0.17+energy*0.05+HITS.low*0.04);
+  gl.uniform1f(US('u_svgBevel'),0.014+HITS.air*0.006);
   gl.uniform1f(US('u_gTwist'), tension*1.25+arousal*0.45+Math.sin(time*0.05)*0.12);
   // element count / lattice density — energy packs the structure tighter
   gl.uniform1f(US('u_gDense'), energy*1.9+BND.high*0.5+SH.count*0.05);
@@ -1734,6 +1772,158 @@ $('rec').addEventListener('click',()=>{
   showStat('Recording — press Stop to save'); hideStat(1800);
 });
 
+
+/* ======================= CUSTOM SVG -> 2D SDF ======================= */
+/* The browser already has a complete SVG renderer, so the artwork is drawn through it rather
+   than parsed by hand: <img src=svg> into a canvas gives correct fill rules, holes, transforms,
+   clip paths and nested groups for free. Only the resulting coverage mask matters.
+   That mask is then turned into a true Euclidean signed distance field with Felzenszwalb's
+   exact O(n) transform (1D parabola lower-envelope along rows, then columns). A cheap
+   approximation such as a chamfer pass leaves directional bias that shows up as faceting on
+   the extruded sides once the surface is lit. */
+const SVG_RES = 1024;                      // field resolution. 512 put one texel at 0.0039 object
+                                           // units, WIDER than calcN's 0.0018 sampling epsilon, so
+                                           // the normal was read entirely inside one bilinear cell
+                                           // and came back constant per texel — the terracing on
+                                           // the extruded walls. 1024 halves the texel to 0.00195.
+const SVG_PAD = 0.18;                      // fraction of the frame left as margin, so the
+                                           // distance field has somewhere to grow outside the art
+
+function edt1d(f, n) {                     // squared distance transform of one row
+  const d = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
+  let k = 0; v[0] = 0; z[0] = -Infinity; z[1] = Infinity;
+  for (let q = 1; q < n; q++) {
+    let s;
+    while (true) {
+      s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      if (s <= z[k]) k--; else break;
+    }
+    k++; v[k] = q; z[k] = s; z[k + 1] = Infinity;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) {
+    while (z[k + 1] < q) k++;
+    d[q] = (q - v[k]) * (q - v[k]) + f[v[k]];
+  }
+  return d;
+}
+
+function edt2d(mask, w, h, inside) {
+  // squared distance to the nearest cell where mask != inside
+  const INF = 1e20, f = new Float64Array(Math.max(w, h)), out = new Float64Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) f[x] = (mask[y * w + x] === inside) ? INF : 0;
+    const d = edt1d(f, w);
+    for (let x = 0; x < w; x++) out[y * w + x] = d[x];
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) f[y] = out[y * w + x];
+    const d = edt1d(f, h);
+    for (let y = 0; y < h; y++) out[y * w + x] = d[y];
+  }
+  return out;
+}
+
+/** Rasterise an SVG string and return a Float32Array signed distance field in OBJECT units. */
+async function svgToSDF(svgText, res = SVG_RES) {
+  // Force a viewBox-independent render size. Without width/height an SVG with only a viewBox
+  // has no intrinsic size and Chrome draws it at 0x0 or 300x150 depending on the markup.
+  const blob = new Blob([svgText], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  try {
+    await new Promise((ok, err) => { img.onload = ok; img.onerror = () => err(new Error('SVG failed to render')); img.src = url; });
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = res;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    g.clearRect(0, 0, res, res);
+    // fit with margin, preserving aspect
+    const iw = img.naturalWidth || img.width || res, ih = img.naturalHeight || img.height || res;
+    const inner = res * (1 - SVG_PAD * 2);
+    const sc = inner / Math.max(iw, ih);
+    const dw = iw * sc, dh = ih * sc;
+    g.drawImage(img, (res - dw) / 2, (res - dh) / 2, dw, dh);
+    const px = g.getImageData(0, 0, res, res).data;
+
+    const mask = new Uint8Array(res * res);
+    let covered = 0;
+    for (let i = 0, j = 3; i < mask.length; i++, j += 4) {
+      // alpha, not luminance: a black logo on transparent is the normal case and would read as
+      // empty if measured by brightness
+      mask[i] = px[j] > 127 ? 1 : 0;
+      covered += mask[i];
+    }
+    if (covered === 0) throw new Error('SVG rendered empty — needs a filled shape');
+    if (covered === mask.length) throw new Error('SVG covers the whole frame — no edge to extrude');
+
+    const dOut = edt2d(mask, res, res, 1);   // distance from inside cells to the outside
+    const dIn  = edt2d(mask, res, res, 0);   // distance from outside cells to the inside
+    const sdf = new Float32Array(res * res);
+    // object space spans [-1,1] across the texture, so one texel is 2/res units
+    const k = 2 / res;
+    for (let i = 0; i < sdf.length; i++) {
+      sdf[i] = (mask[i] ? -Math.sqrt(dOut[i]) : Math.sqrt(dIn[i])) * k;
+    }
+    // One separable 3-tap blur. Bilinear reconstruction is C0: the VALUE is continuous across a
+    // texel boundary but the gradient jumps, and calcN reads the gradient — so a raw field gives
+    // a normal that is constant within each cell and steps at every edge, which lights as facets.
+    // Smoothing costs a fraction of a texel of accuracy (the march is already scaled 0.5x
+    // conservative) and makes the gradient continuous, which is what the shading needs.
+    const tmp = new Float32Array(sdf.length);
+    for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
+      const i = y * res + x, a = x > 0 ? sdf[i - 1] : sdf[i], b = x < res - 1 ? sdf[i + 1] : sdf[i];
+      tmp[i] = (a + 2 * sdf[i] + b) * 0.25;
+    }
+    for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
+      const i = y * res + x, a = y > 0 ? tmp[i - res] : tmp[i], b = y < res - 1 ? tmp[i + res] : tmp[i];
+      sdf[i] = (a + 2 * tmp[i] + b) * 0.25;
+    }
+    // Silhouette extent, straight off the mask: the furthest covered texel from centre in each
+    // axis. Used for framing, so an uploaded shape is fitted rather than guessed at.
+    let rx = 0, ry = 0, rr = 0;
+    for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
+      if (!mask[y * res + x]) continue;
+      const ox = (x + 0.5) / res * 2 - 1, oy = (y + 0.5) / res * 2 - 1;
+      rx = Math.max(rx, Math.abs(ox)); ry = Math.max(ry, Math.abs(oy));
+      rr = Math.max(rr, Math.hypot(ox, oy));
+    }
+    return { sdf, res, covered: covered / mask.length, reach: rr, reachY: ry };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+let svgTex = null, svgOn = false;
+function uploadSDF(sdf, res) {
+  if (!svgTex) {
+    svgTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, svgTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  } else gl.bindTexture(gl.TEXTURE_2D, svgTex);
+  // R32F: an 8-bit field quantises to ~1/256 of the range, and the march reads the value as a
+  // step length — the stair-stepping shows directly as terracing on the extruded sides.
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, res, res, 0, gl.RED, gl.FLOAT, sdf);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+}
+
+async function loadSVGShape(text, name) {
+  showStat('Building distance field…', false);
+  try {
+    const { sdf, res, reach, reachY } = await svgToSDF(text);
+    uploadSDF(sdf, res);
+    svgReach = Math.max(0.2, reach); svgReachY = Math.max(0.2, reachY);
+    svgOn = true;
+    $('selShape').value = 'svg';
+    autoShape = false;
+    showStat('Shape — ' + name); hideStat(1800);
+  } catch (err) {
+    showStat(err.message || 'Could not read that SVG', true); hideStat(3600);
+  }
+}
+
 /* ======================= CAMERA INPUT ======================= */
 /* Pointer Events rather than mouse+touch pairs: one code path covers mouse, trackpad and touch,
    and setPointerCapture keeps the drag alive when the pointer leaves the canvas — without it a
@@ -1814,7 +2004,13 @@ $('reset').addEventListener('click',()=>{
 });
 
 /* ======================= INPUT ======================= */
+$('svgfile').addEventListener('change',e=>{ const f=e.target.files[0]; e.target.value='';
+  if(f) f.text().then(t=>loadSVGShape(t,f.name)); });
+addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/svg/i.test(x.type)||/\.svg$/i.test(x.name));
+  if(f){ e.preventDefault(); f.text().then(t=>loadSVGShape(t,f.name)); } });
 $('selShape').addEventListener('change',e=>{ const v=e.target.value;
+  if(v==='svg'){ if(svgTex){ svgOn=true; autoShape=false; } else $('svgfile').click(); return; }
+  svgOn=false;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
