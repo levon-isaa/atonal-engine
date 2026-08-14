@@ -355,14 +355,27 @@ vec3 objP(vec3 p){
 vec3 texNormal(vec3 op,vec3 n){
   if(u_txAmp<0.0005) return n;
   vec3 sc=vec3(u_txScale,u_txScale*u_txAniso,u_txScale);
-  float e=0.10;                                   // small enough to resolve the top octave
+  // e has to resolve the FINEST octave, not the base one. fbmT stacks 5 octaves at lacunarity
+  // 2.13, so the top octave's period here is 1/2.13^4 = 0.049. At e=0.10 the difference straddled
+  // TWO full periods of it, so the fine octaves returned an essentially random value per pixel
+  // rather than a derivative — and because that error does not shrink with frequency the way a
+  // real derivative does, the finest octaves ended up dominating the normal. That is the uniform
+  // sandpaper stipple, and it is why the gain-0.42 rolloff (chosen so the coarse form leads)
+  // never actually showed. 0.012 is a quarter of the top octave's period.
+  float e=0.012;
   float f0=fbmT(op*sc);
   vec3 g=vec3(fbmT(op*sc+vec3(e,0,0))-f0, fbmT(op*sc+vec3(0,e,0))-f0, fbmT(op*sc+vec3(0,0,e))-f0);
   g-=n*dot(g,n);                                  // tangential only -> a bump, not a dent
   float gl=length(g); if(gl<1e-5) return n;
   // use the gradient DIRECTION and let u_txAmp be the tilt in radians. Scaling by the raw
   // gradient magnitude instead swamps the surface normal and the material reads as grime.
-  return normalize(n-(g/gl)*u_txAmp*6.0);
+  // 6.0 -> 2.4 because the epsilon fix above changed what this gradient IS. The old direction was
+  // dominated by per-pixel noise, so neighbouring pixels tilted incoherently and largely
+  // cancelled; the corrected one is spatially coherent, and a coherent tilt of the same angle
+  // shades far more strongly. Every per-material tamp was calibrated against the broken version,
+  // so the compensation goes HERE, once, rather than into five material constants — that keeps
+  // the relative weighting between materials exactly as it was tuned.
+  return normalize(n-(g/gl)*u_txAmp*2.4);
 }
 float texRough(vec3 op,float base){
   if(u_txRough<0.001) return base;
