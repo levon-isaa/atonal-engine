@@ -63,6 +63,12 @@ const api = {
   },
   pickHDR: () => $('hdr').click(),
   pickBackgroundImage: () => $('bgimg').click(),
+  pickAudio: () => $('audio').click(),
+  togglePlay: () => {
+    const a = renderer.audio;
+    if (!a.hasTrack) { status('Load a track first', true, 2200); return; }
+    if (a.playing) { a.pause(); status('Paused'); } else { a.play(); status('Playing'); }
+  },
   toggleVideo: () => {
     try {
       if (exporter.recording) { exporter.stopVideo(); return; }
@@ -111,13 +117,39 @@ $('bgimg').addEventListener('change', (e) => {
   img.src = url;
 });
 
+$('audio').addEventListener('change', async (e) => {
+  const f = e.target.files?.[0]; e.target.value = '';
+  if (!f) return;
+  await ingestAudio(f);
+});
+
+async function ingestAudio(f) {
+  status('Decoding…', false, 0);
+  try {
+    const d = await renderer.audio.load(f, (p) => {
+      // stage + percentage, the same side-channel the viewer polls
+      const pct = Math.round((p.p ?? 0) * 100);
+      status(`${p.stage || 'analysing'} ${pct}%`, false, 0);
+    });
+    const info = $('audioInfo');
+    if (info) info.textContent = `${f.name} · ${d.tempo.bpm} BPM · ${d.genre.primary}`;
+    renderer.audio.play();
+    status(`${d.sections.length} sections · ${d.tempo.bpm} BPM · ${d.genre.primary}`);
+  } catch (err) {
+    status(`Analysis failed — ${err.message}`, true, 4200);
+  }
+}
+
 // Drag and drop anywhere on the viewport.
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => {
   e.preventDefault();
-  const f = [...e.dataTransfer.files].find((x) => /svg/i.test(x.type) || /\.svg$/i.test(x.name));
-  if (f) f.text().then((t) => ingest(t, f.name));
-  else status('Drop an .svg file', true, 2400);
+  const files = [...e.dataTransfer.files];
+  const svg = files.find((x) => /svg/i.test(x.type) || /\.svg$/i.test(x.name));
+  const aud = files.find((x) => /^audio\//i.test(x.type) || /\.(mp3|wav|m4a|flac|ogg|aiff?)$/i.test(x.name));
+  if (svg) svg.text().then((t) => ingest(t, svg.name));
+  if (aud) ingestAudio(aud);
+  if (!svg && !aud) status('Drop an .svg or an audio file', true, 2400);
 });
 
 $('toggle').onclick = () => {

@@ -1,4 +1,4 @@
-import { section, slider, select, color, toggle, buttons } from './controls.js';
+import { section, slider, select, color, toggle, buttons, el } from './controls.js';
 import { PRESETS } from '../renderer/MaterialManager.js';
 
 /**
@@ -19,6 +19,29 @@ export function buildPanels(host, store, api) {
       { label: 'Upload SVG', onClick: () => api.pickFile() },
       { label: 'Sample', onClick: () => api.loadSample() },
     ]});
+    host.append(wrap);
+  }
+
+  /* ---------------- AUDIO ---------------- */
+  {
+    const { wrap, body } = section('Audio');
+    const r = store.get('reactive');
+    buttons(body, { items: [
+      { label: 'Upload track', onClick: () => api.pickAudio() },
+      { label: 'Play / Pause', onClick: () => api.togglePlay() },
+    ]});
+    const info = el('div', 'row');
+    info.innerHTML = '<label>Track</label><span class="val" id="audioInfo" style="flex:1;text-align:left">none</span>';
+    body.append(info);
+    toggle(body, { label: 'Reactive', value: r.enabled, onChange: (v) => store.set('reactive', { enabled: v }) });
+    toggle(body, { label: 'Tempo spin', value: r.tempoSpin, onChange: (v) => store.set('reactive', { tempoSpin: v }) });
+    toggle(body, { label: 'Mood colour', value: r.moodColor, onChange: (v) => store.set('reactive', { moodColor: v }) });
+    slider(body, { label: 'Spin scale', min: 0, max: 4, step: 0.05, value: r.spinScale,
+      onChange: (v) => store.set('reactive', { spinScale: v }) });
+    slider(body, { label: 'Beat punch', min: 0, max: 3, step: 0.05, value: r.punch,
+      onChange: (v) => store.set('reactive', { punch: v }) });
+    slider(body, { label: 'Bloom lift', min: 0, max: 3, step: 0.05, value: r.bloom,
+      onChange: (v) => store.set('reactive', { bloom: v }) });
     host.append(wrap);
   }
 

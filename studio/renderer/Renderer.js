@@ -6,6 +6,7 @@ import { MaterialManager } from './MaterialManager.js';
 import { LightingManager } from './LightingManager.js';
 import { AnimationManager } from './AnimationManager.js';
 import { PostProcessingManager } from './PostProcessingManager.js';
+import { AudioManager } from './AudioManager.js';
 
 /**
  * Renderer — owns the WebGL context, the frame loop, and the wiring from store to managers.
@@ -41,6 +42,8 @@ export class Renderer {
     this.animationMgr = new AnimationManager(this.geometryMgr.group);
     this.post = new PostProcessingManager(this.gl, this.sceneMgr.scene, this.cameraMgr.active,
                                           { w: rect.width, h: rect.height });
+
+    this.audio = new AudioManager();
 
     this.geometryMgr.onRebuild = (sphere) => {
       if (this.store.get('camera').autoFrame) {
@@ -131,11 +134,65 @@ export class Renderer {
         if (this._frameMs > 26 && this._pr > cap * 0.55) this._setPR(this._pr - 0.08);
         else if (this._frameMs < 15 && this._pr < cap) this._setPR(Math.min(cap, this._pr + 0.06));
       }
+      this.audio.update(dt);
+      this._react(dt);
       this.animationMgr.update(dt);
       this.cameraMgr.update();
       this.post.render(dt);
     };
     tick();
+  }
+
+  /**
+   * Music reactivity, applied to the LIVE objects each frame rather than written back into the
+   * store. Writing to the store 60 times a second would fire every listener and rebuild geometry
+   * on any parameter that touches it — the store holds the user's intent, and this is a
+   * modulation on top of it, so the two must not share a channel.
+   */
+  _react(dt) {
+    const a = this.audio, r = this.store.get('reactive');
+    if (!r.enabled || !a.director || !a.playing) {
+      // ease back to the unmodulated values so switching off does not leave the scene bent
+      if (this._reacted) {
+        this.animationMgr.cfg.speed = this.store.get('animation').speed;
+        this.geometryMgr.group.scale.setScalar(1);
+        this.post.apply(this.store.get('effects'));
+        this._reacted = false;
+      }
+      return;
+    }
+    this._reacted = true;
+    const st = this.store.state;
+
+    // TEMPO -> spin. One revolution per 32 beats (8 bars), the same musical ratio the viewer
+    // locks to, so a faster track visibly turns faster instead of just pulsing harder.
+    if (r.tempoSpin) {
+      this.animationMgr.cfg.speed = (a.bpm / 60) / 32 * r.spinScale;
+    }
+
+    // LOW-BAND transient -> scale punch. Radial, so it does not fight the rotation.
+    const punch = 1 + (a.ENV.low * 0.09 + a.ENV.sub * 0.07) * r.punch;
+    this.geometryMgr.group.scale.setScalar(punch);
+
+    // ENERGY / AIR -> bloom lift; the shimmer belongs to the highs
+    const e = st.effects;
+    const energy = a.curve('energy'), air = a.ENV.air;
+    // Coefficients kept low deliberately. At 0.35/0.5 a loud section drove bloom from 0.22 to
+    // 0.81 and the form washed out to the same flat white the static defaults were calibrated
+    // away from — the reaction has to be legible without undoing the grade it sits on.
+    this.post.bloom.strength = e.bloom + (energy * 0.14 + air * 0.22) * r.bloom;
+    this.post.bloom.enabled = this.post.bloom.strength > 0.001;
+
+    // SECTION MOOD -> material colour, eased so a section change is a fade not a cut
+    if (r.moodColor) {
+      const sec = a.section();
+      if (sec?.palette) {
+        const c = this.materialMgr.material.color;
+        c.r += (sec.palette[0] - c.r) * Math.min(1, dt * 1.5);
+        c.g += (sec.palette[1] - c.g) * Math.min(1, dt * 1.5);
+        c.b += (sec.palette[2] - c.b) * Math.min(1, dt * 1.5);
+      }
+    }
   }
 
   _setPR(pr) {

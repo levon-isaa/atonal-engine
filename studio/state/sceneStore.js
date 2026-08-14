@@ -41,6 +41,9 @@ export const defaultState = () => ({
     exposure: 1.0, contrast: 1.0, saturation: 1.0,
   },
   background: { type: 'solid', color: '#111111', colorB: '#2a2a33', opacity: 1.0, image: null },
+  // Reactivity is a MODULATION layer: these are the depths at which the Director's analysis
+  // bends the values above, never a replacement for them.
+  reactive: { enabled: true, tempoSpin: true, spinScale: 1.0, punch: 1.0, bloom: 1.0, moodColor: true },
   quality: { maxPixelRatio: 2, adaptive: true },
 });
 
