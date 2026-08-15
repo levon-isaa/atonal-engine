@@ -11,7 +11,7 @@ POST an audio file -> runs the understanding pipeline -> returns director.json.
 CORS is open so the browser renderer (any origin, incl. file://) can call it.
 Run:  python server.py   (default http://127.0.0.1:8770)
 """
-import os, json, time, tempfile, traceback, threading, hashlib
+import os, json, time, socket, tempfile, traceback, threading, hashlib
 from urllib.parse import urlparse, parse_qs, unquote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import analyze, tagger
@@ -85,6 +85,14 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename")
+        # Private Network Access. Chrome treats a request from a public or opaque origin (which
+        # includes file://) to a loopback address as a private-network request, preflights it with
+        # Access-Control-Request-Private-Network, and BLOCKS it unless the response opts in.
+        # Without this, opening viewer.html by double-clicking it gives a page that loads fine and
+        # an upload that fails as a bare network error — indistinguishable from the server being
+        # down. Scoped to a loopback-only dev server, so it grants nothing that was not already
+        # reachable from this machine.
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def _json(self, code, obj):
         body = json.dumps(obj).encode()
@@ -189,20 +197,20 @@ class H(BaseHTTPRequestHandler):
             if hit is not None:
                 # Returned WITHOUT taking _ANALYSIS: a cache hit does no CPU work, so queueing it
                 # behind a running analysis would stall it for no reason.
-                print(f"[cache] {name} -> {digest[:12]}")
+                print(f"[cache] {name} -> {digest[:12]}", flush=True)
                 del data
                 return self._json(200, hit)
             fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
             with os.fdopen(fd, "wb") as fp: fp.write(data)
             del data                                     # drop the upload copy before analysis allocates
-            print(f"[analyze] {name} ({n/1024:.0f} KB)")
+            print(f"[analyze] {name} ({n/1024:.0f} KB)", flush=True)
             _progress_set(job, {"stage": "queued", "p": 0.0, "next": 0.0, "eta": 0.0})
             with _ANALYSIS:
                 d = analyze.build_director(tmp, progress=lambda pr: _progress_set(job, pr))
             cache_put(digest, d)
             self._json(200, d)
             print(f"[done] {name}: {len(d['sections'])} sections, "
-                  f"genre={d['genre']['primary']} bpm={d['tempo']['bpm']}")
+                  f"genre={d['genre']['primary']} bpm={d['tempo']['bpm']}", flush=True)
         except Exception as e:
             traceback.print_exc()                        # full detail to the server log...
             # ...but never to the client: the raw exception carried absolute filesystem paths
@@ -216,9 +224,43 @@ class H(BaseHTTPRequestHandler):
                 try: os.remove(tmp)
                 except OSError: pass
 
-    def log_message(self, *a):  # quieter
+    # Off by default (the studio pulls ~40 vendored module files per load, which drowns the
+    # interesting lines). ATONAL_LOG=1 turns it on — the first question when a browser says
+    # "unreachable" is whether the request arrives at all, and silence cannot answer it.
+    _LOG = bool(os.environ.get("ATONAL_LOG"))
+
+    def log_message(self, fmt, *a):
+        if self._LOG:
+            print(f"  {self.command} {self.path} -> {a[1] if len(a) > 1 else ''}", flush=True)
+
+    def _unused_log_message(self, *a):  # quieter
         pass
 
+class _V6(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+
 if __name__ == "__main__":
-    print(f"ATONAL Director server on http://127.0.0.1:{PORT}   (PANNs: {tagger.available()})")
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    # Listen on BOTH loopback families. "localhost" resolves to 127.0.0.1 and ::1, and browsers
+    # commonly try ::1 first — against an IPv4-only bind that is a refused connection, which the
+    # viewer can only report as "server unreachable". curl hides the problem by walking the
+    # address list; the page has no such luxury. Two explicit loopback listeners rather than
+    # binding "::" with V6ONLY off, because that would also expose the server on every external
+    # interface — this stays loopback-only, as it was.
+    servers = []
+    for cls, host in ((ThreadingHTTPServer, "127.0.0.1"), (_V6, "::1")):
+        try:
+            servers.append(cls((host, PORT), H))
+        except OSError as e:
+            print(f"  (no listener on {host}: {e})", flush=True)
+    if not servers:
+        raise SystemExit(f"could not bind port {PORT} on either loopback address")
+
+    print(f"ATONAL Director server on http://127.0.0.1:{PORT}   (PANNs: {tagger.available()})",
+          flush=True)
+    for s in servers[1:]:
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        servers[0].serve_forever()
+    except KeyboardInterrupt:
+        pass
