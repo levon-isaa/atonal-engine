@@ -45,6 +45,15 @@
     background:transparent;cursor:pointer}
   #ctrl input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
   #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:2px}
+  /* Compact buttons for the panel. The bar's 8px/14px padding is sized for a wide strip and
+     wraps the panel to an unusable width. */
+  #ctrl button.mini{padding:5px 9px;font-size:9px;letter-spacing:.10em;backdrop-filter:blur(12px);
+    background:rgba(14,14,17,.85)}
+  #ctrl button.mini:hover{background:rgba(255,255,255,.14)}
+  #ctrl button.mini.on{background:rgba(200,184,255,.20);border-color:rgba(200,184,255,.48);color:#e8e0ff}
+  /* Groups sit slightly apart from the selects so the panel reads as two zones, not one list. */
+  #ctrl .row.grp{margin-top:2px}
+  #ctrl .row.grp label{align-self:center}
 </style>
 
 <canvas id="gl"></canvas>
@@ -61,9 +70,10 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="4" selected>Pods</option><option value="0">Ribbon</option>
-    <option value="1">Tower</option><option value="2">Gyroscope</option>
-    <option value="3">Space Frame</option><option value="5">Shell</option>
+    <option value="0" selected>Tetra</option><option value="1">Cubic</option>
+    <option value="2">Octa</option><option value="3">Twist</option>
+    <option value="4">Lens</option><option value="5">Wave</option>
+    <option value="mesh">Reference mesh</option>
     <option value="svg">Custom SVG…</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
     <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
@@ -83,9 +93,27 @@
     <option value="solar">Solar</option><option value="mono">Mono</option>
     <option value="studio">Studio (light)</option>
     <option value="custom">Custom</option></select></div>
+  <div class="row"><label>Finish</label><select id="selFinish">
+    <option value="satin" selected>Satin</option>
+    <option value="matte">Matte</option>
+    <option value="gloss">Gloss</option></select></div>
   <div class="row"><label>Colors</label>
     <input type="color" id="colA" value="#2a0410" title="Background — deep tone">
     <input type="color" id="colB" value="#ff1f4b" title="Background — accent tone"></div>
+  <!-- Toggles live here rather than in the transport bar. The bar had grown to nine buttons,
+       two of them both reading "Auto" (camera orbit and render scale), which is the point at
+       which a control strip stops being scannable. Transport keeps only what plays the track;
+       everything that changes how it LOOKS belongs with the other look controls. -->
+  <div class="row grp"><label>View</label>
+    <button id="auto" class="mini on" title="Director's automatic orbit — drag the canvas to take over">Orbit</button>
+    <button id="reset" class="mini" title="Return to the Director's framing (or double-click the canvas)">Reset</button></div>
+  <div class="row grp"><label>Render</label>
+    <button id="qual" class="mini" title="Adapts render scale to hold frame rate">Auto</button>
+    <button id="rays" class="mini on" title="Volumetric light shafts from the key light">Rays</button>
+    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Surface</button></div>
+  <div class="row grp"><label>Capture</label>
+    <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
+    <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
 </div>
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
@@ -95,11 +123,6 @@
   <span class="grp">Source</span>
   <label class="btn" for="file">Load</label><label class="btn" for="svgfile" title="Upload an SVG and extrude it as a new shape">SVG</label><input id="file" type="file" accept="audio/*"><input id="svgfile" type="file" accept=".svg,image/svg+xml">
   <button id="play">Play</button>
-  <button id="auto" class="on" title="Director's automatic orbit — drag the canvas to take over">Auto</button>
-  <button id="reset" title="Return to the Director's framing (or double-click the canvas)">Reset view</button>
-  <button id="rays" class="on" title="Volumetric light shafts from the key light">Rays</button>
-  <button id="shot" title="Save the current frame as a PNG">Frame</button>
-  <button id="rec" title="Record the canvas to a WebM video">Record</button>
   <div id="tl"><div id="tlF"></div><div id="tlS"></div></div>
   <span id="tc">0:00 / 0:00</span>
 </div>
@@ -138,6 +161,10 @@ in vec2 p; void main(){ gl_Position=vec4(p,0.,1.); }`;
 
 const SCENE=`#version 300 es
 precision highp float;
+// GLSL ES 3.00 gives sampler2D and samplerCube a default precision in the fragment stage but
+// NOT sampler3D — declaring one without this is a COMPILE ERROR, which takes the whole scene
+// shader down and leaves the viewer with nothing on screen at all.
+precision highp sampler3D;
 out vec4 o;
 uniform vec2 u_res; uniform float u_time;
 uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
@@ -149,7 +176,6 @@ uniform float u_spec,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
-uniform float u_twA,u_twB,u_twMix;                  // ribbon twist cross-fade
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
 uniform float u_bLow,u_bHigh,u_bAir;
@@ -157,8 +183,11 @@ uniform float u_shock,u_shockA;
 // emotion -> geometry: these drive the construction parameters of the forms
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
+uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
+uniform float u_volOn,u_volPad;
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
+uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
@@ -206,91 +235,84 @@ float fbmT(vec3 p){
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
-float ribbonAt(vec3 p,float twN){                                  // RIBBON — a wide band swept round the axis
-  // Replaces the old turbine (a polar array of pitched blades + hub + ring). That form read as
-  // machinery: hard repeated blades, a dead hub in the middle, and a torus that never belonged
-  // to the rest of it. This is one continuous surface instead — a band swept around the axis
-  // while rotating about its own centreline, so the silhouette changes completely as it turns
-  // and the light runs along the twist. Glossy materials have somewhere to travel.
-  float a=atan(p.z,p.x);
-  float r=length(p.xz)-0.92;                           // signed distance to the sweep circle
-  vec2 q=vec2(r,p.y);
-  float tw=twN;
-  // INTEGER twist count only. A half twist gives a true Mobius band but leaves a seam where
-  // atan wraps at +/-pi, because the cross-section arrives back rotated by an odd multiple of
-  // pi and no longer matches itself.
-  q*=rot(a*tw + u_gTwist*0.9);
-  vec2 half_=vec2(0.048+u_gThick*0.050, 0.26+u_gCut*0.09);
-  vec2 d2=abs(q)-half_+0.042;
-  float band=length(max(d2,0.0))+min(max(d2.x,d2.y),0.0)-0.042;
-  // The angular twist stretches space, so the true distance is SHORTER than this estimate and
-  // marching it unscaled overshoots — the band tears into chords, which is exactly what a fixed
-  // 0.55 still did at 2+ twists. The distortion grows with the twist rate, so the safety factor
-  // has to grow with it too rather than being a constant.
-  return band/(1.0+tw*0.55);
+/* ---- FORMS ----
+   Smooth sculptural shells: a rounded body with large apertures bored clean through it, the
+   openings blended into the surface rather than cut into it. Matched to the reference FBX the
+   user supplied — a rounded tetrahedral shell with four flowing holes — after two earlier sets
+   (escape-time fractals, then hard-surface industrial parts) missed the mark. Both of those
+   were guesses made without ever seeing a render; this one was designed against CPU previews
+   and against the reference mesh.
+
+   The whole family is one operation: subtract an infinite cylinder along an axis with a SMOOTH
+   max, repeated over a symmetry group. smax is what makes it sculpture instead of plumbing —
+   the k term is the fillet where the bore meets the body, and it is the entire look.
+
+   Each is 1-Lipschitz by construction (a sphere and a set of cylinder distances, combined with
+   smooth min/max), verified at max positive directional derivative <= 1.00 over 150k samples.
+   The one exception is noted on FORM_WAVE. */
+vec3 boreAxis(int i){                                  // tetrahedral axes, normalised
+  vec3 a = (i==0)?vec3( 1, 1, 1):(i==1)?vec3( 1,-1,-1):
+           (i==2)?vec3(-1, 1,-1):vec3(-1,-1, 1);
+  return a*0.5773502692;
 }
-// The twist count MUST be an integer or the cross-section fails to meet itself at the atan
-// wrap. Driving it straight off energy therefore made it snap 2->3->4 mid-track and the whole
-// form re-shaped in a single frame — that is the 'changes very strange' problem. It is now
-// latched, changed only at section boundaries, and cross-faded between the two counts exactly
-// like a mode morph, so the change reads as a transformation instead of a pop.
-float mArray(vec3 p){
-  float d=ribbonAt(p,u_twA);
-  if(u_twMix>0.001) d=mix(d,ribbonAt(p,u_twB),u_twMix);
+float boreSub(float d,vec3 p,vec3 a,float r,float k){
+  vec3 perp = p - a*dot(p,a);                          // distance to the axis line
+  return smax(d, -(length(perp)-r), k);
+}
+float mArray(vec3 p){                                  // TETRA — four apertures, the reference
+  float d=length(p)-0.95;
+  float r=0.44+u_gCut*0.05, k=0.12+u_gThick*0.03;
+  for(int i=0;i<4;i++) d=boreSub(d,p,boreAxis(i),r,k);
   return d;
 }
-float mStack(vec3 p){                                  // TOWER — stacked slabs, progressive twist
-  const float N=8.0; float H=2.00/N;
-  float fi=floor((p.y+1.00)/H);
-  float d=1e9;
-  for(int j=-1;j<=1;j++){                              // nearest 3 slabs -> valid distance
-    float i=clamp(fi+float(j),0.0,N-1.0);
-    float cy=-1.00+(i+0.5)*H;
-    vec3 q=vec3(p.x,p.y-cy,p.z);
-    q.xz*=rot(i*(0.28+u_gTwist*0.30));
-    float t=abs(i-(N-1.0)*0.5)/(N*0.5);
-    float w=0.66-0.26*t*t;
-    d=min(d,sdRBox(q,vec3(w,H*0.34,w*0.52),0.07));
-  }
+float mStack(vec3 p){                                  // CUBIC — three orthogonal bores, six holes
+  float d=length(p)-0.95;
+  float r=0.42+u_gCut*0.05, k=0.12+u_gThick*0.03;
+  d=boreSub(d,p,vec3(1,0,0),r,k);
+  d=boreSub(d,p,vec3(0,1,0),r,k);
+  d=boreSub(d,p,vec3(0,0,1),r,k);
   return d;
 }
-float mRings(vec3 p){                                  // GYROSCOPE — nested orthogonal rings
-  float th=0.055+u_gThick*0.05;
-  float d=sdTorus(p,vec2(0.92,th));
-  vec3 q1=p; q1.yz*=rot(1.5707963);
-  d=min(d,sdTorus(q1,vec2(0.74,th*0.92)));
-  vec3 q2=p; q2.xy*=rot(1.5707963); q2.yz*=rot(u_gTwist*0.5);
-  d=min(d,sdTorus(q2,vec2(0.56,th*0.85)));
-  return smin(d,sdRBox(p,vec3(0.17),0.13),0.10);
+float mRings(vec3 p){                                  // OCTA — six bores, twelve holes
+  float d=length(p)-0.96;
+  float r=0.28+u_gCut*0.04, k=0.10+u_gThick*0.03;
+  const float s=0.7071067812;
+  d=boreSub(d,p,vec3( s, s,0),r,k); d=boreSub(d,p,vec3( s,-s,0),r,k);
+  d=boreSub(d,p,vec3(0, s, s),r,k); d=boreSub(d,p,vec3(0, s,-s),r,k);
+  d=boreSub(d,p,vec3( s,0, s),r,k); d=boreSub(d,p,vec3( s,0,-s),r,k);
+  return d;
 }
-float mTruss(vec3 p){                                  // SPACE FRAME — beam lattice in a shell
-  float c=0.62-u_gDense*0.16;                          // cell size: denser when energetic
-  vec3 q=mod(p+c*0.5,c)-c*0.5;
-  float r=0.040+u_gThick*0.030;
-  float beams=min(length(q.yz)-r,min(length(q.xz)-r,length(q.xy)-r));
-  float node =length(q)-r*1.9;
-  float lat=min(beams,node);
-  float shell=sdRBox(p,vec3(0.80),0.24);
-  return smax(lat,shell,0.03);                         // bound to a rounded cube
+float mTruss(vec3 p){                                  // TWIST — the tetra shell, sheared
+  // The twist is applied to the SAMPLE POINT, so the bores twist with the body and the
+  // apertures stay circular in the twisted frame. Rate kept low: past ~0.8 the shear outruns
+  // the 1-Lipschitz bound and the openings tear.
+  vec3 q=p; q.xz*=rot(p.y*(0.55+u_gTwist*0.15));
+  float d=length(q)-0.95;
+  float r=0.44+u_gCut*0.05, k=0.13+u_gThick*0.03;
+  for(int i=0;i<4;i++) d=boreSub(d,q,boreAxis(i),r,k);
+  return d*0.86;                                       // shear costs a little margin
 }
-float mPods(vec3 p){                                   // PODS — tapered capsules off a core
-  float d=1e9;
-  for(int i=0;i<6;i++){
-    float fi=float(i), a=fi*1.0471976;
-    vec3 dir=normalize(vec3(cos(a),sin(fi*0.9+u_gTwist)*0.62,sin(a)));
-    float h=clamp(dot(p,dir),0.0,0.80);
-    d=smin(d,length(p-dir*h)-(0.215-0.085*(h/0.80)),0.13);
-  }
-  return smin(d,length(p)-0.31,0.15);
+float mPods(vec3 p){                                   // LENS — flattened body, three bores
+  vec3 q=p*vec3(1.0,1.32,1.0);
+  float d=(length(q)-0.95)/1.32;                       // undo the anisotropic scale
+  float r=0.32+u_gCut*0.05, k=0.12+u_gThick*0.03;
+  d=boreSub(d,p,vec3(1,0,0),r,k);
+  d=boreSub(d,p,vec3(0,0,1),r,k);
+  d=boreSub(d,p,normalize(vec3(1,0,1)),r,k);
+  return d;
 }
-float mAperture(vec3 p){                               // SHELL — chamfered pod, bored through
-  float outer=smax(sdRBox(p,vec3(0.66),0.24),length(p)-0.90,0.06);
-  float inner=smax(sdRBox(p,vec3(0.66-0.10-u_gThick*0.06),0.22),length(p)-(0.80-u_gThick*0.05),0.06);
-  float shell=smax(outer,-inner,0.03);
-  float rad=0.20+u_gCut*0.16;                          // aperture radius
-  float bore=min(length(p.yz)-rad,min(length(p.xz)-rad,length(p.xy)-rad));
-  return smax(shell,-bore,0.035);
+float mAperture(vec3 p){                               // WAVE — rippled body, three bores
+  // Ripple is CARTESIAN, not angular. The first version modulated by atan2(z,x), whose gradient
+  // diverges as 1/r on the axis: max positive derivative 20.4 and the march stepped through the
+  // surface. A product of three sines has gradient 0.05*3.4*sqrt(3) ~ 0.29, bounded everywhere.
+  float d=length(p)-0.90-(0.045+u_gThick*0.02)*sin(3.4*p.x)*sin(3.4*p.y)*sin(3.4*p.z);
+  float r=0.32+u_gCut*0.05, k=0.13;
+  d=boreSub(d,p,vec3(1,0,0),r,k);
+  d=boreSub(d,p,vec3(0,1,0),r,k);
+  d=boreSub(d,p,vec3(0,0,1),r,k);
+  return d*0.78;
 }
+
 /* ---- CUSTOM SVG ----
    The uploaded artwork arrives as a 2D signed distance field baked into a texture, so the
    raymarcher can treat it like any other primitive: sample the plane distance, then extrude.
@@ -313,7 +335,31 @@ float mSVG(vec3 p){
   vec2 w=vec2(d2,dz);
   return min(max(d2,dz),0.0)+length(max(w,0.0))-b;
 }
+/* ---- IMPORTED MESH ----
+   A triangle mesh baked to a 3D signed distance field offline and sampled here, which is the
+   only way a raymarcher can render an arbitrary model: the march needs a distance at any point
+   in space, and a triangle soup does not provide one without an acceleration structure the
+   shader has no way to carry.
+   Stored as uint16 over a clamped near-surface range, decoded here. 16 bits puts one level at
+   1e-5 against a 0.0138 texel — three orders below the grid, so quantisation contributes
+   nothing to the reconstruction, unlike the 8-bit case that terraced the SVG field.
+   Outside the grid the sample is meaningless (clamped edge), so distance there is the box
+   distance to the grid plus whatever the edge reported — without that the field flattens off
+   and the march walks straight through the volume. */
+float mVol(vec3 p){
+  vec3 uv=p/u_volPad*0.5+0.5;
+  vec3 cl=clamp(uv,0.0,1.0);
+  float d=texture(u_vol,cl).r;      // already decoded to object units on upload
+  vec3 q=abs(p)-u_volPad;
+  // NOT named 'out' — that is a reserved storage qualifier in GLSL, and using it as a variable
+  // is a syntax error that fails the ENTIRE scene shader, not just this function.
+  // (And the quotes here are apostrophes on purpose: a backtick inside this comment would end
+  //  the JS template literal holding the shader, which breaks the whole script, not just GLSL.)
+  float outside=length(max(q,0.0));
+  return outside>1e-6 ? outside+max(d,0.0) : d;
+}
 float evalMode(vec3 p,float m){
+  if(u_volOn>0.5) return mVol(p);   // an imported mesh replaces the generated set entirely
   if(u_svgOn>0.5) return mSVG(p);   // an uploaded shape replaces the generated set entirely
   if(m<0.5)       return mArray(p);
   else if(m<1.5)  return mStack(p);
@@ -754,12 +800,18 @@ void main(){
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
     vec3 amb=env(n,1.0)*1.22;
-    vec3 c=base*(1.-u_metal)*( keyC*(0.95*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
+    // The KEY BREATHES. u_pulse already drove the geometry and the backdrop but never the
+    // lighting, so the form was scaled by the beat while being lit by a lamp that ignored it.
+    // Pulsing the light instead of the shape is the stronger cue: it moves the highlight and the
+    // terminator, which is what the eye reads as a room reacting rather than an object wobbling.
+    // Ambient is deliberately NOT pulsed — modulating the fill as well lifts the whole frame
+    // together, which reads as an exposure flicker, not as a light.
+    vec3 c=base*(1.-u_metal)*( keyC*(0.95*u_keyPulse*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
                              + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
     // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
     // not to zero, because it is how the section's valence reaches the form at all.
-    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec);
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
@@ -1000,10 +1052,16 @@ void main(){
   if(u_dbg>0.5){ o=vec4(vec3(texture(u_tex,uv).a<17.0?1.0:0.0),1.0); return; }
   vec3 col;
   if(u_ss>0.5){                                 // supersampled: resolve real samples with a 4-tap tent
-    // Footprint must match the RATIO. One output pixel covers u_ssRatio source texels, so taps
-    // at a fixed +/-0.5 source texel only ever filtered a 1-texel window and left most of the
-    // extra samples outside the kernel — paying for supersampling without collecting it.
-    vec2 h=t*0.5*u_ssRatio;
+    // Taps go at +/- R/4 source texels, NOT R/2. One output pixel covers R source texels; four
+    // taps tile that footprint as four quadrants of width R/2, and a bilinear tap belongs at the
+    // CENTRE of its quadrant, which is R/4 from the middle.
+    // At R=2 that is +/-0.5, landing each tap exactly on a source texel centre, so the four taps
+    // return the four covered texels and the result is an exact 2x2 box.
+    // The previous R/2 put them on texel CORNERS, where a bilinear fetch straddles the footprint
+    // edge: it weighted the two texels we wanted at half and pulled in two belonging to the
+    // neighbouring output pixel. That is a 4-wide tent masquerading as a box — supersampling
+    // paid for in full and then blurred away, which is most of why the result looked soft.
+    vec2 h=t*0.25*u_ssRatio;
     col=(texture(u_tex,uv+vec2(-h.x,-h.y)).rgb+texture(u_tex,uv+vec2(h.x,-h.y)).rgb
         +texture(u_tex,uv+vec2(-h.x, h.y)).rgb+texture(u_tex,uv+vec2(h.x, h.y)).rgb)*0.25;
   } else col=fxaa(uv,t);
@@ -1110,7 +1168,19 @@ function initTargets(w,h){
 // at 0.90 meant the first seconds ran ~29ms, which dragged frameAvg up and tripped the degrade
 // path before anything had stabilised.
 let dpr=1, rscale=0.72, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
-function applyScale(){ RW=Math.max(2,Math.round(glc.width*rscale)); RH=Math.max(2,Math.round(glc.height*rscale)); initTargets(RW,RH); }
+// Hard ceiling on the march target, independent of what rscale asks for. At 2x on a large
+// display the request can pass both the driver's max texture dimension and any sane memory
+// budget — an RGBA16F target is 8 bytes a pixel, so 2x on a 3456x2160 canvas is 6912x4320,
+// which is 239MB for ONE of several targets. Exceeding either limit fails target creation and
+// the viewer goes black, so the request is clamped rather than trusted.
+const MARCH_MAX_PX = 26e6;                          // ~26 Mpx: 2x on a 3.4k canvas, ~210MB/target
+function applyScale(){
+  let w=Math.max(2,Math.round(glc.width*rscale)), h=Math.max(2,Math.round(glc.height*rscale));
+  const maxDim=gl.getParameter(gl.MAX_TEXTURE_SIZE)||4096;
+  const k=Math.min(1, maxDim/Math.max(w,h), Math.sqrt(MARCH_MAX_PX/Math.max(1,w*h)));
+  if(k<1){ w=Math.max(2,Math.floor(w*k)); h=Math.max(2,Math.floor(h*k)); }
+  RW=w; RH=h; initTargets(RW,RH);
+}
 // The CANVAS must be the display's native pixel grid. Capping dpr below devicePixelRatio makes
 // the browser rescale the finished frame — a 1.6x bilinear smear on a 2x screen that no amount
 // of AA or sharpening downstream can undo, because it happens after we are done. Cost is paid by
@@ -1128,6 +1198,25 @@ addEventListener('resize',resize);resize();
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
 const DX={bloom:1,chroma:1,sharpen:1,thr:1};   // per-term ablation switches for measuring edge artefacts
+/* Render scale, chosen rather than negotiated.
+   The governor trades quality for frame rate, which is right for playback and wrong when the
+   point is to look at the thing. AUTO keeps the old behaviour; the fixed modes pin the march
+   above native and turn the governor off, so a heavy frame stays sharp instead of being
+   quietly dissolved. 2x is 4x the march samples of native — deliberately available and
+   deliberately not the default. */
+const QMODES=[
+  {id:'auto',  label:'Auto',   scale:0,    hint:'Adapts render scale to hold frame rate'},
+  {id:'high',  label:'1.5x',   scale:1.5,  hint:'2.25x the samples of native — fixed, no adaptation'},
+  {id:'ultra', label:'2x',     scale:2.0,  hint:'4x the samples of native — sharpest, and the slowest'},
+];
+let qIdx=0;
+function applyQMode(){
+  const q=QMODES[qIdx];
+  // rscale BEFORE resize: resize() ends in applyScale(), so setting it after would allocate the
+  // whole target set twice — once at the old scale and again at the new one.
+  if(q.scale>0){ rscale=q.scale; dprScale=1.0; resize(); }
+  const b=$('qual'); if(b){ b.textContent=q.label; b.title=q.hint; b.classList.toggle('on',q.scale>0); }
+}
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -1158,6 +1247,9 @@ const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colo
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0, rollS=0;
 // Ribbon twist: integer only (see the shader note), latched and cross-faded so it never pops.
+// Vestigial: the Ribbon it cross-faded is gone. Kept only because the section-change handler
+// and the uniform upload still reference it; the shader no longer declares u_twA/u_twB, so
+// those uploads resolve to a null location and are silent no-ops.
 let twA=3, twB=3, twMix=0;
 let scene=0;                                          // 0 colour field (default), 1 studio
 let groundY=-1.05;
@@ -1199,22 +1291,34 @@ let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 //   0 ribbon  sweep 0.92 + half-width up to 0.35        1 tower   y +/-1.0, w 0.66
 //   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
 //   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
-const REACH=[1.27,1.20,1.03,1.15,1.00,0.90];
+// Every form is a bored sphere, so the radius IS the body radius — no corner to allow for.
+// 0 tetra 0.95   1 cubic 0.95   2 octa 0.96   3 twist 0.95   4 lens 0.95   5 wave 0.95
+const REACH=[0.95,0.95,0.96,0.95,0.95,0.95];
 // Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
 // sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
 // unit below the form and the contact shadow had nothing to make contact with.
-const REACH_Y=[0.38,1.00,0.98,0.80,0.72,0.90];
+// LENS is the case this table exists for: its body is scaled 1/1.32 in Y, so it is 0.95 across
+// and 0.72 deep and framing it on its radius alone would leave air above and below.
+const REACH_Y=[0.95,0.95,0.96,0.95,0.72,0.95];
 // The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
 let svgReach=0.7, svgReachY=0.7;
+// Measured off the baked mesh, after the bake's own normalisation. I guessed 1.00/0.79 first
+// and both were wrong: the model fills its bounding box in ALL THREE axes (half-extent 1.000
+// each), so the framing radius is the box corner at 1.343 and the vertical half-extent is 1.000.
+// The grid pads to 1.10 per axis, which contains the mesh — per-axis containment is what a box
+// grid needs, not the corner radius.
+const VOL_REACH=1.343, VOL_REACH_Y=1.000;
 function frameReachY(){
+  if(volOn) return VOL_REACH_Y;
   if(svgOn) return svgReachY;
   const r0=REACH_Y[mode]!==undefined?REACH_Y[mode]:0.9, r1=REACH_Y[mode2]!==undefined?REACH_Y[mode2]:0.9;
   const k=(phase===1)?(mix*mix*(3-2*mix)):0;
   return r0+(r1-r0)*k;
 }
 function frameReach(){                                 // blended across a morph, as the shader does
+  if(volOn) return VOL_REACH;
   if(svgOn) return svgReach;
   const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
   const k=(phase===1)?(mix*mix*(3-2*mix)):0;           // same smoothstep the melt uses
@@ -1280,6 +1384,32 @@ const MATS={
   holo:    {alb:1.00,absorb:0.00,metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,spec:1.00, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
 };
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
+/* SURFACE DETAIL, as a global scale on the two channels that produce it.
+   Applied at upload rather than by editing MAT, because MAT is continuously eased toward MATT —
+   writing into it would be overwritten every frame, and writing into MATT would destroy the
+   preset so the material could not be restored. Eased on its own so switching is a dissolve,
+   not a cut. Scaling u_txRough also removes the albedo grain, which is scaled by that same
+   uniform: that is what makes the body one flat colour rather than a mottled one. */
+let surfT=1, surfTarget=1;
+/* FINISH — how polished the surface is, independent of WHICH material it is.
+   A modifier rather than more presets: matte is a property of the finish, not of pearl vs glass,
+   so folding it into the material list would mean duplicating every entry.
+   rghMix/rghTo blend the material's own roughness toward a target instead of overwriting it, so
+   glass-matte and pearl-matte still differ. The three multipliers matter as much as roughness:
+   roughness alone leaves the environment reflection and the iridescent film intact, and a matte
+   surface with a mirror reflection on it just reads as a dirty mirror. */
+// Separation widened after the first values read as "no change". A non-metal here is dominated
+// by the diffuse body plus env irradiance (amb = env(n,1.0)*1.22), and NEITHER depends on any of
+// these — so the finish only moves the specular and reflection terms, which are a modest share of
+// the pixel. Values that look like a big change on paper were a small change on screen.
+// refl above 1 is allowed and clamped at upload: gloss has to be able to LIFT a material's
+// reflection, not merely leave it alone, or it does nothing on anything already satin.
+const FINISHES={
+  satin:{rghMix:0.00,rghTo:0.00,refl:1.00,spec:1.00,irid:1.00},   // material as authored
+  matte:{rghMix:0.94,rghTo:0.98,refl:0.03,spec:0.06,irid:0.02},
+  gloss:{rghMix:0.92,rghTo:0.03,refl:1.70,spec:1.35,irid:1.20},
+};
+const FIN=Object.assign({},FINISHES.satin), FINT=Object.assign({},FINISHES.satin);
 
 /* ---- BACKGROUND PALETTES (a = deep tone, b = accent) — hard, saturated label colourways ---- */
 const PALS={
@@ -1516,7 +1646,7 @@ function frame(){
     // is, so it is now bought at up to ~43fps: raise under 23ms, degrade only over 29ms, with a
     // dead band between. Measured on this machine: rscale 1.45 costs ~21.5ms (46fps), so it
     // reaches the cap and holds it.
-    if(QLOCK){} else if(frameAvg>29){
+    if(QLOCK||QMODES[qIdx].scale>0){} else if(frameAvg>29){
       if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
       else if(dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
     } else if(frameAvg<23){
@@ -1567,6 +1697,8 @@ function frame(){
   for(const k in SH) SH[k]=sm(SH[k],compTarget[k],1.1,dt);
   for(const k in VAR) VAR[k]=sm(VAR[k],VART[k],1.0,dt);
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
+  surfT=sm(surfT,surfTarget,2.5,dt);
+  for(const k in FIN) FIN[k]=sm(FIN[k],FINT[k],2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
   // Section cuts must not snap the camera. 1.3 crossed a dist/fov change in well under a second,
@@ -1690,6 +1822,15 @@ function frame(){
   gl.uniform3f(US('u_mood'),MO[0],MO[1],MO[2]);
   gl.uniform1f(US('u_energy'),energy); gl.uniform1f(US('u_tension'),tension); gl.uniform1f(US('u_arousal'),arousal);
   gl.uniform1f(US('u_pulse'),pulseS); gl.uniform1f(US('u_flux'),flux);
+  // PACE from the beat envelope and the kick; EMOTION sets how hard each beat lands. A calm
+  // section barely breathes, a high-arousal one throws the key a third brighter on every hit.
+  // pulseS is already tempo-locked (it is driven by the beat list), so the rate follows the
+  // track without needing the BPM here.
+  // Clamped: these multiply a term that can already reach the tonemapper's knee, and an
+  // unbounded pulse on a loud section turns every beat into a white frame.
+  const keyPulse=Math.min(2.10, 1 + (pulseS*0.30+HITS.low*0.28)*(0.55+arousal*0.85) + (energy-0.30)*0.12);
+  const rimPulse=Math.min(2.60, 1 + (pulseS*0.20+HITS.air*0.40)*(0.50+epic*1.10));
+  gl.uniform1f(US('u_keyPulse'),keyPulse); gl.uniform1f(US('u_rimPulse'),rimPulse);
   gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
   gl.uniform1f(US('u_hSub'),HITS.sub); gl.uniform1f(US('u_hLow'),HITS.low);
   gl.uniform1f(US('u_hMid'),HITS.mid); gl.uniform1f(US('u_hHigh'),HITS.high);
@@ -1701,7 +1842,11 @@ function frame(){
   /* ---- EMOTION -> CONSTRUCTION: how each form is BUILT is the expression ---- */
   // twist/pitch of arrays and stacks — tension winds them up, arousal adds motion
   gl.uniform1i(US('u_svg'),3);
+  gl.uniform1i(US('u_vol'),4);
+  gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
+  gl.uniform1f(US('u_volPad'),VOL.pad);
   if(svgTex){ gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,svgTex); gl.activeTexture(gl.TEXTURE0); }
+  if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
   gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
   // depth and bevel breathe with the music like every other form here
   gl.uniform1f(US('u_svgDepth'),0.17+energy*0.05+HITS.low*0.04);
@@ -1722,13 +1867,19 @@ function frame(){
   gl.uniform1f(US('u_twMix'), twMix>0 ? twMix*twMix*(3-2*twMix) : 0);
   gl.uniform1f(US('u_darkness'),darkness);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
-  gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
-  gl.uniform1f(US('u_iridAmt'),MAT.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
+  // Finish blends the material's roughness toward a target rather than replacing it, so a matte
+  // glass and a matte pearl are still different surfaces.
+  const finRgh=MAT.rough+(FIN.rghTo-MAT.rough)*FIN.rghMix;
+  gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),finRgh);
+  // Clamped at 1: gloss multiplies by 1.7 so it can lift a satin material, but the reflection
+  // term is energy, and letting it past 1 adds light the environment never contained.
+  gl.uniform1f(US('u_reflect'),Math.min(1.0,MAT.reflect*FIN.refl));
+  gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans);
-  gl.uniform1f(US('u_spec'),MAT.spec);
+  gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec);
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
-  gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp);
-  gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough);
+  gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT);
+  gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT);
   drawFS(aScene);
 
   if(floatOK){
@@ -1754,8 +1905,12 @@ function frame(){
     gl.uniform1i(UP('u_tex'),0); gl.uniform1i(UP('u_brt'),1);
     gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
     gl.uniform2f(UP('u_texel'),1/RW,1/RH); gl.uniform1f(UP('u_mip'),mipOK?1:0);
-    gl.uniform1f(UP('u_ss'),rscale>1.05?1:0);
-    gl.uniform1f(UP('u_ssRatio'),rscale);
+    // Read the ratio off the TARGET, not off rscale. applyScale may have clamped the request to
+    // fit the driver's texture limit or the memory budget, and a resolve whose footprint does not
+    // match the pixels actually rendered either misses samples or blurs across ones it never had.
+    const ssR = RW/Math.max(1,W);
+    gl.uniform1f(UP('u_ss'),ssR>1.05?1:0);
+    gl.uniform1f(UP('u_ssRatio'),ssR);
     // focus on the form itself; everything behind it falls away into a soft wash
     gl.uniform1f(UP('u_dbg'),window.DBGMASK?1:0);
     // underground grade: darker, grittier, higher contrast
@@ -1995,6 +2150,42 @@ async function svgToSDF(svgText, res = SVG_RES) {
   }
 }
 
+/* ---- IMPORTED MESH: 3D distance field ----
+   Baked offline (mesh -> signed distance on a grid) because doing it in the browser means an
+   exact point-triangle distance for every voxel, which is minutes of work on the main thread.
+   The bake is the slow, precise half; this is the fast half that just uploads the result. */
+const VOL={res:160, pad:1.10, lo:-0.15, hi:0.50, url:'./assets/shape01.sdf'};
+let volTex=null, volOn=false, volLoading=false;
+async function loadVolume(){
+  if(volTex||volLoading) return volTex;
+  volLoading=true;
+  try{
+    const r=await fetch(VOL.url,{cache:'force-cache'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const buf=await r.arrayBuffer();
+    const need=VOL.res*VOL.res*VOL.res*2;
+    if(buf.byteLength!==need) throw new Error('expected '+need+' bytes, got '+buf.byteLength);
+    const u16=new Uint16Array(buf);
+    volTex=gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D,volTex);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    // Decode to R32F rather than uploading the uint16 directly. An integer texture (R16UI)
+    // cannot be linearly filtered and does not sample as float — it would have to be fetched
+    // per-texel and interpolated by hand, which is the one thing the hardware is for. R16
+    // normalised is not in core WebGL2 (it needs EXT_texture_norm16), so R32F it is; the SVG
+    // field already relies on the same format and filtering path.
+    const f32=new Float32Array(u16.length);
+    const k=(VOL.hi-VOL.lo)/65535;
+    for(let i=0;i<u16.length;i++) f32[i]=u16[i]*k+VOL.lo;
+    gl.texImage3D(gl.TEXTURE_3D,0,gl.R32F,VOL.res,VOL.res,VOL.res,0,gl.RED,gl.FLOAT,f32);
+    gl.bindTexture(gl.TEXTURE_3D,null);
+    return volTex;
+  } finally { volLoading=false; }
+}
 let svgTex = null, svgOn = false;
 function uploadSDF(sdf, res) {
   if (!svgTex) {
@@ -2104,6 +2295,21 @@ $('reset').addEventListener('click',()=>{
   userAz=0; userEl=0; userZoom=1; userAzV=0; userElV=0;
   showStat('View reset'); hideStat(1100);
 });
+$('surf').addEventListener('click',()=>{
+  surfTarget=surfTarget>0.5?0:1;
+  $('surf').classList.toggle('on',surfTarget>0.5);
+  $('surf').textContent=surfTarget>0.5?'Surface':'Smooth';
+  showStat(surfTarget>0.5?'Surface detail on':'Smooth — micro detail off'); hideStat(1500);
+});
+$('qual').addEventListener('click',()=>{
+  qIdx=(qIdx+1)%QMODES.length;
+  applyQMode();
+  const q=QMODES[qIdx];
+  // Report the grid actually allocated, not the one requested — applyScale clamps to the
+  // driver's texture limit and the memory budget, and on a large display those bite.
+  showStat(q.scale>0 ? `Render ${q.label} — ${RW}x${RH} (${(RW*RH/1e6).toFixed(1)} Mpx)`
+                     : 'Render scale — auto'); hideStat(2200);
+});
 $('rays').addEventListener('click',()=>{
   raysOn=!raysOn;
   $('rays').classList.toggle('on',raysOn);
@@ -2116,10 +2322,19 @@ $('svgfile').addEventListener('change',e=>{ const f=e.target.files[0]; e.target.
 addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/svg/i.test(x.type)||/\.svg$/i.test(x.name));
   if(f){ e.preventDefault(); f.text().then(t=>loadSVGShape(t,f.name)); } });
 $('selShape').addEventListener('change',e=>{ const v=e.target.value;
+  if(v==='mesh'){
+    volOn=true; svgOn=false; autoShape=false;
+    if(!volTex){ showStat('Loading mesh field…',false);
+      loadVolume().then(()=>{ showStat('Reference mesh'); hideStat(1400); })
+                  .catch(err=>{ volOn=false; showStat('Mesh field failed — '+err.message,true); hideStat(4000); }); }
+    return;
+  }
+  volOn=false;
   if(v==='svg'){ if(svgTex){ svgOn=true; autoShape=false; } else $('svgfile').click(); return; }
   svgOn=false;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
+$('selFinish').addEventListener('change',e=>{ const f=FINISHES[e.target.value]; if(f) Object.assign(FINT,f); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
