@@ -73,6 +73,7 @@
     <option value="0" selected>Tetra</option><option value="1">Cubic</option>
     <option value="2">Octa</option><option value="3">Twist</option>
     <option value="4">Lens</option><option value="5">Wave</option>
+    <option value="mesh">Reference mesh</option>
     <option value="svg">Custom SVG…</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
     <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
@@ -178,6 +179,8 @@ uniform float u_shock,u_shockA;
 // emotion -> geometry: these drive the construction parameters of the forms
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
+uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
+uniform float u_volOn,u_volPad;
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
@@ -328,7 +331,27 @@ float mSVG(vec3 p){
   vec2 w=vec2(d2,dz);
   return min(max(d2,dz),0.0)+length(max(w,0.0))-b;
 }
+/* ---- IMPORTED MESH ----
+   A triangle mesh baked to a 3D signed distance field offline and sampled here, which is the
+   only way a raymarcher can render an arbitrary model: the march needs a distance at any point
+   in space, and a triangle soup does not provide one without an acceleration structure the
+   shader has no way to carry.
+   Stored as uint16 over a clamped near-surface range, decoded here. 16 bits puts one level at
+   1e-5 against a 0.0138 texel — three orders below the grid, so quantisation contributes
+   nothing to the reconstruction, unlike the 8-bit case that terraced the SVG field.
+   Outside the grid the sample is meaningless (clamped edge), so distance there is the box
+   distance to the grid plus whatever the edge reported — without that the field flattens off
+   and the march walks straight through the volume. */
+float mVol(vec3 p){
+  vec3 uv=p/u_volPad*0.5+0.5;
+  vec3 cl=clamp(uv,0.0,1.0);
+  float d=texture(u_vol,cl).r;      // already decoded to object units on upload
+  vec3 q=abs(p)-u_volPad;
+  float out=length(max(q,0.0));
+  return out>1e-6 ? out+max(d,0.0) : d;
+}
 float evalMode(vec3 p,float m){
+  if(u_volOn>0.5) return mVol(p);   // an imported mesh replaces the generated set entirely
   if(u_svgOn>0.5) return mSVG(p);   // an uploaded shape replaces the generated set entirely
   if(m<0.5)       return mArray(p);
   else if(m<1.5)  return mStack(p);
@@ -1273,13 +1296,21 @@ const REACH_Y=[0.95,0.95,0.96,0.95,0.72,0.95];
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
 let svgReach=0.7, svgReachY=0.7;
+// Measured off the baked mesh, after the bake's own normalisation. I guessed 1.00/0.79 first
+// and both were wrong: the model fills its bounding box in ALL THREE axes (half-extent 1.000
+// each), so the framing radius is the box corner at 1.343 and the vertical half-extent is 1.000.
+// The grid pads to 1.10 per axis, which contains the mesh — per-axis containment is what a box
+// grid needs, not the corner radius.
+const VOL_REACH=1.343, VOL_REACH_Y=1.000;
 function frameReachY(){
+  if(volOn) return VOL_REACH_Y;
   if(svgOn) return svgReachY;
   const r0=REACH_Y[mode]!==undefined?REACH_Y[mode]:0.9, r1=REACH_Y[mode2]!==undefined?REACH_Y[mode2]:0.9;
   const k=(phase===1)?(mix*mix*(3-2*mix)):0;
   return r0+(r1-r0)*k;
 }
 function frameReach(){                                 // blended across a morph, as the shader does
+  if(volOn) return VOL_REACH;
   if(svgOn) return svgReach;
   const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
   const k=(phase===1)?(mix*mix*(3-2*mix)):0;           // same smoothstep the melt uses
@@ -1803,7 +1834,11 @@ function frame(){
   /* ---- EMOTION -> CONSTRUCTION: how each form is BUILT is the expression ---- */
   // twist/pitch of arrays and stacks — tension winds them up, arousal adds motion
   gl.uniform1i(US('u_svg'),3);
+  gl.uniform1i(US('u_vol'),4);
+  gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
+  gl.uniform1f(US('u_volPad'),VOL.pad);
   if(svgTex){ gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,svgTex); gl.activeTexture(gl.TEXTURE0); }
+  if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
   gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
   // depth and bevel breathe with the music like every other form here
   gl.uniform1f(US('u_svgDepth'),0.17+energy*0.05+HITS.low*0.04);
@@ -2107,6 +2142,42 @@ async function svgToSDF(svgText, res = SVG_RES) {
   }
 }
 
+/* ---- IMPORTED MESH: 3D distance field ----
+   Baked offline (mesh -> signed distance on a grid) because doing it in the browser means an
+   exact point-triangle distance for every voxel, which is minutes of work on the main thread.
+   The bake is the slow, precise half; this is the fast half that just uploads the result. */
+const VOL={res:160, pad:1.10, lo:-0.15, hi:0.50, url:'./assets/shape01.sdf'};
+let volTex=null, volOn=false, volLoading=false;
+async function loadVolume(){
+  if(volTex||volLoading) return volTex;
+  volLoading=true;
+  try{
+    const r=await fetch(VOL.url,{cache:'force-cache'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const buf=await r.arrayBuffer();
+    const need=VOL.res*VOL.res*VOL.res*2;
+    if(buf.byteLength!==need) throw new Error('expected '+need+' bytes, got '+buf.byteLength);
+    const u16=new Uint16Array(buf);
+    volTex=gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D,volTex);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    // Decode to R32F rather than uploading the uint16 directly. An integer texture (R16UI)
+    // cannot be linearly filtered and does not sample as float — it would have to be fetched
+    // per-texel and interpolated by hand, which is the one thing the hardware is for. R16
+    // normalised is not in core WebGL2 (it needs EXT_texture_norm16), so R32F it is; the SVG
+    // field already relies on the same format and filtering path.
+    const f32=new Float32Array(u16.length);
+    const k=(VOL.hi-VOL.lo)/65535;
+    for(let i=0;i<u16.length;i++) f32[i]=u16[i]*k+VOL.lo;
+    gl.texImage3D(gl.TEXTURE_3D,0,gl.R32F,VOL.res,VOL.res,VOL.res,0,gl.RED,gl.FLOAT,f32);
+    gl.bindTexture(gl.TEXTURE_3D,null);
+    return volTex;
+  } finally { volLoading=false; }
+}
 let svgTex = null, svgOn = false;
 function uploadSDF(sdf, res) {
   if (!svgTex) {
@@ -2243,6 +2314,14 @@ $('svgfile').addEventListener('change',e=>{ const f=e.target.files[0]; e.target.
 addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/svg/i.test(x.type)||/\.svg$/i.test(x.name));
   if(f){ e.preventDefault(); f.text().then(t=>loadSVGShape(t,f.name)); } });
 $('selShape').addEventListener('change',e=>{ const v=e.target.value;
+  if(v==='mesh'){
+    volOn=true; svgOn=false; autoShape=false;
+    if(!volTex){ showStat('Loading mesh field…',false);
+      loadVolume().then(()=>{ showStat('Reference mesh'); hideStat(1400); })
+                  .catch(err=>{ volOn=false; showStat('Mesh field failed — '+err.message,true); hideStat(4000); }); }
+    return;
+  }
+  volOn=false;
   if(v==='svg'){ if(svgTex){ svgOn=true; autoShape=false; } else $('svgfile').click(); return; }
   svgOn=false;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
