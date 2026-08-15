@@ -38,6 +38,19 @@ def load_audio(path):
 # --------------------------------------------------------------------- utilities
 TEMPO_LO, TEMPO_HI = 70.0, 160.0    # the range essentially all dance/electronic music lives in
 
+# How many structural boundaries to ASK the segmenter for, as one per this many seconds.
+# Named and module-level so it can be swept against a track of known structure rather than being
+# a literal nobody dares touch.
+#
+# VALUE UNCHANGED, and the sweep is why. On a synthetic 93s track with 4 known interior
+# boundaries, every setting from one-per-8s (11 asked) to one-per-30s (4 asked) produced the
+# IDENTICAL boundary list. The agglomerative boundaries are not what survives: the energy-novelty
+# peaks outrank them in the merge below and the structural ones are absorbed. So this knob does
+# not currently control what it appears to control, and tuning it would have been a change with
+# no measured effect behind it. Left at the original 8.0 until the merge is rebalanced.
+SEG_SECONDS_PER_BOUNDARY = 8.0
+SEG_KMAX_LO, SEG_KMAX_HI = 6, 16
+
 
 def _fold_tempo(bpm):
     """Fold a tempo into TEMPO_LO..TEMPO_HI by octaves.
@@ -264,7 +277,7 @@ def layer2_structure(f, sr):
     stack = np.vstack([librosa.util.normalize(f["chroma"], axis=1),
                        librosa.util.normalize(f["mfcc"], axis=1)])
     sync = librosa.util.sync(stack, beats, aggregate=np.mean)
-    kmax = int(np.clip(f["duration"] / 8.0, 6, 16))             # finer than before
+    kmax = int(np.clip(f["duration"] / SEG_SECONDS_PER_BOUNDARY, SEG_KMAX_LO, SEG_KMAX_HI))
     bt = [0.0, f["duration"]]
     try:
         bounds = librosa.segment.agglomerative(sync, kmax)      # structural boundaries
@@ -281,14 +294,67 @@ def layer2_structure(f, sr):
     for i in range(1, len(de) - 1):
         if de[i] > thr and de[i] >= de[i-1] and de[i] >= de[i+1] and (i - last) > wait:
             nov.append(i); last = i
-    bt += librosa.frames_to_time(np.array(nov, dtype=int), sr=sr, hop_length=HOP).tolist()
+    nov_t = librosa.frames_to_time(np.array(nov, dtype=int), sr=sr, hop_length=HOP).tolist()
+    bt += nov_t
+
+    # Boundaries carry a STRENGTH so the merge below can choose between them. Novelty peaks are
+    # scored by how far they clear the threshold; structural boundaries get a flat 1.0; the two
+    # track endpoints are pinned so they can never be merged away.
+    strength = {}
+    for t in bt:
+        strength.setdefault(round(t, 2), 1.0)
+    for i, t in zip(nov, nov_t):
+        k = round(t, 2)
+        strength[k] = max(strength.get(k, 0.0), 1.0 + float(de[i] / max(thr, 1e-9)))
+    strength[round(0.0, 2)] = 1e9
+    strength[round(f["duration"], 2)] = 1e9
+
     bt = sorted(set(round(x, 2) for x in bt if 0 <= x <= f["duration"]))
-    # merge boundaries closer than the minimum musical section length
+    # Merge boundaries closer than the minimum musical section length, KEEPING THE STRONGEST.
+    # Taking the earliest instead — which is what a running "is it far enough from the last one"
+    # test does — throws away a hard drop whenever a weak structural boundary happens to sit a
+    # few seconds before it, and the drop is the one edit in the track that has to land.
     mn = max(6.0, f["duration"] * 0.03)
-    merged = [bt[0]]
+    merged = []
+    group = [bt[0]]
     for t in bt[1:]:
-        if t - merged[-1] >= mn:
-            merged.append(t)
+        if t - group[0] < mn:
+            group.append(t)
+        else:
+            merged.append(max(group, key=lambda x: strength.get(x, 1.0)))
+            group = [t]
+    merged.append(max(group, key=lambda x: strength.get(x, 1.0)))
+    # ---- SNAP TO THE BEAT GRID ----
+    # The Director cuts its sections on these times, so a boundary that lands mid-bar produces a
+    # visual edit that is audibly late or early against the music. Snapping costs nothing and is
+    # the difference between a cut that reads as deliberate and one that reads as loose.
+    # A downbeat is preferred and given a wide catch (two beats), because sections in almost all
+    # metered music begin on one; failing that, any beat, with a tight half-beat catch. Outside
+    # both, the boundary is left exactly where the analysis put it rather than dragged onto a
+    # grid it does not belong to — a genuine mid-bar event (a filter sweep, a stab) is real.
+    bts = librosa.frames_to_time(np.asarray(beats), sr=sr, hop_length=HOP) if len(beats) else np.array([])
+    if bts.size >= 2:
+        ibi = float(np.median(np.diff(bts)))
+        if np.isfinite(ibi) and ibi > 1e-3:
+            downs = bts[::4]                                    # assume 4/4
+            snapped = []
+            for t in merged:
+                if t <= 1e-9 or t >= f["duration"] - 1e-9:
+                    snapped.append(t); continue                 # endpoints stay pinned
+                best = t
+                for grid, tol in ((downs, ibi * 2.0), (bts, ibi * 0.5)):
+                    if grid.size:
+                        j = int(np.argmin(np.abs(grid - t)))
+                        if abs(float(grid[j]) - t) <= tol:
+                            best = float(grid[j]); break
+                snapped.append(round(best, 3))
+            # Snapping can collide two boundaries onto one beat; dedupe and re-check spacing.
+            out = []
+            for t in sorted(set(snapped)):
+                if not out or t - out[-1] >= mn * 0.5:
+                    out.append(t)
+            if len(out) >= 2:
+                merged = out
     if merged[-1] < f["duration"] - 1e-3:
         merged[-1] = f["duration"]
     # A track shorter than the minimum section length collapses to a SINGLE boundary, which
