@@ -99,6 +99,7 @@
   <button id="reset" title="Return to the Director's framing (or double-click the canvas)">Reset view</button>
   <button id="rays" class="on" title="Volumetric light shafts from the key light">Rays</button>
   <button id="qual" title="Adapts render scale to hold frame rate">Auto</button>
+  <button id="surf" class="on" title="Micro surface detail — turn off for a perfectly smooth object">Surface</button>
   <button id="shot" title="Save the current frame as a PNG">Frame</button>
   <button id="rec" title="Record the canvas to a WebM video">Record</button>
   <div id="tl"><div id="tlF"></div><div id="tlS"></div></div>
@@ -1318,6 +1319,13 @@ const MATS={
   holo:    {alb:1.00,absorb:0.00,metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,spec:1.00, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
 };
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
+/* SURFACE DETAIL, as a global scale on the two channels that produce it.
+   Applied at upload rather than by editing MAT, because MAT is continuously eased toward MATT —
+   writing into it would be overwritten every frame, and writing into MATT would destroy the
+   preset so the material could not be restored. Eased on its own so switching is a dissolve,
+   not a cut. Scaling u_txRough also removes the albedo grain, which is scaled by that same
+   uniform: that is what makes the body one flat colour rather than a mottled one. */
+let surfT=1, surfTarget=1;
 
 /* ---- BACKGROUND PALETTES (a = deep tone, b = accent) — hard, saturated label colourways ---- */
 const PALS={
@@ -1605,6 +1613,7 @@ function frame(){
   for(const k in SH) SH[k]=sm(SH[k],compTarget[k],1.1,dt);
   for(const k in VAR) VAR[k]=sm(VAR[k],VART[k],1.0,dt);
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
+  surfT=sm(surfT,surfTarget,2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
   // Section cuts must not snap the camera. 1.3 crossed a dist/fov change in well under a second,
@@ -1765,8 +1774,8 @@ function frame(){
   gl.uniform1f(US('u_trans'),MAT.trans);
   gl.uniform1f(US('u_spec'),MAT.spec);
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
-  gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp);
-  gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough);
+  gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT);
+  gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT);
   drawFS(aScene);
 
   if(floatOK){
@@ -2145,6 +2154,12 @@ $('auto').addEventListener('click',()=>{
 $('reset').addEventListener('click',()=>{
   userAz=0; userEl=0; userZoom=1; userAzV=0; userElV=0;
   showStat('View reset'); hideStat(1100);
+});
+$('surf').addEventListener('click',()=>{
+  surfTarget=surfTarget>0.5?0:1;
+  $('surf').classList.toggle('on',surfTarget>0.5);
+  $('surf').textContent=surfTarget>0.5?'Surface':'Smooth';
+  showStat(surfTarget>0.5?'Surface detail on':'Smooth — micro detail off'); hideStat(1500);
 });
 $('qual').addEventListener('click',()=>{
   qIdx=(qIdx+1)%QMODES.length;
