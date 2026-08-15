@@ -70,9 +70,9 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="0" selected>Gyroid</option><option value="1">Menger Sponge</option>
-    <option value="2">Apollonian</option><option value="3">Möbius Band</option>
-    <option value="4">Mandelbulb</option><option value="5">Sierpinski</option>
+    <option value="0" selected>Monolith</option><option value="1">Rotor</option>
+    <option value="2">Cage</option><option value="3">Ram</option>
+    <option value="4">Blocks</option><option value="5">Wall</option>
     <option value="svg">Custom SVG…</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
     <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
@@ -193,6 +193,10 @@ float sdBox(vec3 p,vec3 b){vec3 d=abs(p)-b;return length(max(d,0.))+min(max(d.x,
 float sdRBox(vec3 p,vec3 b,float r){vec3 d=abs(p)-b+r;return length(max(d,0.))+min(max(d.x,max(d.y,d.z)),0.)-r;}
 float sdTorus(vec3 p,vec2 t){vec2 q=vec2(length(p.xz)-t.x,p.y);return length(q)-t.y;}
 float smax(float a,float b,float k){return -smin(-a,-b,k);}
+// Capped cylinder along Y. Hard-surface work needs this far more than a sphere does — every
+// machined part below is a cylinder with something cut out of it.
+float sdCyl(vec3 p,float r,float h){vec2 d=vec2(length(p.xz)-r,abs(p.y)-h);
+  return min(max(d.x,d.y),0.)+length(max(d,0.));}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}
 // TEXTURE NOISE — 5 octaves, normalised. A procedural material has no texel grid to raise, so
 // its resolution IS its octave count: 2 octaves can only ever produce soft blobs at one scale.
@@ -229,103 +233,103 @@ float fbmT(vec3 p){
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
 /* ---- FORMS ----
-   Six implicit surfaces chosen because a raymarcher can express things a mesh pipeline cannot:
-   minimal surfaces, escape-time fractals and a non-orientable band all have closed-form distance
-   estimates, and none of them has a vertex representation that would survive being exported.
+   Hard-surface industrial parts: machined metal, poured concrete, perforated steel. Chamfers
+   rather than fillets, hard unions rather than smooth ones, and repetition everywhere — the
+   forms are built the way the music is, out of a short pattern repeated until it becomes
+   hypnotic.
 
-   COST WARNING, and it is the reason the iteration counts look low. map() is evaluated ~100x per
-   pixel by the march, plus 4 for the normal, 4 for AO and up to 24 for the shadow — so ONE loop
-   iteration here is ~130 evaluations per pixel per frame. The fractals are capped at the point
-   where the next iteration stops changing the silhouette at this framing, not at the point where
-   the maths stops converging. The render-scale governor will drop resolution on these.
+   These replaced a set of fractals (gyroid, Menger, Mandelbulb and friends). Those were
+   mathematically interesting and completely wrong for this: infinitely detailed organic
+   structures read as science visualisation, not as a machine in a dark room. They were also
+   expensive — every one carried an iteration loop inside a function called ~130x per pixel per
+   frame. Everything here is closed-form, so the render-scale governor gets its headroom back.
 
-   All six are DISTANCE ESTIMATORS, not exact fields: they under-report on the tight folds. Each
-   returns a value divided down to stay conservative, or the march overshoots and the surface
-   erodes into holes. */
-float mArray(vec3 p){                                  // GYROID — triply periodic minimal surface
-  float k=3.4+u_gDense*1.8;                            // cell frequency
-  vec3 q=p*k;
-  // sin x cos y + sin y cos z + sin z cos x, the standard gyroid implicit
-  float g=dot(sin(q),cos(q.yzx));
-  float t=0.42+u_gThick*0.55;                          // wall thickness in implicit units
-  // NOT a distance: |grad g| ~ k, so divide by it to make the step conservative. The extra 1.7
-  // covers the folds where the gradient peaks above the mean.
-  float d=(abs(g)-t)/(k*1.7);
-  return smax(d, length(p)-0.95, 0.05);                // bound it, or it tiles to infinity
+   Angular repetition (mod on atan) is used in two places and both scale the result down: an
+   angle is not a distance, and the error grows as 1/r toward the axis. */
+float mArray(vec3 p){                                  // MONOLITH — fluted concrete pillar
+  float body=sdRBox(p,vec3(0.44,0.98,0.44),0.02);
+  float c=0.112-u_gDense*0.026;                        // flute pitch
+  float rad=0.030+u_gThick*0.018;
+  float fx=abs(mod(p.x+c*0.5,c)-c*0.5);
+  float fz=abs(mod(p.z+c*0.5,c)-c*0.5);
+  // A flute is a slot that exists only NEAR the face. 0.40-abs(p.z) is negative in the outer
+  // shell alone, so intersecting with it turns a saw-cut through the whole block into a groove.
+  float slotZ=max(fx-rad, 0.40-abs(p.z));
+  float slotX=max(fz-rad, 0.40-abs(p.x));
+  float d=smax(body,-min(slotZ,slotX),0.010);
+  float seam=max(abs(abs(p.y)-0.30)-0.016, length(p.xz)-0.70);   // poured-section joint
+  return smax(d,-seam,0.010);
 }
-float mStack(vec3 p){                                  // MENGER SPONGE — recursive void
-  float d=sdRBox(p,vec3(0.80),0.02);
-  float s=1.0;
-  for(int m=0;m<3;m++){
-    vec3 a=mod(p*s,2.0)-1.0;
-    s*=3.0;
-    vec3 r=abs(1.0-3.0*abs(a));
-    float da=max(r.x,r.y), db=max(r.y,r.z), dc=max(r.z,r.x);
-    d=max(d,(min(da,min(db,dc))-1.0)/s);               // subtract the cross at each scale
+float mStack(vec3 p){                                  // ROTOR — machined disc, radial slots
+  vec3 q=p; q.xz*=rot(u_gTwist*0.35);
+  float d=min(sdCyl(q,0.84,0.105), sdCyl(q,0.27,0.20));          // plate + hub
+  d=min(d, max(sdTorus(q,vec2(0.84,0.075)), abs(q.y)-0.105));    // rim lip
+  float n=6.0+floor(u_gDense*6.0);
+  float seg=6.2831853/n;
+  float aa=mod(atan(q.z,q.x)+seg*0.5,seg)-seg*0.5;
+  float r=length(q.xz);
+  // sin(aa)*r is the true perpendicular distance to the slot centreline, which is why this one
+  // needs no correction factor: it is measured in space, not in angle.
+  float slot=max(abs(sin(aa)*r)-(0.085+u_gCut*0.05), max(r-0.70,0.36-r));
+  d=smax(d,-slot,0.014);
+  return smax(d,-sdCyl(q,0.10,0.40),0.010);                      // centre bore
+}
+float mRings(vec3 p){                                  // CAGE — perforated steel drum
+  const float R=0.78, H=0.90;
+  float wall=abs(length(p.xz)-R)-(0.042+u_gThick*0.020);
+  float d=max(wall, abs(p.y)-H);
+  const float n=20.0, seg=6.2831853/n;
+  float aa=(mod(atan(p.z,p.x)+seg*0.5,seg)-seg*0.5)*R;           // arc length AT THE WALL
+  float vy=mod(p.y+0.105,0.21)-0.105;
+  d=max(d,-(length(vec2(aa,vy))-(0.062+u_gCut*0.022)));          // punch the grid
+  d=min(d, max(abs(length(p.xz)-R)-0.075, abs(abs(p.y)-H)-0.055));  // heavier end rings
+  d=min(d, sdCyl(p,0.20,H*0.72));                                // core, so it is not a hoop
+  // The hole grid is measured in arc length at R, which under-states distance inside that
+  // radius; 0.80 keeps the march short enough that the error never opens the wall.
+  return d*0.80;
+}
+float mTruss(vec3 p){                                  // RAM — stacked machined collars
+  const float N=7.0; float H=1.92/N;
+  float fi=floor((p.y+0.96)/H);
+  float d=1e9;
+  for(int j=-1;j<=1;j++){                              // nearest 3 -> a valid distance
+    float i=clamp(fi+float(j),0.0,N-1.0);
+    vec3 q=vec3(p.x,p.y-(-0.96+(i+0.5)*H),p.z);
+    float t=abs(i-(N-1.0)*0.5)/(N*0.5);
+    float r=0.70-0.26*t*t;
+    d=min(d, sdCyl(q,r,H*0.30));                       // collar
+    d=min(d, sdCyl(q,r*0.86,H*0.50));                  // spacer
+  }
+  d=min(d, sdCyl(p,0.155+u_gThick*0.05,0.99));         // shaft
+  // The window picks the three collars nearest in HEIGHT, but they do not all have the same
+  // radius — so for a point far out to the side the nearest collar is the WIDEST one, which a
+  // window chosen by height need not contain. Measured: the field jumps 0.064 at y=-0.96, where
+  // the window clamps at the bottom of the stack, and over-reports on the low side of it.
+  // Outside the bounding cylinder that bound is itself a valid and tighter answer, and using it
+  // there cannot add surface because it is positive everywhere it is used.
+  float bound=sdCyl(p,0.71,1.00);
+  return bound>0.0 ? min(d,bound) : d;
+}
+float mPods(vec3 p){                                   // BLOCKS — brutalist mass
+  float d=1e9;
+  for(int i=0;i<7;i++){
+    float fi=float(i);
+    float a=fi*1.74+u_gTwist*0.45;
+    vec3 q=p-vec3(cos(a)*0.30,(fi-3.0)*0.255,sin(a)*0.30);
+    q.xz*=rot(a*0.55);
+    // Hard min, not smin: a smooth union would fuse these into one lump and the whole point is
+    // that they are separate slabs jammed together.
+    d=min(d, sdRBox(q,vec3(0.44-fi*0.030,0.105,0.29+fi*0.018),0.012));
   }
   return d;
 }
-float mRings(vec3 p){                                  // APOLLONIAN — sphere-inversion fractal
-  vec3 q=p*1.5;
-  float s=1.5;
-  for(int i=0;i<6;i++){
-    q=-1.0+2.0*fract(0.5*q+0.5);                       // fold into the unit cell
-    float r2=dot(q,q);
-    float k=(1.05+u_gThick*0.25)/max(r2,0.12);         // invert; the clamp stops the singularity
-    q*=k; s*=k;
-  }
-  float d=0.22*abs(q.y)/s;                             // plane distance carried back through
-  return smax(d, length(p)-0.92, 0.04);
-}
-float mTruss(vec3 p){                                  // MOBIUS — one-sided band, half a twist
-  float ang=atan(p.z,p.x);
-  vec2 cs=vec2(length(p.xz)-0.70, p.y);                // cross-section in the tube frame
-  // HALF twist per revolution. The rectangle has 2-fold symmetry, so after one loop it maps onto
-  // itself flipped and the band closes — with a single side and a single edge. Any twist that is
-  // not a multiple of 1/2 leaves a visible seam where the section fails to meet itself.
-  cs*=rot(ang*0.5+u_gTwist*0.0);
-  vec2 e=abs(cs)-vec2(0.24+u_gThick*0.10,0.040);
-  float d=length(max(e,0.0))+min(max(e.x,e.y),0.0);
-  // The twist rate in SPACE is 0.5 radians per radian of angle, and angle changes at 1/r — so
-  // approaching the axis the field shears without bound. Measured: gradient 5.6 at rxz=0.02
-  // against 0.64 out at the band itself. A constant safety factor cannot cover both; the
-  // divisor has to carry the same 1/r the distortion does, or a ray passing near the axis
-  // overshoots and punches straight through the band.
-  float rxz=max(length(p.xz),0.12);
-  return d*0.62/(1.0+0.5/rxz);
-}
-float mPods(vec3 p){                                   // MANDELBULB — power-8 escape time
-  vec3 c=p*1.30, z=c;
-  float dr=1.30, r=0.0;
-  for(int i=0;i<5;i++){
-    r=length(z);
-    if(r>2.0) break;
-    float th=acos(clamp(z.z/max(r,1e-6),-1.0,1.0)), ph=atan(z.y,z.x);
-    float pw=8.0+u_gTwist*2.0;
-    dr=pow(r,pw-1.0)*pw*dr+1.0;
-    float zr=pow(r,pw); th*=pw; ph*=pw;
-    z=zr*vec3(sin(th)*cos(ph),sin(th)*sin(ph),cos(th))+c;
-  }
-  // Green's-function distance estimate. Guarded: r can still be 0 on the first iteration for a
-  // ray that lands exactly on the origin, and log(0) poisons the whole march with NaN.
-  // Green's-function estimate, halved. It is well behaved over most of the exterior (95th
-  // percentile gradient 0.74) but spikes to ~15 at the escape-iteration boundary, where the
-  // iteration count changes discontinuously and the "gradient" is really a step. The factor
-  // buys margin against that; it costs march steps everywhere else, which is why the iteration
-  // count above is as low as it is.
-  return 0.5*log(max(r,1e-6))*r/max(dr,1e-6)/1.30*0.5;
-}
-float mAperture(vec3 p){                               // SIERPINSKI — folded tetrahedron
-  vec3 z=p;
-  const float sc=2.0;
-  float off=0.86+u_gCut*0.10;
-  for(int i=0;i<7;i++){
-    if(z.x+z.y<0.0) z.xy=-z.yx;                        // fold across the three mirror planes
-    if(z.x+z.z<0.0) z.xz=-z.zx;
-    if(z.y+z.z<0.0) z.zy=-z.yz;
-    z=z*sc-vec3(off)*(sc-1.0);
-  }
-  return length(z)*pow(sc,-7.0);
+float mAperture(vec3 p){                               // WALL — ported speaker stack
+  float body=sdRBox(p,vec3(0.70,0.92,0.32),0.02);
+  vec2 g=vec2(mod(p.x+0.235,0.47)-0.235, mod(p.y+0.30,0.60)-0.30);
+  float bore=max(length(g)-(0.185+u_gCut*0.05), abs(p.z)-0.38);  // driver cutouts, front to back
+  float d=smax(body,-bore,0.016);
+  float port=max(max(abs(p.x)-0.52,abs(p.y+0.80)-0.055), abs(p.z)-0.38);
+  return smax(d,-port,0.012);                                    // bass port slot
 }
 
 /* ---- CUSTOM SVG ----
@@ -1282,16 +1286,17 @@ let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 //   0 ribbon  sweep 0.92 + half-width up to 0.35        1 tower   y +/-1.0, w 0.66
 //   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
 //   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
-// 0 gyroid    bounded to sphere 0.95        1 menger    box half 0.80, corner 1.39
-// 2 apollonian bounded to sphere 0.92       3 mobius    ring 0.70 + half-width 0.34
-// 4 mandelbulb escapes by ~1.2/1.30         5 sierpinski folded span ~1.05
-const REACH=[0.95,1.15,0.92,1.04,0.95,1.05];
+// Read off each form's own constants, as the corner-to-centre radius:
+// 0 monolith box(0.44,0.98,0.44) -> 1.16      1 rotor  r 0.84+0.075 lip, h 0.21
+// 2 cage     R 0.855, H 0.955 -> 1.28         3 ram    r 0.70, y 0.99 -> 1.21
+// 4 blocks   xz 0.74, y 0.87 -> 1.14          5 wall   box(0.70,0.92,0.32) -> 1.20
+const REACH=[1.16,0.92,1.28,1.21,1.14,1.20];
 // Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
 // sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
 // unit below the form and the contact shadow had nothing to make contact with.
-// The Mobius band is the case this table exists for: it sweeps 1.04 across and is ~0.36 deep,
-// so framing it on its radius would leave it a thin line across the middle of the frame.
-const REACH_Y=[0.95,0.82,0.92,0.36,0.95,1.05];
+// The ROTOR is the case this table exists for: 0.92 across and 0.21 deep, so framing it on its
+// radius alone would leave it a line across the middle of the frame.
+const REACH_Y=[0.98,0.21,0.96,0.99,0.87,0.92];
 // The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
