@@ -85,6 +85,14 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename")
+        # Private Network Access. Chrome treats a request from a public or opaque origin (which
+        # includes file://) to a loopback address as a private-network request, preflights it with
+        # Access-Control-Request-Private-Network, and BLOCKS it unless the response opts in.
+        # Without this, opening viewer.html by double-clicking it gives a page that loads fine and
+        # an upload that fails as a bare network error — indistinguishable from the server being
+        # down. Scoped to a loopback-only dev server, so it grants nothing that was not already
+        # reachable from this machine.
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def _json(self, code, obj):
         body = json.dumps(obj).encode()
@@ -216,7 +224,16 @@ class H(BaseHTTPRequestHandler):
                 try: os.remove(tmp)
                 except OSError: pass
 
-    def log_message(self, *a):  # quieter
+    # Off by default (the studio pulls ~40 vendored module files per load, which drowns the
+    # interesting lines). ATONAL_LOG=1 turns it on — the first question when a browser says
+    # "unreachable" is whether the request arrives at all, and silence cannot answer it.
+    _LOG = bool(os.environ.get("ATONAL_LOG"))
+
+    def log_message(self, fmt, *a):
+        if self._LOG:
+            print(f"  {self.command} {self.path} -> {a[1] if len(a) > 1 else ''}", flush=True)
+
+    def _unused_log_message(self, *a):  # quieter
         pass
 
 class _V6(ThreadingHTTPServer):

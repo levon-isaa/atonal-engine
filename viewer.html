@@ -113,6 +113,19 @@ function __showErr(m){ let d=document.getElementById('__err'); if(!d){ d=documen
 addEventListener('error',e=>{ const m=(e.error&&(e.error.stack||e.error.message))||e.message||'error'; window.__errs.push(String(m)); __showErr('JS ERROR:\n'+m); });
 addEventListener('unhandledrejection',e=>{ const m=(e.reason&&(e.reason.stack||e.reason.message))||e.reason; window.__errs.push('promise: '+m); __showErr('PROMISE ERROR:\n'+m); });
 
+/* A page opened straight from disk is an OPAQUE ORIGIN. The browser refuses its calls to the
+   local server — often without even sending the request — and XHR is only told "network error",
+   which is indistinguishable from the server being down. The viewer used to relay that as
+   "server unreachable, run python server.py", which sends you off to restart a server that is
+   already running and cannot be the problem. Rendering works fine from file://; only the
+   analysis round-trip does not, so this is a notice rather than a refusal to start. */
+const FILE_MODE = location.protocol === 'file:';
+if(FILE_MODE){
+  __showErr('Opened from a file:// path.\n\nThe browser blocks this page from reaching the '
+    +'analysis server, so Load cannot work here — the server being "unreachable" is the browser '
+    +'refusing, not the server being down.\n\nOpen this instead:\n  http://127.0.0.1:8770/viewer.html');
+}
+
 /* ======================= WEBGL ======================= */
 const glc=$('gl');
 const gl=glc.getContext('webgl2',{antialias:false,alpha:false,preserveDrawingBuffer:false});
@@ -1383,8 +1396,12 @@ async function loadFile(file){
     if(poll) clearInterval(poll);
     setProg(null);
     const unreachable = e.message==='unreachable';
-    showStat(unreachable ? 'Server unreachable — run: python server.py  ('+SERVER+')' : e.message, true);
-    hideStat(6000); return;
+    // Same network error, two very different causes — name the one that actually applies.
+    showStat(!unreachable ? e.message
+      : FILE_MODE ? 'Opened from file:// — the browser is blocking this, not the server. '
+                   +'Open http://127.0.0.1:8770/viewer.html'
+      : 'Server unreachable — run: python server.py  ('+SERVER+')', true);
+    hideStat(FILE_MODE?12000:6000); return;
   }
   if(poll) clearInterval(poll);
   setProg(1,'Analysed'); setProg(null);
