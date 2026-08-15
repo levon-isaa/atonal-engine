@@ -351,8 +351,10 @@ float mVol(vec3 p){
   vec3 cl=clamp(uv,0.0,1.0);
   float d=texture(u_vol,cl).r;      // already decoded to object units on upload
   vec3 q=abs(p)-u_volPad;
-  // NOT named `out` — that is a reserved storage qualifier in GLSL, and using it as a variable
+  // NOT named 'out' — that is a reserved storage qualifier in GLSL, and using it as a variable
   // is a syntax error that fails the ENTIRE scene shader, not just this function.
+  // (And the quotes here are apostrophes on purpose: a backtick inside this comment would end
+  //  the JS template literal holding the shader, which breaks the whole script, not just GLSL.)
   float outside=length(max(q,0.0));
   return outside>1e-6 ? outside+max(d,0.0) : d;
 }
