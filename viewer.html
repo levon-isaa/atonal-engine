@@ -45,6 +45,15 @@
     background:transparent;cursor:pointer}
   #ctrl input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
   #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:2px}
+  /* Compact buttons for the panel. The bar's 8px/14px padding is sized for a wide strip and
+     wraps the panel to an unusable width. */
+  #ctrl button.mini{padding:5px 9px;font-size:9px;letter-spacing:.10em;backdrop-filter:blur(12px);
+    background:rgba(14,14,17,.85)}
+  #ctrl button.mini:hover{background:rgba(255,255,255,.14)}
+  #ctrl button.mini.on{background:rgba(200,184,255,.20);border-color:rgba(200,184,255,.48);color:#e8e0ff}
+  /* Groups sit slightly apart from the selects so the panel reads as two zones, not one list. */
+  #ctrl .row.grp{margin-top:2px}
+  #ctrl .row.grp label{align-self:center}
 </style>
 
 <canvas id="gl"></canvas>
@@ -83,9 +92,27 @@
     <option value="solar">Solar</option><option value="mono">Mono</option>
     <option value="studio">Studio (light)</option>
     <option value="custom">Custom</option></select></div>
+  <div class="row"><label>Finish</label><select id="selFinish">
+    <option value="satin" selected>Satin</option>
+    <option value="matte">Matte</option>
+    <option value="gloss">Gloss</option></select></div>
   <div class="row"><label>Colors</label>
     <input type="color" id="colA" value="#2a0410" title="Background — deep tone">
     <input type="color" id="colB" value="#ff1f4b" title="Background — accent tone"></div>
+  <!-- Toggles live here rather than in the transport bar. The bar had grown to nine buttons,
+       two of them both reading "Auto" (camera orbit and render scale), which is the point at
+       which a control strip stops being scannable. Transport keeps only what plays the track;
+       everything that changes how it LOOKS belongs with the other look controls. -->
+  <div class="row grp"><label>View</label>
+    <button id="auto" class="mini on" title="Director's automatic orbit — drag the canvas to take over">Orbit</button>
+    <button id="reset" class="mini" title="Return to the Director's framing (or double-click the canvas)">Reset</button></div>
+  <div class="row grp"><label>Render</label>
+    <button id="qual" class="mini" title="Adapts render scale to hold frame rate">Auto</button>
+    <button id="rays" class="mini on" title="Volumetric light shafts from the key light">Rays</button>
+    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Surface</button></div>
+  <div class="row grp"><label>Capture</label>
+    <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
+    <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
 </div>
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
@@ -95,13 +122,6 @@
   <span class="grp">Source</span>
   <label class="btn" for="file">Load</label><label class="btn" for="svgfile" title="Upload an SVG and extrude it as a new shape">SVG</label><input id="file" type="file" accept="audio/*"><input id="svgfile" type="file" accept=".svg,image/svg+xml">
   <button id="play">Play</button>
-  <button id="auto" class="on" title="Director's automatic orbit — drag the canvas to take over">Auto</button>
-  <button id="reset" title="Return to the Director's framing (or double-click the canvas)">Reset view</button>
-  <button id="rays" class="on" title="Volumetric light shafts from the key light">Rays</button>
-  <button id="qual" title="Adapts render scale to hold frame rate">Auto</button>
-  <button id="surf" class="on" title="Micro surface detail — turn off for a perfectly smooth object">Surface</button>
-  <button id="shot" title="Save the current frame as a PNG">Frame</button>
-  <button id="rec" title="Record the canvas to a WebM video">Record</button>
   <div id="tl"><div id="tlF"></div><div id="tlS"></div></div>
   <span id="tc">0:00 / 0:00</span>
 </div>
@@ -1326,6 +1346,19 @@ const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
    not a cut. Scaling u_txRough also removes the albedo grain, which is scaled by that same
    uniform: that is what makes the body one flat colour rather than a mottled one. */
 let surfT=1, surfTarget=1;
+/* FINISH — how polished the surface is, independent of WHICH material it is.
+   A modifier rather than more presets: matte is a property of the finish, not of pearl vs glass,
+   so folding it into the material list would mean duplicating every entry.
+   rghMix/rghTo blend the material's own roughness toward a target instead of overwriting it, so
+   glass-matte and pearl-matte still differ. The three multipliers matter as much as roughness:
+   roughness alone leaves the environment reflection and the iridescent film intact, and a matte
+   surface with a mirror reflection on it just reads as a dirty mirror. */
+const FINISHES={
+  satin:{rghMix:0.00,rghTo:0.00,refl:1.00,spec:1.00,irid:1.00},   // material as authored
+  matte:{rghMix:0.88,rghTo:0.95,refl:0.08,spec:0.18,irid:0.10},
+  gloss:{rghMix:0.80,rghTo:0.05,refl:1.00,spec:1.00,irid:1.00},
+};
+const FIN=Object.assign({},FINISHES.satin), FINT=Object.assign({},FINISHES.satin);
 
 /* ---- BACKGROUND PALETTES (a = deep tone, b = accent) — hard, saturated label colourways ---- */
 const PALS={
@@ -1614,6 +1647,7 @@ function frame(){
   for(const k in VAR) VAR[k]=sm(VAR[k],VART[k],1.0,dt);
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
   surfT=sm(surfT,surfTarget,2.5,dt);
+  for(const k in FIN) FIN[k]=sm(FIN[k],FINT[k],2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
   // Section cuts must not snap the camera. 1.3 crossed a dist/fov change in well under a second,
@@ -1769,10 +1803,14 @@ function frame(){
   gl.uniform1f(US('u_twMix'), twMix>0 ? twMix*twMix*(3-2*twMix) : 0);
   gl.uniform1f(US('u_darkness'),darkness);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
-  gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),MAT.rough); gl.uniform1f(US('u_reflect'),MAT.reflect);
-  gl.uniform1f(US('u_iridAmt'),MAT.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
+  // Finish blends the material's roughness toward a target rather than replacing it, so a matte
+  // glass and a matte pearl are still different surfaces.
+  const finRgh=MAT.rough+(FIN.rghTo-MAT.rough)*FIN.rghMix;
+  gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),finRgh);
+  gl.uniform1f(US('u_reflect'),MAT.reflect*FIN.refl);
+  gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans);
-  gl.uniform1f(US('u_spec'),MAT.spec);
+  gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec);
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
   gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT);
@@ -2186,6 +2224,7 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   svgOn=false;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
+$('selFinish').addEventListener('change',e=>{ const f=FINISHES[e.target.value]; if(f) Object.assign(FINT,f); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
