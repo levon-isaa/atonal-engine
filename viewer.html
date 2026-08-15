@@ -181,6 +181,7 @@ uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
+uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
@@ -776,12 +777,18 @@ void main(){
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
     vec3 amb=env(n,1.0)*1.22;
-    vec3 c=base*(1.-u_metal)*( keyC*(0.95*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
+    // The KEY BREATHES. u_pulse already drove the geometry and the backdrop but never the
+    // lighting, so the form was scaled by the beat while being lit by a lamp that ignored it.
+    // Pulsing the light instead of the shape is the stronger cue: it moves the highlight and the
+    // terminator, which is what the eye reads as a room reacting rather than an object wobbling.
+    // Ambient is deliberately NOT pulsed — modulating the fill as well lifts the whole frame
+    // together, which reads as an exposure flicker, not as a light.
+    vec3 c=base*(1.-u_metal)*( keyC*(0.95*u_keyPulse*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
                              + amb*mix(0.22,1.0,occ) );
     // emotional rim: swells with epicness/arousal, colour from valence
     // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
     // not to zero, because it is how the section's valence reaches the form at all.
-    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec);
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
@@ -1353,10 +1360,16 @@ let surfT=1, surfTarget=1;
    glass-matte and pearl-matte still differ. The three multipliers matter as much as roughness:
    roughness alone leaves the environment reflection and the iridescent film intact, and a matte
    surface with a mirror reflection on it just reads as a dirty mirror. */
+// Separation widened after the first values read as "no change". A non-metal here is dominated
+// by the diffuse body plus env irradiance (amb = env(n,1.0)*1.22), and NEITHER depends on any of
+// these — so the finish only moves the specular and reflection terms, which are a modest share of
+// the pixel. Values that look like a big change on paper were a small change on screen.
+// refl above 1 is allowed and clamped at upload: gloss has to be able to LIFT a material's
+// reflection, not merely leave it alone, or it does nothing on anything already satin.
 const FINISHES={
   satin:{rghMix:0.00,rghTo:0.00,refl:1.00,spec:1.00,irid:1.00},   // material as authored
-  matte:{rghMix:0.88,rghTo:0.95,refl:0.08,spec:0.18,irid:0.10},
-  gloss:{rghMix:0.80,rghTo:0.05,refl:1.00,spec:1.00,irid:1.00},
+  matte:{rghMix:0.94,rghTo:0.98,refl:0.03,spec:0.06,irid:0.02},
+  gloss:{rghMix:0.92,rghTo:0.03,refl:1.70,spec:1.35,irid:1.20},
 };
 const FIN=Object.assign({},FINISHES.satin), FINT=Object.assign({},FINISHES.satin);
 
@@ -1771,6 +1784,15 @@ function frame(){
   gl.uniform3f(US('u_mood'),MO[0],MO[1],MO[2]);
   gl.uniform1f(US('u_energy'),energy); gl.uniform1f(US('u_tension'),tension); gl.uniform1f(US('u_arousal'),arousal);
   gl.uniform1f(US('u_pulse'),pulseS); gl.uniform1f(US('u_flux'),flux);
+  // PACE from the beat envelope and the kick; EMOTION sets how hard each beat lands. A calm
+  // section barely breathes, a high-arousal one throws the key a third brighter on every hit.
+  // pulseS is already tempo-locked (it is driven by the beat list), so the rate follows the
+  // track without needing the BPM here.
+  // Clamped: these multiply a term that can already reach the tonemapper's knee, and an
+  // unbounded pulse on a loud section turns every beat into a white frame.
+  const keyPulse=Math.min(2.10, 1 + (pulseS*0.30+HITS.low*0.28)*(0.55+arousal*0.85) + (energy-0.30)*0.12);
+  const rimPulse=Math.min(2.60, 1 + (pulseS*0.20+HITS.air*0.40)*(0.50+epic*1.10));
+  gl.uniform1f(US('u_keyPulse'),keyPulse); gl.uniform1f(US('u_rimPulse'),rimPulse);
   gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
   gl.uniform1f(US('u_hSub'),HITS.sub); gl.uniform1f(US('u_hLow'),HITS.low);
   gl.uniform1f(US('u_hMid'),HITS.mid); gl.uniform1f(US('u_hHigh'),HITS.high);
@@ -1807,7 +1829,9 @@ function frame(){
   // glass and a matte pearl are still different surfaces.
   const finRgh=MAT.rough+(FIN.rghTo-MAT.rough)*FIN.rghMix;
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),finRgh);
-  gl.uniform1f(US('u_reflect'),MAT.reflect*FIN.refl);
+  // Clamped at 1: gloss multiplies by 1.7 so it can lift a satin material, but the reflection
+  // term is energy, and letting it past 1 adds light the environment never contained.
+  gl.uniform1f(US('u_reflect'),Math.min(1.0,MAT.reflect*FIN.refl));
   gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans);
   gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec);
