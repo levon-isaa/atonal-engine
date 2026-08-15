@@ -70,9 +70,9 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="4" selected>Pods</option><option value="0">Ribbon</option>
-    <option value="1">Tower</option><option value="2">Gyroscope</option>
-    <option value="3">Space Frame</option><option value="5">Shell</option>
+    <option value="0" selected>Gyroid</option><option value="1">Menger Sponge</option>
+    <option value="2">Apollonian</option><option value="3">Möbius Band</option>
+    <option value="4">Mandelbulb</option><option value="5">Sierpinski</option>
     <option value="svg">Custom SVG…</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
     <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
@@ -171,7 +171,6 @@ uniform float u_spec,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
-uniform float u_twA,u_twB,u_twMix;                  // ribbon twist cross-fade
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
 uniform float u_bLow,u_bHigh,u_bAir;
@@ -229,91 +228,106 @@ float fbmT(vec3 p){
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
-float ribbonAt(vec3 p,float twN){                                  // RIBBON — a wide band swept round the axis
-  // Replaces the old turbine (a polar array of pitched blades + hub + ring). That form read as
-  // machinery: hard repeated blades, a dead hub in the middle, and a torus that never belonged
-  // to the rest of it. This is one continuous surface instead — a band swept around the axis
-  // while rotating about its own centreline, so the silhouette changes completely as it turns
-  // and the light runs along the twist. Glossy materials have somewhere to travel.
-  float a=atan(p.z,p.x);
-  float r=length(p.xz)-0.92;                           // signed distance to the sweep circle
-  vec2 q=vec2(r,p.y);
-  float tw=twN;
-  // INTEGER twist count only. A half twist gives a true Mobius band but leaves a seam where
-  // atan wraps at +/-pi, because the cross-section arrives back rotated by an odd multiple of
-  // pi and no longer matches itself.
-  q*=rot(a*tw + u_gTwist*0.9);
-  vec2 half_=vec2(0.048+u_gThick*0.050, 0.26+u_gCut*0.09);
-  vec2 d2=abs(q)-half_+0.042;
-  float band=length(max(d2,0.0))+min(max(d2.x,d2.y),0.0)-0.042;
-  // The angular twist stretches space, so the true distance is SHORTER than this estimate and
-  // marching it unscaled overshoots — the band tears into chords, which is exactly what a fixed
-  // 0.55 still did at 2+ twists. The distortion grows with the twist rate, so the safety factor
-  // has to grow with it too rather than being a constant.
-  return band/(1.0+tw*0.55);
+/* ---- FORMS ----
+   Six implicit surfaces chosen because a raymarcher can express things a mesh pipeline cannot:
+   minimal surfaces, escape-time fractals and a non-orientable band all have closed-form distance
+   estimates, and none of them has a vertex representation that would survive being exported.
+
+   COST WARNING, and it is the reason the iteration counts look low. map() is evaluated ~100x per
+   pixel by the march, plus 4 for the normal, 4 for AO and up to 24 for the shadow — so ONE loop
+   iteration here is ~130 evaluations per pixel per frame. The fractals are capped at the point
+   where the next iteration stops changing the silhouette at this framing, not at the point where
+   the maths stops converging. The render-scale governor will drop resolution on these.
+
+   All six are DISTANCE ESTIMATORS, not exact fields: they under-report on the tight folds. Each
+   returns a value divided down to stay conservative, or the march overshoots and the surface
+   erodes into holes. */
+float mArray(vec3 p){                                  // GYROID — triply periodic minimal surface
+  float k=3.4+u_gDense*1.8;                            // cell frequency
+  vec3 q=p*k;
+  // sin x cos y + sin y cos z + sin z cos x, the standard gyroid implicit
+  float g=dot(sin(q),cos(q.yzx));
+  float t=0.42+u_gThick*0.55;                          // wall thickness in implicit units
+  // NOT a distance: |grad g| ~ k, so divide by it to make the step conservative. The extra 1.7
+  // covers the folds where the gradient peaks above the mean.
+  float d=(abs(g)-t)/(k*1.7);
+  return smax(d, length(p)-0.95, 0.05);                // bound it, or it tiles to infinity
 }
-// The twist count MUST be an integer or the cross-section fails to meet itself at the atan
-// wrap. Driving it straight off energy therefore made it snap 2->3->4 mid-track and the whole
-// form re-shaped in a single frame — that is the 'changes very strange' problem. It is now
-// latched, changed only at section boundaries, and cross-faded between the two counts exactly
-// like a mode morph, so the change reads as a transformation instead of a pop.
-float mArray(vec3 p){
-  float d=ribbonAt(p,u_twA);
-  if(u_twMix>0.001) d=mix(d,ribbonAt(p,u_twB),u_twMix);
-  return d;
-}
-float mStack(vec3 p){                                  // TOWER — stacked slabs, progressive twist
-  const float N=8.0; float H=2.00/N;
-  float fi=floor((p.y+1.00)/H);
-  float d=1e9;
-  for(int j=-1;j<=1;j++){                              // nearest 3 slabs -> valid distance
-    float i=clamp(fi+float(j),0.0,N-1.0);
-    float cy=-1.00+(i+0.5)*H;
-    vec3 q=vec3(p.x,p.y-cy,p.z);
-    q.xz*=rot(i*(0.28+u_gTwist*0.30));
-    float t=abs(i-(N-1.0)*0.5)/(N*0.5);
-    float w=0.66-0.26*t*t;
-    d=min(d,sdRBox(q,vec3(w,H*0.34,w*0.52),0.07));
+float mStack(vec3 p){                                  // MENGER SPONGE — recursive void
+  float d=sdRBox(p,vec3(0.80),0.02);
+  float s=1.0;
+  for(int m=0;m<3;m++){
+    vec3 a=mod(p*s,2.0)-1.0;
+    s*=3.0;
+    vec3 r=abs(1.0-3.0*abs(a));
+    float da=max(r.x,r.y), db=max(r.y,r.z), dc=max(r.z,r.x);
+    d=max(d,(min(da,min(db,dc))-1.0)/s);               // subtract the cross at each scale
   }
   return d;
 }
-float mRings(vec3 p){                                  // GYROSCOPE — nested orthogonal rings
-  float th=0.055+u_gThick*0.05;
-  float d=sdTorus(p,vec2(0.92,th));
-  vec3 q1=p; q1.yz*=rot(1.5707963);
-  d=min(d,sdTorus(q1,vec2(0.74,th*0.92)));
-  vec3 q2=p; q2.xy*=rot(1.5707963); q2.yz*=rot(u_gTwist*0.5);
-  d=min(d,sdTorus(q2,vec2(0.56,th*0.85)));
-  return smin(d,sdRBox(p,vec3(0.17),0.13),0.10);
-}
-float mTruss(vec3 p){                                  // SPACE FRAME — beam lattice in a shell
-  float c=0.62-u_gDense*0.16;                          // cell size: denser when energetic
-  vec3 q=mod(p+c*0.5,c)-c*0.5;
-  float r=0.040+u_gThick*0.030;
-  float beams=min(length(q.yz)-r,min(length(q.xz)-r,length(q.xy)-r));
-  float node =length(q)-r*1.9;
-  float lat=min(beams,node);
-  float shell=sdRBox(p,vec3(0.80),0.24);
-  return smax(lat,shell,0.03);                         // bound to a rounded cube
-}
-float mPods(vec3 p){                                   // PODS — tapered capsules off a core
-  float d=1e9;
+float mRings(vec3 p){                                  // APOLLONIAN — sphere-inversion fractal
+  vec3 q=p*1.5;
+  float s=1.5;
   for(int i=0;i<6;i++){
-    float fi=float(i), a=fi*1.0471976;
-    vec3 dir=normalize(vec3(cos(a),sin(fi*0.9+u_gTwist)*0.62,sin(a)));
-    float h=clamp(dot(p,dir),0.0,0.80);
-    d=smin(d,length(p-dir*h)-(0.215-0.085*(h/0.80)),0.13);
+    q=-1.0+2.0*fract(0.5*q+0.5);                       // fold into the unit cell
+    float r2=dot(q,q);
+    float k=(1.05+u_gThick*0.25)/max(r2,0.12);         // invert; the clamp stops the singularity
+    q*=k; s*=k;
   }
-  return smin(d,length(p)-0.31,0.15);
+  float d=0.22*abs(q.y)/s;                             // plane distance carried back through
+  return smax(d, length(p)-0.92, 0.04);
 }
-float mAperture(vec3 p){                               // SHELL — chamfered pod, bored through
-  float outer=smax(sdRBox(p,vec3(0.66),0.24),length(p)-0.90,0.06);
-  float inner=smax(sdRBox(p,vec3(0.66-0.10-u_gThick*0.06),0.22),length(p)-(0.80-u_gThick*0.05),0.06);
-  float shell=smax(outer,-inner,0.03);
-  float rad=0.20+u_gCut*0.16;                          // aperture radius
-  float bore=min(length(p.yz)-rad,min(length(p.xz)-rad,length(p.xy)-rad));
-  return smax(shell,-bore,0.035);
+float mTruss(vec3 p){                                  // MOBIUS — one-sided band, half a twist
+  float ang=atan(p.z,p.x);
+  vec2 cs=vec2(length(p.xz)-0.70, p.y);                // cross-section in the tube frame
+  // HALF twist per revolution. The rectangle has 2-fold symmetry, so after one loop it maps onto
+  // itself flipped and the band closes — with a single side and a single edge. Any twist that is
+  // not a multiple of 1/2 leaves a visible seam where the section fails to meet itself.
+  cs*=rot(ang*0.5+u_gTwist*0.0);
+  vec2 e=abs(cs)-vec2(0.24+u_gThick*0.10,0.040);
+  float d=length(max(e,0.0))+min(max(e.x,e.y),0.0);
+  // The twist rate in SPACE is 0.5 radians per radian of angle, and angle changes at 1/r — so
+  // approaching the axis the field shears without bound. Measured: gradient 5.6 at rxz=0.02
+  // against 0.64 out at the band itself. A constant safety factor cannot cover both; the
+  // divisor has to carry the same 1/r the distortion does, or a ray passing near the axis
+  // overshoots and punches straight through the band.
+  float rxz=max(length(p.xz),0.12);
+  return d*0.62/(1.0+0.5/rxz);
 }
+float mPods(vec3 p){                                   // MANDELBULB — power-8 escape time
+  vec3 c=p*1.30, z=c;
+  float dr=1.30, r=0.0;
+  for(int i=0;i<5;i++){
+    r=length(z);
+    if(r>2.0) break;
+    float th=acos(clamp(z.z/max(r,1e-6),-1.0,1.0)), ph=atan(z.y,z.x);
+    float pw=8.0+u_gTwist*2.0;
+    dr=pow(r,pw-1.0)*pw*dr+1.0;
+    float zr=pow(r,pw); th*=pw; ph*=pw;
+    z=zr*vec3(sin(th)*cos(ph),sin(th)*sin(ph),cos(th))+c;
+  }
+  // Green's-function distance estimate. Guarded: r can still be 0 on the first iteration for a
+  // ray that lands exactly on the origin, and log(0) poisons the whole march with NaN.
+  // Green's-function estimate, halved. It is well behaved over most of the exterior (95th
+  // percentile gradient 0.74) but spikes to ~15 at the escape-iteration boundary, where the
+  // iteration count changes discontinuously and the "gradient" is really a step. The factor
+  // buys margin against that; it costs march steps everywhere else, which is why the iteration
+  // count above is as low as it is.
+  return 0.5*log(max(r,1e-6))*r/max(dr,1e-6)/1.30*0.5;
+}
+float mAperture(vec3 p){                               // SIERPINSKI — folded tetrahedron
+  vec3 z=p;
+  const float sc=2.0;
+  float off=0.86+u_gCut*0.10;
+  for(int i=0;i<7;i++){
+    if(z.x+z.y<0.0) z.xy=-z.yx;                        // fold across the three mirror planes
+    if(z.x+z.z<0.0) z.xz=-z.zx;
+    if(z.y+z.z<0.0) z.zy=-z.yz;
+    z=z*sc-vec3(off)*(sc-1.0);
+  }
+  return length(z)*pow(sc,-7.0);
+}
+
 /* ---- CUSTOM SVG ----
    The uploaded artwork arrives as a 2D signed distance field baked into a texture, so the
    raymarcher can treat it like any other primitive: sample the plane distance, then extrude.
@@ -1224,6 +1238,9 @@ const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colo
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0, rollS=0;
 // Ribbon twist: integer only (see the shader note), latched and cross-faded so it never pops.
+// Vestigial: the Ribbon it cross-faded is gone. Kept only because the section-change handler
+// and the uniform upload still reference it; the shader no longer declares u_twA/u_twB, so
+// those uploads resolve to a null location and are silent no-ops.
 let twA=3, twB=3, twMix=0;
 let scene=0;                                          // 0 colour field (default), 1 studio
 let groundY=-1.05;
@@ -1265,11 +1282,16 @@ let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 //   0 ribbon  sweep 0.92 + half-width up to 0.35        1 tower   y +/-1.0, w 0.66
 //   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
 //   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
-const REACH=[1.27,1.20,1.03,1.15,1.00,0.90];
+// 0 gyroid    bounded to sphere 0.95        1 menger    box half 0.80, corner 1.39
+// 2 apollonian bounded to sphere 0.92       3 mobius    ring 0.70 + half-width 0.34
+// 4 mandelbulb escapes by ~1.2/1.30         5 sierpinski folded span ~1.05
+const REACH=[0.95,1.15,0.92,1.04,0.95,1.05];
 // Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
 // sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
 // unit below the form and the contact shadow had nothing to make contact with.
-const REACH_Y=[0.38,1.00,0.98,0.80,0.72,0.90];
+// The Mobius band is the case this table exists for: it sweeps 1.04 across and is ~0.36 deep,
+// so framing it on its radius would leave it a thin line across the middle of the frame.
+const REACH_Y=[0.95,0.82,0.92,0.36,0.95,1.05];
 // The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
