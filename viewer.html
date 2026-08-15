@@ -97,6 +97,7 @@
   <button id="play">Play</button>
   <button id="auto" class="on" title="Director's automatic orbit — drag the canvas to take over">Auto</button>
   <button id="reset" title="Return to the Director's framing (or double-click the canvas)">Reset view</button>
+  <button id="rays" class="on" title="Volumetric light shafts from the key light">Rays</button>
   <button id="shot" title="Save the current frame as a PNG">Frame</button>
   <button id="rec" title="Record the canvas to a WebM video">Record</button>
   <div id="tl"><div id="tlF"></div><div id="tlS"></div></div>
@@ -911,6 +912,7 @@ out vec4 o;
 uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
 uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
+uniform float u_rays; uniform vec2 u_rayPos;   // volumetric shafts: strength, light in screen uv
 uniform float u_dbg;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
@@ -947,6 +949,39 @@ vec3 bloom(vec2 uv,vec2 t){
     vec2 of=vec2(float(i),float(j)); float g=exp(-dot(of,of)*.22);
     sum+=texture(u_brt,uv+of*t*5.0).rgb*g; w+=g; }
   return sum/max(w,1e-4);
+}
+/* VOLUMETRIC SHAFTS (crepuscular rays).
+   Screen-space, gathered by marching from the pixel toward the key light's projected position
+   and accumulating with exponential decay — the standard occlusion-integral approximation.
+
+   It reads u_brt, the ALREADY-THRESHOLDED bright pass, which is what makes this work rather
+   than turning into a smear: only what genuinely clips casts a shaft, so the form occludes its
+   own rays and the negative space between them is what reads as volume. Sampling the full
+   colour buffer instead would let every mid-tone streak and the image would just look smeared.
+
+   Deliberately gathered from mip 2 of the half-res buffer. Shafts are low-frequency by nature,
+   so the detail is worthless here, and a blurred source hides the step pattern that would
+   otherwise show as banding along each ray at this few taps. That is what buys 20 taps instead
+   of the 60+ a sharp source would need. */
+const int RAY_N=20;
+vec3 godrays(vec2 uv){
+  // Level 2 only where the mip chain exists. u_mip is the runtime probe for "can this GPU
+  // mipmap a half-float target"; where it cannot, the bright buffer has a single level and
+  // asking for level 2 samples an incomplete texture, which is undefined — in practice black,
+  // so the shafts would silently vanish on exactly the machines that most need the cheap path.
+  float lod=u_mip>0.5?2.0:0.0;
+  vec2 delta=(uv-u_rayPos)*(0.62/float(RAY_N));
+  vec2 c=uv; float illum=1.0; vec3 sum=vec3(0.);
+  for(int i=0;i<RAY_N;i++){
+    c-=delta; illum*=0.93;                       // decay per step
+    sum+=textureLod(u_brt,clamp(c,vec2(0.),vec2(1.)),lod).rgb*illum;
+  }
+  // Fade with distance from the source: without this the far corners of a wide frame collect a
+  // flat lift that reads as fog rather than as shafts.
+  float d=length((uv-u_rayPos)*vec2(u_res.x/u_res.y,1.0));
+  // 1-smoothstep, not a reversed-edge smoothstep: GLSL leaves edge0 >= edge1 UNDEFINED, and it
+  // happens to work on desktop drivers while being a real portability trap.
+  return sum*(1.0/float(RAY_N))*(1.0-smoothstep(0.10,1.15,d));
 }
 const float BAY[16]=float[16](0.,8.,2.,10.,12.,4.,14.,6.,3.,11.,1.,9.,15.,7.,13.,5.);
 float bayer(vec2 p){ivec2 i=ivec2(mod(p,4.0));return BAY[i.y*4+i.x]/16.0-0.46875;}
@@ -1000,6 +1035,10 @@ void main(){
     col=clamp(col+(col-(n+s+e+w)*0.25)*u_sharpen, min(col,mn), max(col,mx)); }
   vec2 c2=uv-.5;c2.x*=u_res.x/u_res.y;
   col+=bloom(uv,t)*u_bloom;
+  // Added BEFORE tonemapping, so shafts roll off through the same ACES curve as everything else.
+  // Added after it they sit on the graded image as flat paint and never clip, which is exactly
+  // what makes screen-space light look pasted on.
+  if(u_rays>0.001) col+=godrays(uv)*u_rays;
   col*=u_expo*(1.0+u_flash);
   mat3 ai=mat3(.59719,.07600,.02840,.35458,.90834,.13383,.04823,.01566,.83777);
   mat3 ao=mat3(1.60475,-.10208,-.00327,-.53108,1.10813,-.07276,-.07367,-.00605,1.07602);
@@ -1124,7 +1163,7 @@ let scene=0;                                          // 0 colour field (default
 let groundY=-1.05;
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
 /* ---- USER CAMERA: drag to orbit, wheel to zoom, all composed ON TOP of the Director ---- */
-let autoRotate=true, dragging=false;
+let autoRotate=true, dragging=false, raysOn=true;
 let userAz=0, userEl=0, userZoom=1, userAzV=0, userElV=0;
 // One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
 // most electronic music, so a turn lines up with the structure the Director cuts sections on.
@@ -1726,6 +1765,29 @@ function frame(){
     gl.uniform1f(UP('u_expo'),0.82+energy*0.45+pulseS*0.12+HITS.low*0.10);
     gl.uniform1f(UP('u_contrast'),0.45+tension*0.30+LK.contrast); gl.uniform1f(UP('u_grain'),(0.35+darkness*0.30)*LK.grain);
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
+    // ---- volumetric shafts ----
+    // The key is DIRECTIONAL, so it has no position to project — but a directional light is a
+    // point at infinity, and the pixel that sees it is the one whose ray direction IS L. Solving
+    // rd = normalize(uv.x*rt + uv.y*up + f*fw) for uv gives that pixel directly.
+    // L must mirror the shader's own expression or the shafts would emanate from a light that is
+    // not the one casting the shadows.
+    const kt=Math.min(1,Math.max(0,tension))*0.65;
+    let Lx=-0.40+0.98*kt, Ly=0.80-0.52*kt, Lz=0.40+0.34*kt;
+    const Ll=Math.hypot(Lx,Ly,Lz)||1; Lx/=Ll; Ly/=Ll; Lz/=Ll;
+    const LoF=Lx*fx+Ly*fy+Lz*fz;              // behind the camera -> no shafts at all
+    let rayX=0.5, rayY=0.5, rayVis=0;
+    if(LoF>0.05){
+      const s=LoF/(0.5/Math.tan(fovY*0.5));
+      rayX=((Lx*rx+Ly*ry+Lz*rz)/s)*(H/W)+0.5;   // uv.x is scaled by res.y, hence H/W here
+      rayY=((Lx*ux+Ly*uy+Lz*uz)/s)+0.5;
+      rayVis=Math.min(1,(LoF-0.05)/0.35);       // ease in as it swings into frame, never a pop
+    }
+    gl.uniform2f(UP('u_rayPos'),rayX,rayY);
+    // Air and epicness drive it: shafts are the "big moment" effect, and the high band is what
+    // reads as light in the air. Kept low — this sits on top of a bloom that already lifts the
+    // same pixels, and doubling up there is how a render turns milky.
+    gl.uniform1f(UP('u_rays'), raysOn
+      ? rayVis*(0.05+energy*0.16+epic*0.20+HITS.air*0.20+HITS.high*0.10) : 0);
     // press grade
     gl.uniform1f(UP('u_sharpen'),LK.sharp*DX.sharpen); gl.uniform1f(UP('u_chroma'),LK.chroma*DX.chroma);
     gl.uniform1f(UP('u_ink'),LK.ink); gl.uniform1f(UP('u_poster'),LK.poster);
@@ -2041,6 +2103,11 @@ $('auto').addEventListener('click',()=>{
 $('reset').addEventListener('click',()=>{
   userAz=0; userEl=0; userZoom=1; userAzV=0; userElV=0;
   showStat('View reset'); hideStat(1100);
+});
+$('rays').addEventListener('click',()=>{
+  raysOn=!raysOn;
+  $('rays').classList.toggle('on',raysOn);
+  showStat(raysOn?'Light shafts on':'Light shafts off'); hideStat(1300);
 });
 
 /* ======================= INPUT ======================= */
