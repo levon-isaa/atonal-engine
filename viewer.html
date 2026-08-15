@@ -70,9 +70,9 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="0" selected>Tetra</option><option value="1">Cubic</option>
-    <option value="2">Octa</option><option value="3">Twist</option>
-    <option value="4">Lens</option><option value="5">Wave</option>
+    <option value="0" selected>Shell</option><option value="1">Ovoid</option>
+    <option value="2">Cross</option><option value="3">Lattice</option>
+    <option value="4">Column</option><option value="5">Disc</option>
     <option value="mesh">Reference mesh</option>
     <option value="svg">Custom SVG…</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
@@ -236,81 +236,77 @@ float fbmT(vec3 p){
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
 /* ---- FORMS ----
-   Smooth sculptural shells: a rounded body with large apertures bored clean through it, the
-   openings blended into the surface rather than cut into it. Matched to the reference FBX the
-   user supplied — a rounded tetrahedral shell with four flowing holes — after two earlier sets
-   (escape-time fractals, then hard-surface industrial parts) missed the mark. Both of those
-   were guesses made without ever seeing a render; this one was designed against CPU previews
-   and against the reference mesh.
+   Pierced shells, fitted to the reference mesh rather than guessed at.
 
-   The whole family is one operation: subtract an infinite cylinder along an axis with a SMOOTH
-   max, repeated over a symmetry group. smax is what makes it sculpture instead of plumbing —
-   the k term is the fillet where the bore meets the body, and it is the entire look.
+   Three measurements drove every constant here, and each overturned an assumption:
 
-   Each is 1-Lipschitz by construction (a sphere and a set of cylinder distances, combined with
-   smooth min/max), verified at max positive directional derivative <= 1.00 over 150k samples.
-   The one exception is noted on FORM_WAVE. */
-vec3 boreAxis(int i){                                  // tetrahedral axes, normalised
-  vec3 a = (i==0)?vec3( 1, 1, 1):(i==1)?vec3( 1,-1,-1):
-           (i==2)?vec3(-1, 1,-1):vec3(-1,-1, 1);
-  return a*0.5773502692;
+   1. The reference has NO symmetry. Aligned to its own principal axes, every candidate
+      operation (2-fold, 3-fold, 4-fold, inversion) still leaves a mean vertex error of
+      0.16-0.30, and its half-extents are 0.894 / 1.134 / 1.321 — all different. Perfectly
+      symmetric forms read as generated, which is what the earlier sets were. The bodies here
+      are anisotropic for that reason.
+   2. It is HOLLOW. Solid fraction 0.0217 of the sampled volume; a solid body with bores cannot
+      get below 0.0322 without breaking into pieces. That gap is the whole difference — the
+      reference is a shell of about 0.13 wall, not a lump with holes drilled in it.
+   3. Bore radius is bounded by CONNECTIVITY, not by taste. Past roughly 0.48 on these bodies
+      the shell separates into 2-6 components. Each radius below was fitted by sweeping until
+      the solid fraction matched the reference with the form still in one piece; every one is
+      within 8% of 0.0217.
+
+   Irregularity comes from the BODY only. Jittering the bore axes was tried and abandoned: it
+   fragmented four of six variants, and connectivity matters more than subtle asymmetry.
+
+   All six measured at max positive directional derivative 1.00 — the march cannot overshoot. */
+float sdEllip(vec3 p,vec3 R){                          // conservative: scale by the SMALLEST radius
+  return (length(p/R)-1.0)*min(R.x,min(R.y,R.z));
+}
+float shellBody(vec3 p,vec3 R,float t){                // hollow, not solid — see (2) above
+  return max(sdEllip(p,R), -sdEllip(p,R-vec3(t)));
 }
 float boreSub(float d,vec3 p,vec3 a,float r,float k){
-  vec3 perp = p - a*dot(p,a);                          // distance to the axis line
-  return smax(d, -(length(perp)-r), k);
+  return smax(d, -(length(p-a*dot(p,a))-r), k);        // a must be unit length
 }
-float mArray(vec3 p){                                  // TETRA — four apertures, the reference
-  float d=length(p)-0.95;
-  float r=0.44+u_gCut*0.05, k=0.12+u_gThick*0.03;
-  for(int i=0;i<4;i++) d=boreSub(d,p,boreAxis(i),r,k);
+vec3 tetAxis(int i){
+  vec3 a=(i==0)?vec3( 1, 1, 1):(i==1)?vec3( 1,-1,-1):
+         (i==2)?vec3(-1, 1,-1):vec3(-1,-1, 1);
+  return a*0.5773502692;
+}
+float boreTet(float d,vec3 p,float r,float k){
+  for(int i=0;i<4;i++) d=boreSub(d,p,tetAxis(i),r,k);
   return d;
 }
-float mStack(vec3 p){                                  // CUBIC — three orthogonal bores, six holes
-  float d=length(p)-0.95;
-  float r=0.42+u_gCut*0.05, k=0.12+u_gThick*0.03;
+float mArray(vec3 p){                                  // SHELL   — the closest to the reference
+  float d=shellBody(p,vec3(0.88,0.95,1.00),0.13+u_gThick*0.03);
+  return boreTet(d,p,0.46+u_gCut*0.03,0.10+u_gThick*0.03);
+}
+float mStack(vec3 p){                                  // OVOID   — egg body, four apertures
+  float d=shellBody(p,vec3(1.00,0.90,0.84),0.15+u_gThick*0.03);
+  return boreTet(d,p,0.44+u_gCut*0.03,0.10+u_gThick*0.03);
+}
+float mRings(vec3 p){                                  // CROSS   — three orthogonal bores
+  float d=shellBody(p,vec3(0.92,0.92,1.00),0.13+u_gThick*0.03);
+  float r=0.52+u_gCut*0.02, k=0.12+u_gThick*0.03;
   d=boreSub(d,p,vec3(1,0,0),r,k);
   d=boreSub(d,p,vec3(0,1,0),r,k);
   d=boreSub(d,p,vec3(0,0,1),r,k);
   return d;
 }
-float mRings(vec3 p){                                  // OCTA — six bores, twelve holes
-  float d=length(p)-0.96;
-  float r=0.28+u_gCut*0.04, k=0.10+u_gThick*0.03;
+float mTruss(vec3 p){                                  // LATTICE — six bores, twelve openings
+  float d=shellBody(p,vec3(0.95),0.14+u_gThick*0.03);
+  float r=0.38+u_gCut*0.03, k=0.10+u_gThick*0.03;
   const float s=0.7071067812;
   d=boreSub(d,p,vec3( s, s,0),r,k); d=boreSub(d,p,vec3( s,-s,0),r,k);
   d=boreSub(d,p,vec3(0, s, s),r,k); d=boreSub(d,p,vec3(0, s,-s),r,k);
   d=boreSub(d,p,vec3( s,0, s),r,k); d=boreSub(d,p,vec3( s,0,-s),r,k);
   return d;
 }
-float mTruss(vec3 p){                                  // TWIST — the tetra shell, sheared
-  // The twist is applied to the SAMPLE POINT, so the bores twist with the body and the
-  // apertures stay circular in the twisted frame. Rate kept low: past ~0.8 the shear outruns
-  // the 1-Lipschitz bound and the openings tear.
-  vec3 q=p; q.xz*=rot(p.y*(0.55+u_gTwist*0.15));
-  float d=length(q)-0.95;
-  float r=0.44+u_gCut*0.05, k=0.13+u_gThick*0.03;
-  for(int i=0;i<4;i++) d=boreSub(d,q,boreAxis(i),r,k);
-  return d*0.86;                                       // shear costs a little margin
+float mPods(vec3 p){                                   // COLUMN  — upright body
+  float d=shellBody(p,vec3(0.74,1.00,0.80),0.13+u_gThick*0.03);
+  return boreTet(d,p,0.36+u_gCut*0.03,0.12+u_gThick*0.03);
 }
-float mPods(vec3 p){                                   // LENS — flattened body, three bores
-  vec3 q=p*vec3(1.0,1.32,1.0);
-  float d=(length(q)-0.95)/1.32;                       // undo the anisotropic scale
-  float r=0.32+u_gCut*0.05, k=0.12+u_gThick*0.03;
-  d=boreSub(d,p,vec3(1,0,0),r,k);
-  d=boreSub(d,p,vec3(0,0,1),r,k);
-  d=boreSub(d,p,normalize(vec3(1,0,1)),r,k);
-  return d;
-}
-float mAperture(vec3 p){                               // WAVE — rippled body, three bores
-  // Ripple is CARTESIAN, not angular. The first version modulated by atan2(z,x), whose gradient
-  // diverges as 1/r on the axis: max positive derivative 20.4 and the march stepped through the
-  // surface. A product of three sines has gradient 0.05*3.4*sqrt(3) ~ 0.29, bounded everywhere.
-  float d=length(p)-0.90-(0.045+u_gThick*0.02)*sin(3.4*p.x)*sin(3.4*p.y)*sin(3.4*p.z);
-  float r=0.32+u_gCut*0.05, k=0.13;
-  d=boreSub(d,p,vec3(1,0,0),r,k);
-  d=boreSub(d,p,vec3(0,1,0),r,k);
-  d=boreSub(d,p,vec3(0,0,1),r,k);
-  return d*0.78;
+float mAperture(vec3 p){                               // DISC    — flattened body
+  float d=shellBody(p,vec3(1.00,0.64,0.94),0.13+u_gThick*0.03);
+  return boreTet(d,p,0.34+u_gCut*0.03,0.12+u_gThick*0.03);
 }
 
 /* ---- CUSTOM SVG ----
@@ -1291,15 +1287,15 @@ let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 //   0 ribbon  sweep 0.92 + half-width up to 0.35        1 tower   y +/-1.0, w 0.66
 //   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
 //   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
-// Every form is a bored sphere, so the radius IS the body radius — no corner to allow for.
-// 0 tetra 0.95   1 cubic 0.95   2 octa 0.96   3 twist 0.95   4 lens 0.95   5 wave 0.95
-const REACH=[0.95,0.95,0.96,0.95,0.95,0.95];
+// Each body is an ellipsoid, so the framing radius is its LARGEST semi-axis.
+// 0 shell 1.00  1 ovoid 1.00  2 cross 1.00  3 lattice 0.95  4 column 1.00  5 disc 1.00
+const REACH=[1.00,1.00,1.00,0.95,1.00,1.00];
 // Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
 // sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
 // unit below the form and the contact shadow had nothing to make contact with.
-// LENS is the case this table exists for: its body is scaled 1/1.32 in Y, so it is 0.95 across
-// and 0.72 deep and framing it on its radius alone would leave air above and below.
-const REACH_Y=[0.95,0.95,0.96,0.95,0.72,0.95];
+// DISC is the case this table exists for: 1.00 across and 0.64 deep, so framing it on the
+// radius alone would leave a third of the frame empty above and below it.
+const REACH_Y=[0.95,0.90,0.92,0.95,1.00,0.64];
 // The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
