@@ -161,6 +161,10 @@ in vec2 p; void main(){ gl_Position=vec4(p,0.,1.); }`;
 
 const SCENE=`#version 300 es
 precision highp float;
+// GLSL ES 3.00 gives sampler2D and samplerCube a default precision in the fragment stage but
+// NOT sampler3D — declaring one without this is a COMPILE ERROR, which takes the whole scene
+// shader down and leaves the viewer with nothing on screen at all.
+precision highp sampler3D;
 out vec4 o;
 uniform vec2 u_res; uniform float u_time;
 uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
@@ -347,8 +351,10 @@ float mVol(vec3 p){
   vec3 cl=clamp(uv,0.0,1.0);
   float d=texture(u_vol,cl).r;      // already decoded to object units on upload
   vec3 q=abs(p)-u_volPad;
-  float out=length(max(q,0.0));
-  return out>1e-6 ? out+max(d,0.0) : d;
+  // NOT named `out` — that is a reserved storage qualifier in GLSL, and using it as a variable
+  // is a syntax error that fails the ENTIRE scene shader, not just this function.
+  float outside=length(max(q,0.0));
+  return outside>1e-6 ? outside+max(d,0.0) : d;
 }
 float evalMode(vec3 p,float m){
   if(u_volOn>0.5) return mVol(p);   // an imported mesh replaces the generated set entirely
