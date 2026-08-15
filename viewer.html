@@ -98,6 +98,7 @@
   <button id="auto" class="on" title="Director's automatic orbit — drag the canvas to take over">Auto</button>
   <button id="reset" title="Return to the Director's framing (or double-click the canvas)">Reset view</button>
   <button id="rays" class="on" title="Volumetric light shafts from the key light">Rays</button>
+  <button id="qual" title="Adapts render scale to hold frame rate">Auto</button>
   <button id="shot" title="Save the current frame as a PNG">Frame</button>
   <button id="rec" title="Record the canvas to a WebM video">Record</button>
   <div id="tl"><div id="tlF"></div><div id="tlS"></div></div>
@@ -1000,10 +1001,16 @@ void main(){
   if(u_dbg>0.5){ o=vec4(vec3(texture(u_tex,uv).a<17.0?1.0:0.0),1.0); return; }
   vec3 col;
   if(u_ss>0.5){                                 // supersampled: resolve real samples with a 4-tap tent
-    // Footprint must match the RATIO. One output pixel covers u_ssRatio source texels, so taps
-    // at a fixed +/-0.5 source texel only ever filtered a 1-texel window and left most of the
-    // extra samples outside the kernel — paying for supersampling without collecting it.
-    vec2 h=t*0.5*u_ssRatio;
+    // Taps go at +/- R/4 source texels, NOT R/2. One output pixel covers R source texels; four
+    // taps tile that footprint as four quadrants of width R/2, and a bilinear tap belongs at the
+    // CENTRE of its quadrant, which is R/4 from the middle.
+    // At R=2 that is +/-0.5, landing each tap exactly on a source texel centre, so the four taps
+    // return the four covered texels and the result is an exact 2x2 box.
+    // The previous R/2 put them on texel CORNERS, where a bilinear fetch straddles the footprint
+    // edge: it weighted the two texels we wanted at half and pulled in two belonging to the
+    // neighbouring output pixel. That is a 4-wide tent masquerading as a box — supersampling
+    // paid for in full and then blurred away, which is most of why the result looked soft.
+    vec2 h=t*0.25*u_ssRatio;
     col=(texture(u_tex,uv+vec2(-h.x,-h.y)).rgb+texture(u_tex,uv+vec2(h.x,-h.y)).rgb
         +texture(u_tex,uv+vec2(-h.x, h.y)).rgb+texture(u_tex,uv+vec2(h.x, h.y)).rgb)*0.25;
   } else col=fxaa(uv,t);
@@ -1110,7 +1117,19 @@ function initTargets(w,h){
 // at 0.90 meant the first seconds ran ~29ms, which dragged frameAvg up and tripped the degrade
 // path before anything had stabilised.
 let dpr=1, rscale=0.72, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
-function applyScale(){ RW=Math.max(2,Math.round(glc.width*rscale)); RH=Math.max(2,Math.round(glc.height*rscale)); initTargets(RW,RH); }
+// Hard ceiling on the march target, independent of what rscale asks for. At 2x on a large
+// display the request can pass both the driver's max texture dimension and any sane memory
+// budget — an RGBA16F target is 8 bytes a pixel, so 2x on a 3456x2160 canvas is 6912x4320,
+// which is 239MB for ONE of several targets. Exceeding either limit fails target creation and
+// the viewer goes black, so the request is clamped rather than trusted.
+const MARCH_MAX_PX = 26e6;                          // ~26 Mpx: 2x on a 3.4k canvas, ~210MB/target
+function applyScale(){
+  let w=Math.max(2,Math.round(glc.width*rscale)), h=Math.max(2,Math.round(glc.height*rscale));
+  const maxDim=gl.getParameter(gl.MAX_TEXTURE_SIZE)||4096;
+  const k=Math.min(1, maxDim/Math.max(w,h), Math.sqrt(MARCH_MAX_PX/Math.max(1,w*h)));
+  if(k<1){ w=Math.max(2,Math.floor(w*k)); h=Math.max(2,Math.floor(h*k)); }
+  RW=w; RH=h; initTargets(RW,RH);
+}
 // The CANVAS must be the display's native pixel grid. Capping dpr below devicePixelRatio makes
 // the browser rescale the finished frame — a 1.6x bilinear smear on a 2x screen that no amount
 // of AA or sharpening downstream can undo, because it happens after we are done. Cost is paid by
@@ -1128,6 +1147,25 @@ addEventListener('resize',resize);resize();
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
 const DX={bloom:1,chroma:1,sharpen:1,thr:1};   // per-term ablation switches for measuring edge artefacts
+/* Render scale, chosen rather than negotiated.
+   The governor trades quality for frame rate, which is right for playback and wrong when the
+   point is to look at the thing. AUTO keeps the old behaviour; the fixed modes pin the march
+   above native and turn the governor off, so a heavy frame stays sharp instead of being
+   quietly dissolved. 2x is 4x the march samples of native — deliberately available and
+   deliberately not the default. */
+const QMODES=[
+  {id:'auto',  label:'Auto',   scale:0,    hint:'Adapts render scale to hold frame rate'},
+  {id:'high',  label:'1.5x',   scale:1.5,  hint:'2.25x the samples of native — fixed, no adaptation'},
+  {id:'ultra', label:'2x',     scale:2.0,  hint:'4x the samples of native — sharpest, and the slowest'},
+];
+let qIdx=0;
+function applyQMode(){
+  const q=QMODES[qIdx];
+  // rscale BEFORE resize: resize() ends in applyScale(), so setting it after would allocate the
+  // whole target set twice — once at the old scale and again at the new one.
+  if(q.scale>0){ rscale=q.scale; dprScale=1.0; resize(); }
+  const b=$('qual'); if(b){ b.textContent=q.label; b.title=q.hint; b.classList.toggle('on',q.scale>0); }
+}
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -1516,7 +1554,7 @@ function frame(){
     // is, so it is now bought at up to ~43fps: raise under 23ms, degrade only over 29ms, with a
     // dead band between. Measured on this machine: rscale 1.45 costs ~21.5ms (46fps), so it
     // reaches the cap and holds it.
-    if(QLOCK){} else if(frameAvg>29){
+    if(QLOCK||QMODES[qIdx].scale>0){} else if(frameAvg>29){
       if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
       else if(dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
     } else if(frameAvg<23){
@@ -1754,8 +1792,12 @@ function frame(){
     gl.uniform1i(UP('u_tex'),0); gl.uniform1i(UP('u_brt'),1);
     gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
     gl.uniform2f(UP('u_texel'),1/RW,1/RH); gl.uniform1f(UP('u_mip'),mipOK?1:0);
-    gl.uniform1f(UP('u_ss'),rscale>1.05?1:0);
-    gl.uniform1f(UP('u_ssRatio'),rscale);
+    // Read the ratio off the TARGET, not off rscale. applyScale may have clamped the request to
+    // fit the driver's texture limit or the memory budget, and a resolve whose footprint does not
+    // match the pixels actually rendered either misses samples or blurs across ones it never had.
+    const ssR = RW/Math.max(1,W);
+    gl.uniform1f(UP('u_ss'),ssR>1.05?1:0);
+    gl.uniform1f(UP('u_ssRatio'),ssR);
     // focus on the form itself; everything behind it falls away into a soft wash
     gl.uniform1f(UP('u_dbg'),window.DBGMASK?1:0);
     // underground grade: darker, grittier, higher contrast
@@ -2103,6 +2145,15 @@ $('auto').addEventListener('click',()=>{
 $('reset').addEventListener('click',()=>{
   userAz=0; userEl=0; userZoom=1; userAzV=0; userElV=0;
   showStat('View reset'); hideStat(1100);
+});
+$('qual').addEventListener('click',()=>{
+  qIdx=(qIdx+1)%QMODES.length;
+  applyQMode();
+  const q=QMODES[qIdx];
+  // Report the grid actually allocated, not the one requested — applyScale clamps to the
+  // driver's texture limit and the memory budget, and on a large display those bite.
+  showStat(q.scale>0 ? `Render ${q.label} — ${RW}x${RH} (${(RW*RH/1e6).toFixed(1)} Mpx)`
+                     : 'Render scale — auto'); hideStat(2200);
 });
 $('rays').addEventListener('click',()=>{
   raysOn=!raysOn;
