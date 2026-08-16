@@ -2476,7 +2476,14 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
     showStat('Loading mesh…',false);
     Promise.all([loadVolume(), loadBVH()])
       .then(()=>{ showStat('Reference mesh — exact'); hideStat(1600); })
-      .catch(err=>{ volOn=false; meshOn=false; showStat('Mesh failed — '+err.message,true); hideStat(4200); });
+      .catch(err=>{ volOn=false; meshOn=false;
+        // A page opened from disk cannot fetch its own assets — the browser blocks it. That is
+        // a different problem from a missing file, and saying "mesh failed" for it sends people
+        // looking for a bug that is not there.
+        showStat(FILE_MODE
+          ? 'Opened from file:// — the browser blocks loading the mesh. Open http://localhost:8770/viewer.html'
+          : 'Mesh failed — '+err.message, true);
+        hideStat(FILE_MODE?12000:4200); });
     return;
   }
   volOn=false; meshOn=false;
