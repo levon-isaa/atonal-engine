@@ -177,6 +177,12 @@ uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans;
 // why the holo preset never looked holographic. Real holo film shows many bands across a
 // curved surface; it is the band COUNT, not the saturation, that makes it read as foil.
 uniform float u_iridFreq,u_tintAmt;
+// SURFACE GATE, 1 = detail on, 0 = smooth. The fbm field 'av' feeds three separate terms and
+// only one of them (the albedo grain) was scaled by u_txRough, so switching surface detail off
+// still left noise modulating the colour sweep AND the thin-film phase. That is the cloudy
+// mottling that survived both the Smooth toggle and 2x supersampling — it is not aliasing and
+// not a texture, it is noise driving a COLOUR channel that nothing was turning down.
+uniform float u_surf;
 uniform float u_spec,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
@@ -777,7 +783,7 @@ void main(){
     // section's mood and the palette accent, with the surface grain breaking up the boundary
     // so it reads as material rather than a gradient laid over the top.
     vec3 pA,pB; palAB(pA,pB);
-    float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30)+(av-0.5)*0.55, 0., 1.);
+    float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30)+(av-0.5)*0.55*u_surf, 0., 1.);
     vec3 tint=mix(u_mood, clamp(pB*1.12,0.,1.), smoothstep(0.18,0.82,sweep)*u_twoTone);
     // u_alb is a per-material albedo scale. The shared 0.9 base is right for pearl and frosted,
     // which are near-white by nature, but it left clay blowing out to paper white across every lit
@@ -792,7 +798,7 @@ void main(){
     vec3 base=mix(vec3(0.9), tint, u_tintAmt)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
     vec3 f0=mix(vec3(0.04), base, u_metal);
     // thin-film colour, shifted by the micro surface so it mottles like real pearl
-    vec3 irid=0.5+0.5*cos(6.2831*(fr*u_iridFreq+n.y*0.5+av*0.7+u_time*0.03+u_iridHue+u_hAir*0.25)
+    vec3 irid=0.5+0.5*cos(6.2831*(fr*u_iridFreq+n.y*0.5+av*0.7*u_surf+u_time*0.03+u_iridHue+u_hAir*0.25)
                           + vec3(0.,2.1,4.2));
     // EMOTIONAL LIGHT: tension swings the key round to a harder angle, warmth tints it,
     // valence colours the rim. The scene is lit by how the music feels.
@@ -1889,6 +1895,7 @@ function frame(){
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
   gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT);
+  gl.uniform1f(US('u_surf'),surfT);
   drawFS(aScene);
 
   if(floatOK){
