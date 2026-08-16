@@ -195,7 +195,7 @@ uniform float u_shock,u_shockA;
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
 uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
-uniform float u_volOn,u_volPad;
+uniform float u_volOn,u_volPad,u_nEps;
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
@@ -480,7 +480,12 @@ float texRough(vec3 op,float base){
   float v=fbmT(op*vec3(u_txScale,u_txScale*u_txAniso,u_txScale)*0.42);
   return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
 }
-vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*0.0018;
+// Normal sampling radius. It must straddle a CELL BOUNDARY of whatever field is being read, or
+// the gradient comes back constant across each cell and the surface lights as flat facets. For
+// the analytic forms 0.0018 is right. The baked mesh is a grid whose cells are 0.0138 across —
+// nearly 8x wider — so sampling it at 0.0018 reads entirely inside one cell. That is the
+// faceting on the imported mesh, and it is the same fault the SVG field had.
+vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*u_nEps;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
 // map() returns a 0.5-scaled (deliberately conservative) field — undo that for ratio-based lighting
 float mapD(vec3 p){ return map(p).x*2.0; }
@@ -1881,6 +1886,9 @@ function frame(){
   gl.uniform1i(US('u_vol'),4);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
+  // 0.75 of a mesh texel: wide enough to cross a cell boundary, narrow enough not to round off
+  // detail the grid actually holds.
+  gl.uniform1f(US('u_nEps'), (volOn&&volTex) ? (2.0*VOL.pad/VOL.res)*0.75 : 0.0018);
   if(svgTex){ gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,svgTex); gl.activeTexture(gl.TEXTURE0); }
   if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
   gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
