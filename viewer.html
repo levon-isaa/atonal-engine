@@ -1266,10 +1266,9 @@ function initTargets(w,h){
   brtF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,brtF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,brtT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 }
-// 0.72 starts near where the controller actually settles on a native-resolution canvas. Starting
-// at 0.90 meant the first seconds ran ~29ms, which dragged frameAvg up and tripped the degrade
-// path before anything had stabilised.
-let dpr=1, rscale=0.72, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
+// Starts at native, which is also the floor now — see the governor below for the measurements
+// that set it.
+let dpr=1, rscale=1.00, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
 // Hard ceiling on the march target, independent of what rscale asks for. At 2x on a large
 // display the request can pass both the driver's max texture dimension and any sane memory
 // budget — an RGBA16F target is 8 bytes a pixel, so 2x on a 3456x2160 canvas is 6912x4320,
@@ -1751,13 +1750,26 @@ function frame(){
     // is, so it is now bought at up to ~43fps: raise under 23ms, degrade only over 29ms, with a
     // dead band between. Measured on this machine: rscale 1.45 costs ~21.5ms (46fps), so it
     // reaches the cap and holds it.
-    if(QLOCK||QMODES[qIdx].scale>0){} else if(frameAvg>29){
-      if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
-      else if(dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
-    } else if(frameAvg<23){
-      if(dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
-      else if(rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); }
-    } }
+    // FLOOR IS NATIVE. This used to bottom out at 0.62, and that is where it sat: measured on
+    // this machine, canvas 1538x1317,
+    //     0.62  0.78 Mpx  67 fps      1.50  4.56 Mpx  21 fps
+    //     1.00  2.03 Mpx  37 fps      2.00  8.10 Mpx  13 fps
+    // so it was spending 67 fps that nobody asked for and buying it by marching at 38% of the
+    // pixels and upscaling the result. Every form looked soft, permanently, and no amount of
+    // work on the shapes could show through it. Native costs 37 fps, which is fine.
+    // The canvas itself now only backs off past 45ms (~22 fps), where the frame is genuinely
+    // unusable — shrinking it is worse than a soft march, since it takes the UI with it.
+    // The canvas is handled on its OWN thresholds, not nested inside the march's. Nesting is
+    // what made this a one-way trap twice: the canvas dropped on a transient at >45ms, and the
+    // only path back was the march's restore gate at <23ms, which never fires once the canvas
+    // is already costing frames. Degrade at 55ms (18fps) and restore at 48 — both in the slow
+    // regime, so it can always climb back out, with a band between to stop it oscillating.
+    if(QLOCK||QMODES[qIdx].scale>0){}
+    else if(frameAvg>55 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
+    else if(frameAvg<48 && dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
+    else if(frameAvg>29 && rscale>1.00){ rscale=Math.max(1.00,rscale-0.08); applyScale(); }
+    else if(frameAvg<23 && rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); }
+  }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
