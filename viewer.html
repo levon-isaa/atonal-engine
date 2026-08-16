@@ -172,6 +172,11 @@ uniform float u_spin;
 uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans;
+// Thin-film BAND FREQUENCY. This was hard-coded at 1.7, which puts roughly ONE colour cycle
+// across the whole fresnel range — that reads as a faint tint, which is right for pearl and is
+// why the holo preset never looked holographic. Real holo film shows many bands across a
+// curved surface; it is the band COUNT, not the saturation, that makes it read as foil.
+uniform float u_iridFreq,u_tintAmt;
 uniform float u_spec,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
@@ -779,10 +784,15 @@ void main(){
     // face — measured at 1.66% of the upper frame above 225/255, of which only a fifth came from
     // the surface texture; the rest was simply a very bright diffuse clipping. Real clay is a
     // mid-tone, and dropping the albedo is what makes it read as clay rather than lit plaster.
-    vec3 base=mix(vec3(0.9), tint, 0.68)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
+    // TINT WEIGHT is per-material. A metal's base colour IS its f0, so tinting it with a dark
+    // palette makes a BLACK MIRROR — it reflects the bright studio at almost zero and the form
+    // goes dark no matter how good the environment is. Dielectrics want the palette (it is how
+    // the section's mood reaches the surface); metals want to stay near-white and take their
+    // colour from the thin film instead.
+    vec3 base=mix(vec3(0.9), tint, u_tintAmt)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
     vec3 f0=mix(vec3(0.04), base, u_metal);
     // thin-film colour, shifted by the micro surface so it mottles like real pearl
-    vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+av*0.7+u_time*0.03+u_iridHue+u_hAir*0.25)
+    vec3 irid=0.5+0.5*cos(6.2831*(fr*u_iridFreq+n.y*0.5+av*0.7+u_time*0.03+u_iridHue+u_hAir*0.25)
                           + vec3(0.,2.1,4.2));
     // EMOTIONAL LIGHT: tension swings the key round to a harder angle, warmth tints it,
     // valence colours the rim. The scene is lit by how the music feels.
@@ -1361,11 +1371,11 @@ const MATS={
   // alb = albedo scale; the shared base is tuned for near-white materials, clay is a mid-tone,
   // absorb = Beer-Lambert absorption per unit of path length through the interior (glass).
   // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
-  pearl:   {alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,spec:1.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
+  pearl:   {tintw:0.68,iridf:1.7,alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,spec:1.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
   // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
   // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
   // reads as a soap bubble. Almost no surface tilt: texture on glass reads as a dirty window.
-  glass:   {alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
+  glass:   {tintw:0.68,iridf:2.2,alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
   // CLAY. Surface texture is OFF outright — tamp 0 makes texNormal early-out, trough 0 makes
   // texRough early-out AND zeroes the albedo grain, since that term is scaled by trough. So the
   // shading normal is the raw geometric normal and the colour is uniform: nothing on it at all.
@@ -1375,9 +1385,12 @@ const MATS={
   // reflection, while the direct lobe is scaled by (0.35 + reflect*0.7) and keeps a floor. What
   // stops it reading as dead is the translucency, which gives the waxy quality that separates
   // clay from chalk, plus a high-but-not-total roughness so it still takes bounce light.
-  clay:    {alb:0.62,absorb:0.00,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,spec:0.00, tscale:24, tamp:0.000,taniso:1.00,trough:0.00},
-  frosted: {alb:1.00,absorb:0.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,spec:1.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
-  holo:    {alb:1.00,absorb:0.00,metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,spec:1.00, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
+  clay:    {tintw:0.68,iridf:1.7,alb:0.62,absorb:0.00,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,spec:0.00, tscale:24, tamp:0.000,taniso:1.00,trough:0.00},
+  frosted: {tintw:0.68,iridf:2.0,alb:1.00,absorb:0.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,spec:1.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
+  // HOLO. Metal 1.0 so the iridescence IS the surface colour rather than a tint floating over
+  // an albedo, and a high band frequency so the film shows many cycles across the form. Emission
+  // dropped to 0 — a self-lit holo cannot show bands in shadow, and the bands are the effect.
+  holo:    {tintw:0.15,iridf:14.0,alb:1.00,absorb:0.00,metal:1.0,rough:0.34,reflect:1.00,irid:1.60,transl:0.00,emis:0.00,trans:0.00,spec:1.00, tscale:300,tamp:0.016,taniso:0.06,trough:0.34},
 };
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
 /* SURFACE DETAIL, as a global scale on the two channels that produce it.
@@ -1870,7 +1883,7 @@ function frame(){
   // Clamped at 1: gloss multiplies by 1.7 so it can lift a satin material, but the reflection
   // term is energy, and letting it past 1 adds light the environment never contained.
   gl.uniform1f(US('u_reflect'),Math.min(1.0,MAT.reflect*FIN.refl));
-  gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
+  gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_iridFreq'),MAT.iridf); gl.uniform1f(US('u_tintAmt'),MAT.tintw); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans);
   gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec);
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
