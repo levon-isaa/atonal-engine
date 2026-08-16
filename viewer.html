@@ -70,13 +70,14 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="0" selected>Shell</option><option value="1">Ovoid</option>
-    <option value="2">Cross</option><option value="3">Lattice</option>
-    <option value="4">Column</option><option value="5">Disc</option>
+    <option value="0" selected>Meteor</option><option value="1">Slab</option>
+    <option value="2">Cluster</option><option value="3">Spire</option>
+    <option value="4">Arch</option><option value="5">Shard</option>
     <option value="mesh">Reference mesh</option>
     <option value="svg">Custom SVG…</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
-    <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
+    <option value="stone" selected>Stone</option>
+    <option value="pearl">Pearl</option><option value="glass">Glass</option>
     <option value="clay">Clay</option>
     <option value="frosted">Frosted</option><option value="holo">Holographic</option></select></div>
   <div class="row"><label>Scene</label><select id="selScene">
@@ -94,7 +95,9 @@
     <option value="studio">Studio (light)</option>
     <option value="custom">Custom</option></select></div>
   <div class="row"><label>Detail</label><select id="selDetail">
-    <option value="machined" selected>Machined</option>
+    <option value="rock" selected>Rock</option>
+    <option value="ore">Ore</option>
+    <option value="machined">Machined</option>
     <option value="micro">Micro tooth</option>
     <option value="off">None</option></select></div>
   <div class="row"><label>Finish</label><select id="selFinish">
@@ -189,6 +192,10 @@ uniform float u_iridFreq,u_tintAmt;
 uniform float u_surf;
 uniform float u_spec,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
+// CAVITY WEIGHT. The detail map's alpha is a cavity mask, not a plain roughness field, so it
+// can drive ALBEDO as well as roughness — crevices dark, exposed faces pale. A material that
+// wants one flat colour (glass) sets this to zero; stone runs it at full.
+uniform float u_cavAmt;
 uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
@@ -241,6 +248,18 @@ float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;
 //
 // The lever that does work is the BASE frequency, tscale, which is per-material and was raised
 // by roughly half. Detail lives in the first two or three octaves; everything past that is tooth.
+// EROSION BUDGET — three numbers that are a set, and none of them guessed.
+//   RMID 0.69 is the MEASURED mean of ridged2 over 400k samples (range 0.082 .. 1.000). It has
+//     to be the mean or the displacement is not centred and the whole mass silently inflates.
+//   AMP  0.22 was chosen against the measured max positive directional derivative: it puts the
+//     six masses at K = 1.87 .. 2.26, and the JS side hands the march 1.8/2.26 = 0.78 as
+//     STEP.rock. Raising AMP without lowering that step is not a better rock, it is a march
+//     that walks through its own walls.
+//   WARP 0.24 is the domain warp under the erosion. Erosion alone adds crag but cannot move a
+//     body off-round, and roundness is what makes a generated shape look generated.
+#define ROCK_AMP  0.22
+#define ROCK_RMID 0.69
+#define ROCK_WARP 0.24
 float fbmT(vec3 p){
   float v=0., a=0.5, s=0.0;
   // GAIN MUST BE BELOW 1/LACUNARITY. This noise drives a NORMAL, so what matters is the
@@ -251,82 +270,115 @@ float fbmT(vec3 p){
   for(int i=0;i<5;i++){ v+=a*n3(p); s+=a; p=p*2.13+17.3; a*=0.42; }
   return v/s;
 }
-/* ============ COMPLEX GEOMETRIC FORMS ============
-   Hard-surface constructions: rounded and chamfered primitives combined with booleans,
-   polar/grid arrays and smooth blends — the language of product design, not fractals.
-   The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
-/* ---- FORMS ----
-   Pierced shells, fitted to the reference mesh rather than guessed at.
+/* ============ ERODED MASSES ============
+   Fitted to the second reference (the BCCO post): a mineral / meteoritic mass — broken
+   silhouette, concave bays, a through-arch, thin flakes, structure at several scales at once.
 
-   Three measurements drove every constant here, and each overturned an assumption:
+   The previous set was smooth analytic shells, and the gap between those and this reference is
+   not a matter of tuning: A NORMAL MAP CANNOT REACH A SILHOUETTE. Everything that makes the
+   reference read as stone happens on its outline, so it has to be geometry — which for a
+   raymarcher means displacing the distance field, and that is bought in two currencies:
 
-   1. The reference has NO symmetry. Aligned to its own principal axes, every candidate
-      operation (2-fold, 3-fold, 4-fold, inversion) still leaves a mean vertex error of
-      0.16-0.30, and its half-extents are 0.894 / 1.134 / 1.321 — all different. Perfectly
-      symmetric forms read as generated, which is what the earlier sets were. The bodies here
-      are anisotropic for that reason.
-   2. It is HOLLOW. Solid fraction 0.0217 of the sampled volume; a solid body with bores cannot
-      get below 0.0322 without breaking into pieces. That gap is the whole difference — the
-      reference is a shell of about 0.13 wall, not a lump with holes drilled in it.
-   3. Bore radius is bounded by CONNECTIVITY, not by taste. Past roughly 0.48 on these bodies
-      the shell separates into 2-6 components. Each radius below was fitted by sweeping until
-      the solid fraction matched the reference with the form still in one piece; every one is
-      within 8% of 0.0217.
+     OCTAVES  — every map() call pays, and a hit ray makes about 40 of them.
+     GRADIENT — a displaced field is no longer 1-Lipschitz. The safe step is 1/K where K is the
+                max positive directional derivative, so crag is paid for in march steps
+                directly. (Only POSITIVE matters: a downward jump just shortens a step, an
+                upward one overshoots the surface.)
 
-   Irregularity comes from the BODY only. Jittering the bore axes was tried and abandoned: it
-   fragmented four of six variants, and connectivity matters more than subtle asymmetry.
+   Both are spent only where they show:
 
-   All six measured at max positive directional derivative 1.00 — the march cannot overshoot. */
+   1. TWO octaves, and the ridge is left UNSQUARED. Measured at equal amplitude, 1-|2n-1|
+      squared costs K=2.60 against 1.92 for the plain ridge — a third of the march budget for
+      sharpness the detail normal already delivers at the hit point for three texture fetches.
+   2. The FAR FIELD pays nothing at all. The displacement can only ever pull the surface
+      OUTWARD by AMP*(1-RMID), so past that band the base distance minus that constant is a
+      valid conservative bound and no noise is evaluated. That is most of the steps on most
+      rays, and it is what makes a displaced field affordable at all.
+   3. Fine crumble is NOT geometry. It goes in the triplanar detail normal, which is sampled
+      once at the hit point, mip-mapped by the hardware, and costs the march zero.
+
+   A domain WARP runs underneath the erosion. Without it the masses read as lumpy spheres: the
+   erosion adds crag but cannot move the underlying mass off-round, and roundness is what makes
+   a generated shape look generated. */
 float sdEllip(vec3 p,vec3 R){                          // conservative: scale by the SMALLEST radius
   return (length(p/R)-1.0)*min(R.x,min(R.y,R.z));
 }
-float shellBody(vec3 p,vec3 R,float t){                // hollow, not solid — see (2) above
-  return max(sdEllip(p,R), -sdEllip(p,R-vec3(t)));
+float sdSph(vec3 p,vec3 c,float r){ return length(p-c)-r; }
+float sdCaps(vec3 p,vec3 a,vec3 b,float r){
+  vec3 pa=p-a, ba=b-a;
+  return length(pa-ba*clamp(dot(pa,ba)/dot(ba,ba),0.,1.))-r;
 }
-float boreSub(float d,vec3 p,vec3 a,float r,float k){
-  return smax(d, -(length(p-a*dot(p,a))-r), k);        // a must be unit length
+// Ridged noise in [0,1]. 1-|2n-1| leaves plateaus separated by creases, which is what erosion
+// looks like; plain fbm only ever gives lumps. Normalised by the amplitude sum so the range
+// does not drift when the octave weights change.
+float ridged2(vec3 p){
+  vec3 q=p*2.0;
+  float r0=1.0-abs(2.0*n3(q)-1.0);
+  q=q*2.11+19.1;
+  float r1=1.0-abs(2.0*n3(q)-1.0);
+  return (r0+0.5*r1)*0.6666667;
 }
-vec3 tetAxis(int i){
-  vec3 a=(i==0)?vec3( 1, 1, 1):(i==1)?vec3( 1,-1,-1):
-         (i==2)?vec3(-1, 1,-1):vec3(-1,-1, 1);
-  return a*0.5773502692;
+vec3 rockWarp(vec3 p){
+  float a=ROCK_WARP;
+  return p + a*(vec3(n3(p*1.1+3.1),n3(p*1.1+11.7),n3(p*1.1+27.3))-0.5);
 }
-float boreTet(float d,vec3 p,float r,float k){
-  for(int i=0;i<4;i++) d=boreSub(d,p,tetAxis(i),r,k);
+/* EROSION, applied once to the mixed base field rather than per mode — so a morph crossfades
+   the two MASSES under one coherent crag pattern instead of dissolving between two different
+   noise fields, which reads as boiling rather than as one solid turning into another. */
+float rockErode(vec3 p,float d){
+  // OUT is the largest distance the displacement can push the surface outward.
+  const float OUT=ROCK_AMP*(1.0-ROCK_RMID);
+  // Beyond the band, skip the noise entirely. d-OUT is a true lower bound on the distance to
+  // the displaced surface, and it is 1-Lipschitz, so this region also keeps the long step.
+  if(d>OUT+0.05) return d-OUT;
+  return d-ROCK_AMP*(ridged2(p)-ROCK_RMID);
+}
+float mArray(vec3 p){                                  // METEOR  — compact lobed mass
+  vec3 q=rockWarp(p);
+  float d=sdEllip(q,vec3(0.86,0.72,0.80));
+  d=smin(d,sdSph(q,vec3( 0.42, 0.30,-0.18),0.42),0.26);
+  d=smin(d,sdSph(q,vec3(-0.40,-0.22, 0.30),0.46),0.28);
+  d=smin(d,sdSph(q,vec3( 0.10,-0.50,-0.34),0.34),0.22);
   return d;
 }
-float mArray(vec3 p){                                  // SHELL   — the closest to the reference
-  float d=shellBody(p,vec3(0.88,0.95,1.00),0.13+u_gThick*0.03);
-  return boreTet(d,p,0.46+u_gCut*0.03,0.10+u_gThick*0.03);
-}
-float mStack(vec3 p){                                  // OVOID   — egg body, four apertures
-  float d=shellBody(p,vec3(1.00,0.90,0.84),0.15+u_gThick*0.03);
-  return boreTet(d,p,0.44+u_gCut*0.03,0.10+u_gThick*0.03);
-}
-float mRings(vec3 p){                                  // CROSS   — three orthogonal bores
-  float d=shellBody(p,vec3(0.92,0.92,1.00),0.13+u_gThick*0.03);
-  float r=0.52+u_gCut*0.02, k=0.12+u_gThick*0.03;
-  d=boreSub(d,p,vec3(1,0,0),r,k);
-  d=boreSub(d,p,vec3(0,1,0),r,k);
-  d=boreSub(d,p,vec3(0,0,1),r,k);
+float mStack(vec3 p){                                  // SLAB    — flattened plate, raised boss
+  vec3 q=rockWarp(p);
+  float d=sdEllip(q,vec3(1.02,0.54,0.88));
+  d=smin(d,sdEllip(q-vec3(0.18,0.26,-0.10),vec3(0.48,0.44,0.42)),0.30);
+  d=smin(d,sdSph(q,vec3(-0.54,-0.04,0.22),0.38),0.26);
   return d;
 }
-float mTruss(vec3 p){                                  // LATTICE — six bores, twelve openings
-  float d=shellBody(p,vec3(0.95),0.14+u_gThick*0.03);
-  float r=0.38+u_gCut*0.03, k=0.10+u_gThick*0.03;
-  const float s=0.7071067812;
-  d=boreSub(d,p,vec3( s, s,0),r,k); d=boreSub(d,p,vec3( s,-s,0),r,k);
-  d=boreSub(d,p,vec3(0, s, s),r,k); d=boreSub(d,p,vec3(0, s,-s),r,k);
-  d=boreSub(d,p,vec3( s,0, s),r,k); d=boreSub(d,p,vec3( s,0,-s),r,k);
+float mRings(vec3 p){                                  // CLUSTER — several near-equal chunks
+  vec3 q=rockWarp(p);
+  float d=sdSph(q,vec3( 0.30, 0.28, 0.10),0.52);
+  d=smin(d,sdSph(q,vec3(-0.34, 0.06,-0.26),0.50),0.24);
+  d=smin(d,sdSph(q,vec3( 0.06,-0.44, 0.34),0.46),0.24);
+  d=smin(d,sdSph(q,vec3(-0.08, 0.46, 0.38),0.34),0.20);
   return d;
 }
-float mPods(vec3 p){                                   // COLUMN  — upright body
-  float d=shellBody(p,vec3(0.74,1.00,0.80),0.13+u_gThick*0.03);
-  return boreTet(d,p,0.36+u_gCut*0.03,0.12+u_gThick*0.03);
+float mTruss(vec3 p){                                  // SPIRE   — upright shard
+  vec3 q=rockWarp(p);
+  float d=sdEllip(q,vec3(0.52,1.05,0.56));
+  d=smin(d,sdSph(q,vec3( 0.24, 0.34,-0.12),0.36),0.24);
+  d=smin(d,sdSph(q,vec3(-0.22,-0.42, 0.18),0.38),0.24);
+  return d;
 }
-float mAperture(vec3 p){                               // DISC    — flattened body
-  float d=shellBody(p,vec3(1.00,0.64,0.94),0.13+u_gThick*0.03);
-  return boreTet(d,p,0.34+u_gCut*0.03,0.12+u_gThick*0.03);
+float mPods(vec3 p){                                   // ARCH    — the reference's aperture
+  vec3 q=rockWarp(p);
+  float d=sdEllip(q,vec3(0.98,0.78,0.70));
+  d=smin(d,sdSph(q,vec3(-0.36,0.30,0.10),0.40),0.26);
+  // Cut through the WARPED body with an UNWARPED capsule: the warp would bend the bore into
+  // the wall and close it on one side, and an arch that does not go all the way through is
+  // just a dent. Radius carries u_gCut so the opening breathes with the section.
+  d=smax(d,-sdCaps(p,vec3(-0.10,-1.6,0.06),vec3(0.16,1.6,-0.10),0.30+clamp(u_gCut,0.,1.)*0.07),0.12);
+  return d;
+}
+float mAperture(vec3 p){                               // SHARD   — angular splinter, flattest
+  vec3 q=rockWarp(p);
+  float d=sdRBox(q,vec3(0.86,0.34,0.66),0.22);
+  d=smin(d,sdSph(q,vec3( 0.34, 0.20, 0.16),0.34),0.26);
+  d=smin(d,sdSph(q,vec3(-0.42,-0.12,-0.20),0.32),0.26);
+  return d;
 }
 
 /* ---- CUSTOM SVG ----
@@ -384,7 +436,17 @@ float evalMode(vec3 p,float m){
   else if(m<4.5)  return mPods(p);
   else            return mAperture(p);
 }
-vec2 map(vec3 wp){
+/* mapG's 'disp' switch is the single biggest performance decision in this file.
+   Only the PRIMARY ray needs the eroded surface. Ambient occlusion, the soft shadow, reflection
+   occlusion and the translucency march are all low-frequency by nature — they integrate the
+   field over a scale far coarser than a crag — and together they make MORE evaluations per
+   shaded pixel than the camera march does (40 shadow samples plus 4 AO taps against ~40 march
+   steps). Handing them the undisplaced mass instead costs them nothing they can show and skips
+   two octaves of value noise on every one of those calls. It is the same split the imported
+   mesh already uses, where only the primary ray gets the exact triangles.
+   Undisplaced means the far-field bound, d-OUT, not the raw mass: that keeps the surface the
+   lighting sees just inside the one the camera sees, so contact darkening never floats off it. */
+vec2 mapG(vec3 wp,bool disp){
   vec3 p=wp;
   // CLEAN AXIS SPIN. u_spin used to drive TWO planes at once — xz plus xy at 0.22 — which is a
   // tumble, not a spin: the axis itself precesses, so the form never repeats a pose and the eye
@@ -430,6 +492,9 @@ vec2 map(vec3 wp){
   // Smootherstep is C2, so the morph eases in and out with no kick.
   if(u_mix>0.001){ float m=clamp(u_mix,0.,1.); m=m*m*m*(m*(m*6.0-15.0)+10.0);
     d=mix(d, evalMode(p,u_mode2), m); }
+  // Erosion after the mix, and only for the generated set: an uploaded SVG or an imported mesh
+  // is the user's own shape and must not be chewed on.
+  if(u_volOn<0.5 && u_svgOn<0.5) d=disp?rockErode(p,d):(d-ROCK_AMP*(1.0-ROCK_RMID));
   // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
   // surface chatter. Amplitude is divided back down by the frequency: displacement gradient
   // (freq * amp) must stay bounded or the field stops being a valid SDF and the march creases.
@@ -475,35 +540,70 @@ vec3 objP(vec3 p){
    Triplanar because these forms have no UVs — there is nothing to unwrap an implicit surface
    or a bored shell onto. Blend weights are the normal raised to a power, which keeps the
    seams between the three projections tight. */
-vec3 texNormal(vec3 op,vec3 n){
-  if(u_txAmp<0.0005) return n;
-  if(u_detailOn<0.5) return n;
+/* FOOTPRINT-BOUNDED SAMPLING.
+   dFdx/dFdy of a RAYMARCHED position are discontinuous. Two neighbouring pixels can land on
+   surfaces a long way apart wherever the surface is near-grazing or a crag edge crosses between
+   them, and the hardware then picks a mip from that jump: a level far coarser than the geometry
+   justifies, which the anisotropic filter smears along its long axis. That is the streaking
+   that appeared on grazing faces the moment the forms became craggy — the smooth shells never
+   produced a large enough jump to show it.
+   Bounding the gradients by the footprint the camera can actually justify — distance times the
+   angular size of a pixel, over the cosine of incidence — removes those spikes. Clamped rather
+   than replaced, so genuine anisotropy is kept where it is real.
+   Worth being clear about what this did NOT fix: it was added on the theory that the streaking
+   on grazing faces was a mip artefact, and it was not — that was the cavity blend (see
+   sampleDetail). This is kept because a mip chosen from a discontinuous derivative is wrong on
+   its own terms, and it measured free. */
+vec4 texFP(vec2 uv,float g){
+  vec2 gx=dFdx(uv), gy=dFdy(uv);
+  float lx=length(gx), ly=length(gy);
+  if(lx>g) gx*=g/lx;
+  if(ly>g) gy*=g/ly;
+  return textureGrad(u_detail,uv,gx,gy);
+}
+/* ONE SAMPLE SET, TWO CONSUMERS.
+   The shading normal and the cavity mask read the SAME three texels of the SAME texture — RGB
+   and A of one fetch — and differ only in how the three projections are WEIGHTED, which is
+   arithmetic. Sampling them separately was six fetches per shaded pixel where three would do.
+   Measured honestly, this bought nothing: 9.1 -> 9.4fps, inside the noise. The whole detail
+   path costs about that much in total (switching the map off entirely moves 9.4 -> 10.1), so
+   there was no win available here to take. It stays because fetching the same texel twice is
+   wrong on its own terms, not because it is faster.
+
+   The weights differ for a real reason, not a tuning one. The normal blends at power 6 because
+   the whiteout blend combines PERTURBATIONS, and the average of two perturbations is still a
+   plausible normal. The cavity is a scalar and averaging two uncorrelated cavity patterns is
+   just mush — and since the transition zones are iso-lines of the normal direction, that mush
+   appears as bands sweeping around the body. That was the streaking that showed up the moment
+   the forms became craggy, and it was this, not the mip level: switching the cavity off left a
+   clean surface with the normal map still at full strength. Power 24 collapses the blend zone
+   to a seam narrow enough for the normal-mapped relief to hide. Selecting one projection
+   outright is the same idea taken too far — it puts a hard edge exactly where the surface is
+   flattest and the edge is most visible. */
+void sampleDetail(vec3 op,vec3 gn,float fp,out vec3 pn,out float cav){
   float s=u_detailScale*u_txScale*0.01;
-  vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
-  vec3 tx=texture(u_detail,op.zy*s).xyz*2.0-1.0;
-  vec3 ty=texture(u_detail,op.xz*vec2(s*u_txAniso,s)).xyz*2.0-1.0;
-  vec3 tz=texture(u_detail,op.xy*s).xyz*2.0-1.0;
+  float g=fp*s;
+  vec4 tx=texFP(op.zy*s,g);
+  vec4 ty=texFP(op.xz*vec2(s*u_txAniso,s),g);
+  vec4 tz=texFP(op.xy*s,g);
+  vec3 a=abs(gn);
+  vec3 w6=pow(a,vec3(6.0));   w6/=(w6.x+w6.y+w6.z+1e-6);
+  vec3 w24=pow(a,vec3(24.0)); w24/=(w24.x+w24.y+w24.z+1e-6);
+  cav=tx.a*w24.x + ty.a*w24.y + tz.a*w24.z;
+  vec3 nx=tx.xyz*2.0-1.0, ny=ty.xyz*2.0-1.0, nz=tz.xyz*2.0-1.0;
   // Whiteout blend: perturb the geometric normal inside each projection frame, then combine.
   // Blending the SAMPLED normals first and perturbing once flattens anything facing a corner.
-  vec3 bx=vec3(tx.xy+n.zy, abs(tx.z)*n.x);
-  vec3 by=vec3(ty.xy+n.xz, abs(ty.z)*n.y);
-  vec3 bz=vec3(tz.xy+n.xy, abs(tz.z)*n.z);
-  vec3 pn=normalize(bx.zyx*w.x + by.xzy*w.y + bz.xyz*w.z);
-  // u_txAmp stays the material's tilt in radians, so every preset keeps its relative weighting.
-  return normalize(mix(n, pn, clamp(u_txAmp*26.0,0.0,1.0)));
+  vec3 bx=vec3(nx.xy+gn.zy, abs(nx.z)*gn.x);
+  vec3 by=vec3(ny.xy+gn.xz, abs(ny.z)*gn.y);
+  vec3 bz=vec3(nz.xy+gn.xy, abs(nz.z)*gn.z);
+  pn=normalize(bx.zyx*w6.x + by.xzy*w6.y + bz.xyz*w6.z);
 }
-float detailRough(vec3 op,vec3 n){
-  if(u_detailOn<0.5) return 0.5;
-  float s=u_detailScale*u_txScale*0.01;
-  vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
-  return texture(u_detail,op.zy*s).a*w.x
-       + texture(u_detail,op.xz*vec2(s*u_txAniso,s)).a*w.y
-       + texture(u_detail,op.xy*s).a*w.z;
-}
-float texRough(vec3 op,vec3 n,float base){
-  if(u_txRough<0.001) return base;
-  float v=detailRough(op,n);
-  return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
+// World-space width of one pixel where this ray lands: the ray's angular size scaled by how far
+// it travelled, then widened by the incidence angle since a grazing pixel covers more surface.
+// The 0.15 floor keeps a silhouette pixel, where the cosine goes to zero, from asking for an
+// unbounded footprint.
+float pixFoot(float t,vec3 n,vec3 v){
+  return t*(2.0*tan(u_fov*0.5)/u_res.y)/max(abs(dot(n,v)),0.15);
 }
 // Normal sampling radius. It must straddle a CELL BOUNDARY of whatever field is being read, or
 // the gradient comes back constant across each cell and the surface lights as flat facets. For
@@ -563,10 +663,11 @@ float traceMesh(vec3 ro,vec3 rd,out vec3 nrm){
   nrm=normalize(na*(1.0-buv.x-buv.y)+nb*buv.x+nc*buv.y);
   return best;
 }
+vec2 map(vec3 wp){ return mapG(wp,true); }
 vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*u_nEps;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
 // map() returns a 0.5-scaled (deliberately conservative) field — undo that for ratio-based lighting
-float mapD(vec3 p){ return map(p).x*2.0; }
+float mapD(vec3 p){ return mapG(p,false).x*2.0; }
 // ambient occlusion — crevices darken, gives the form real volume (4 extra taps)
 float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
   for(int i=1;i<=4;i++){ float h=0.04*float(i)*float(i);
@@ -871,8 +972,14 @@ void main(){
   else{
     vec3 p=ro+rd*t, gn=meshHit?meshN:calcN(p), v=-rd;
     vec3 op=objP(p);
-    vec3 n=texNormal(op,gn);                       // textured shading normal
-    float rgh=texRough(op,gn,u_rough);                // spatially varying roughness
+    vec3 n=gn; float cav=0.5;                      // 0.5 is the neutral cavity: no map, no effect
+    if(u_detailOn>0.5){
+      vec3 pn; sampleDetail(op,gn,pixFoot(t,gn,v),pn,cav);
+      // u_txAmp stays the material's tilt in radians, so every preset keeps its relative weighting.
+      if(u_txAmp>=0.0005) n=normalize(mix(gn,pn,clamp(u_txAmp*26.0,0.0,1.0)));
+    }
+    float rgh=(u_txRough<0.001)?u_rough
+              :clamp(mix(u_rough, u_rough*(0.45+1.5*cav), u_txRough), 0.02, 1.0);
     // GEOMETRIC SPECULAR AA. A narrow GGX lobe over a high-frequency normal map aliases into
     // crawling white sparkle along every silhouette — one pixel catches the lobe, its neighbour
     // misses it entirely. Widen roughness by how fast the shading normal turns across this
@@ -908,7 +1015,11 @@ void main(){
     // goes dark no matter how good the environment is. Dielectrics want the palette (it is how
     // the section's mood reaches the surface); metals want to stay near-white and take their
     // colour from the thin film instead.
-    vec3 base=mix(vec3(0.9), tint, u_tintAmt)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
+    // CAVITY -> ALBEDO. Stone is not one colour. Crevices hold shadow and dirt, exposed faces
+    // are pale mineral, and that variation is most of what separates a rock from a grey object
+    // with a bumpy normal on it. It costs nothing here: the sample is already taken above.
+    vec3 base=mix(vec3(0.9), tint, u_tintAmt)*u_alb*(1.0+(av-0.5)*u_txRough*0.16)
+              *mix(1.0, 0.55+0.80*cav, u_cavAmt);
     vec3 f0=mix(vec3(0.04), base, u_metal);
     // thin-film colour, shifted by the micro surface so it mottles like real pearl
     vec3 irid=0.5+0.5*cos(6.2831*(fr*u_iridFreq+n.y*0.5+av*0.7*u_surf+u_time*0.03+u_iridHue+u_hAir*0.25)
@@ -1348,7 +1459,12 @@ function applyQMode(){
 // Measured at native 2330x1996: 0.62 -> 16fps, 1.00 -> 20, 1.40 -> 23, 1.70 -> 24, 1.90 -> 24.
 // 1.45 takes almost the whole win while leaving 27% margin against the theoretical limit, which
 // the SVG extrusion and the morph blend have not been measured against individually.
-const STEP={near:1.45,far:1.75,shaN:40};
+// ROCK is the eroded set, and a displaced field is NOT 1-Lipschitz: the six masses measure at
+// K<=2.3, so the ceiling drops from 2.0 to 2/2.3 = 0.87 and 0.78 leaves the same ~10% margin.
+// This only applies inside the near band — past h.x>0.20 the field is the far-field bound,
+// which evaluates no noise and is 1-Lipschitz again, so STEP.far is unchanged and most of the
+// distance to the object is still crossed at full stride.
+const STEP={near:1.45,rock:0.78,far:1.75,shaN:40};
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -1418,20 +1534,18 @@ const GENRE_MODES={
 // low -> high energy: contemplative lattices, then organic fractals, then aggressive ones
 const CALM=[3,2], MID=[1,3], HOT=[0,4,5];
 let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
-// Object-space reach per mode — the radius that actually sets the silhouette, read off each
-// SDF's own constants:
-//   0 ribbon  sweep 0.92 + half-width up to 0.35        1 tower   y +/-1.0, w 0.66
-//   2 gyro    outer torus 0.92 + thickness              3 truss   rounded cube, half 0.80
-//   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
-// Each body is an ellipsoid, so the framing radius is its LARGEST semi-axis.
-// 0 shell 1.00  1 ovoid 1.00  2 cross 1.00  3 lattice 0.95  4 column 1.00  5 disc 1.00
-const REACH=[1.00,1.00,1.00,0.95,1.00,1.00];
-// Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
-// sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
-// unit below the form and the contact shadow had nothing to make contact with.
-// DISC is the case this table exists for: 1.00 across and 0.64 deep, so framing it on the
-// radius alone would leave a third of the frame empty above and below it.
-const REACH_Y=[0.95,0.90,0.92,0.95,1.00,0.64];
+// Object-space reach per mode — the radius that actually sets the silhouette.
+// MEASURED, not read off the constants, because these bodies do not have a closed form any
+// more: a domain warp plus a displacement field moves the surface by an amount no semi-axis
+// records. Sampled on a 120^3 grid and taken as the largest |p| on the zero set. The previous
+// set was guessed twice and both guesses were wrong, which is what this table now costs to
+// avoid: about a second of offline sampling per mass.
+//   0 meteor 1.02  1 slab 1.07  2 cluster 1.08  3 spire 1.03  4 arch 1.00  5 shard 1.07
+const REACH=[1.02,1.07,1.08,1.03,1.00,1.07];
+// Vertical half-extent per mode, which is NOT the same as the framing radius. SHARD is the case
+// this table exists for: 1.07 across and 0.47 deep, so framing it on the radius alone would
+// leave more than half the frame empty above and below it.
+const REACH_Y=[0.87,0.70,0.93,0.96,0.81,0.47];
 // The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
@@ -1497,13 +1611,31 @@ const MATS={
   // alb = albedo scale; the shared base is tuned for near-white materials, clay is a mid-tone,
   // absorb = Beer-Lambert absorption per unit of path length through the interior (glass).
   // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
-  pearl:   {tintw:0.68,iridf:1.7,alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,spec:1.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
+  // cav = how hard the detail map's cavity mask drives ALBEDO (roughness is driven regardless).
+  // It is what makes a surface read as a material with recesses rather than one flat tone, so
+  // stone runs it at full and glass at zero — mottling on glass just looks like a dirty window.
+  pearl:   {cav:0.40,tintw:0.68,iridf:1.7,alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,spec:1.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
+  // STONE. The BCCO reference's material: a dark mineral mass, no metal, no film, rough enough
+  // that the environment arrives as irradiance rather than as reflection. Its life comes from
+  // the cavity mask alone (cav 1.0), which is the whole point of the channel — a single
+  // roughness value over a uniform albedo is exactly the grey-plastic look this replaces.
+  // High tamp because rock micro-relief is genuinely steep, and a low tscale so the detail
+  // reads at the scale of crumble rather than as sandpaper.
+  // alb 0.40 and cav 0.85 were converged on against the reference, not chosen on paper. At
+  // alb 0.72 the lit faces clipped to paper white with no tone left in them; real stone is a
+  // DARK mid-tone whose pale mineral comes from the cavity mask, not from a bright base.
+  // tscale 260 is the one that mattered most: at 34 the 512px map covered LESS THAN ONE TILE
+  // across the whole body, so every texel was magnified about 3x and the surface read as
+  // spray-paint speckle. 260 puts roughly five tiles across it, which lands the texels at or
+  // below the pixel at native resolution.
+  stone:   {cav:0.85,tintw:0.40,iridf:1.2,alb:0.40,absorb:0.00,metal:0.0,rough:0.88,reflect:0.10,irid:0.00,transl:0.06,emis:0.00,trans:0.00,spec:0.55, tscale:260,tamp:0.085,taniso:1.00,trough:0.85},
   // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
   // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
   // reads as a soap bubble. Almost no surface tilt: texture on glass reads as a dirty window.
-  glass:   {tintw:0.68,iridf:2.2,alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
-  // CLAY. Surface texture is OFF outright — tamp 0 makes texNormal early-out, trough 0 makes
-  // texRough early-out AND zeroes the albedo grain, since that term is scaled by trough. So the
+  glass:   {cav:0.00,tintw:0.68,iridf:2.2,alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
+  // CLAY. Surface texture is OFF outright — tamp 0 skips the normal perturbation in
+  // sampleDetail, trough 0 skips the roughness mix AND zeroes the albedo grain, since that term
+  // is scaled by trough; cav 0 removes the cavity mottling with it. So the
   // shading normal is the raw geometric normal and the colour is uniform: nothing on it at all.
   // Two earlier passes tried to keep some surface (fine grain read as pumice, then large-scale
   // forming still caught the key light as bright streaks); neither is what clean means here.
@@ -1511,14 +1643,14 @@ const MATS={
   // reflection, while the direct lobe is scaled by (0.35 + reflect*0.7) and keeps a floor. What
   // stops it reading as dead is the translucency, which gives the waxy quality that separates
   // clay from chalk, plus a high-but-not-total roughness so it still takes bounce light.
-  clay:    {tintw:0.68,iridf:1.7,alb:0.62,absorb:0.00,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,spec:0.00, tscale:24, tamp:0.000,taniso:1.00,trough:0.00},
-  frosted: {tintw:0.68,iridf:2.0,alb:1.00,absorb:0.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,spec:1.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
+  clay:    {cav:0.55,tintw:0.68,iridf:1.7,alb:0.62,absorb:0.00,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,spec:0.00, tscale:24, tamp:0.000,taniso:1.00,trough:0.00},
+  frosted: {cav:0.30,tintw:0.68,iridf:2.0,alb:1.00,absorb:0.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,spec:1.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
   // HOLO. Metal 1.0 so the iridescence IS the surface colour rather than a tint floating over
   // an albedo, and a high band frequency so the film shows many cycles across the form. Emission
   // dropped to 0 — a self-lit holo cannot show bands in shadow, and the bands are the effect.
-  holo:    {tintw:0.15,iridf:14.0,alb:1.00,absorb:0.00,metal:1.0,rough:0.34,reflect:1.00,irid:1.60,transl:0.00,emis:0.00,trans:0.00,spec:1.00, tscale:300,tamp:0.016,taniso:0.06,trough:0.34},
+  holo:    {cav:0.15,tintw:0.15,iridf:14.0,alb:1.00,absorb:0.00,metal:1.0,rough:0.34,reflect:1.00,irid:1.60,transl:0.00,emis:0.00,trans:0.00,spec:1.00, tscale:300,tamp:0.016,taniso:0.06,trough:0.34},
 };
-const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
+const MAT =Object.assign({},MATS.stone), MATT=Object.assign({},MATS.stone);
 /* SURFACE DETAIL, as a global scale on the two channels that produce it.
    Applied at upload rather than by editing MAT, because MAT is continuously eased toward MATT —
    writing into it would be overwritten every frame, and writing into MATT would destroy the
@@ -1998,7 +2130,11 @@ function frame(){
   // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
   // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
   // at max positive directional derivative 1.00). Below that is pure margin.
-  gl.uniform1f(US('u_stepK'),STEP.near); gl.uniform1f(US('u_stepFar'),STEP.far);
+  // The tight step is only owed by the eroded set. An uploaded SVG or an imported mesh is not
+  // displaced, so making them pay for the rock's Lipschitz constant would be a third of their
+  // frame rate given away for nothing.
+  gl.uniform1f(US('u_stepK'),(volOn||svgOn)?STEP.near:STEP.rock);
+  gl.uniform1f(US('u_stepFar'),STEP.far);
   gl.uniform1i(US('u_shaN'),STEP.shaN);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
@@ -2043,6 +2179,9 @@ function frame(){
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
   gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT);
+  // Scaled by surfT alongside the other two detail channels, so switching surface detail off
+  // takes the albedo mottling with it instead of leaving a stained but smooth body.
+  gl.uniform1f(US('u_cavAmt'),(MAT.cav!==undefined?MAT.cav:0.0)*surfT);
   gl.uniform1f(US('u_surf'),surfT);
   drawFS(aScene);
 
@@ -2327,10 +2466,11 @@ const BVH={w:256, nodes:'./assets/mesh_nodes.f32', tris:'./assets/mesh_tris.f32'
 /* Surface detail maps. Loaded once, mip-mapped, repeat-wrapped. Anisotropic filtering is
    requested when the driver offers it: a brushed surface seen at a grazing angle is exactly
    the case trilinear mips blur into mush, and it is the case that matters most here. */
-const DETAILS={machined:'./assets/detail_machined.png', micro:'./assets/detail_micro.png'};
-let detailTex=null, detailName='machined', detailScale=1.0;
+const DETAILS={rock:'./assets/detail_rock.png', ore:'./assets/detail_ore.png',
+               machined:'./assets/detail_machined.png', micro:'./assets/detail_micro.png'};
+let detailTex=null, detailName='rock', detailScale=1.0;
 function loadDetail(name){
-  const url=DETAILS[name]||DETAILS.machined;
+  const url=DETAILS[name]||DETAILS.rock;
   return new Promise((ok,err)=>{
     const im=new Image();
     im.onload=()=>{
@@ -2343,9 +2483,16 @@ function loadDetail(name){
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
       gl.generateMipmap(gl.TEXTURE_2D);
+      // Take whatever the driver offers. An earlier sweep appeared to show anisotropy costing
+      // more than half the frame rate, which was wrong: it was measured while the form was
+      // ROTATING, so each level was timed at a different screen coverage, and coverage is what
+      // this renderer's cost actually tracks. Repeated with the pose pinned:
+      //     1 -> 9.8fps    4 -> 10.3    16 -> 9.6    1 again -> 9.6
+      // No signal at all. So it is taken at maximum, where a rock — which is at a grazing angle
+      // over most of its silhouette — has the most to gain from it.
       const ext=gl.getExtension('EXT_texture_filter_anisotropic');
       if(ext) gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,
-                               Math.min(8,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+                               gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
       gl.bindTexture(gl.TEXTURE_2D,null);
       detailName=name; ok(detailTex);
     };
@@ -2594,6 +2741,6 @@ addEventListener('dragover',e=>e.preventDefault());
 addEventListener('drop',e=>{ e.preventDefault(); const a=[...e.dataTransfer.files].find(f=>f.type.startsWith('audio')); if(a)loadFile(a); });
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();$('play').click();} });
 
-loadDetail('machined').catch(e=>__showErr('detail map: '+e.message));
+loadDetail('rock').catch(e=>__showErr('detail map: '+e.message));
 frame();
 </script>
