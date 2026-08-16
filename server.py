@@ -137,7 +137,7 @@ class H(BaseHTTPRequestHandler):
     _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
              ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
              ".json": "application/json", ".svg": "image/svg+xml", ".wasm": "application/wasm",
-             ".png": "image/png", ".jpg": "image/jpeg", ".hdr": "application/octet-stream", ".sdf": "application/octet-stream"}
+             ".png": "image/png", ".jpg": "image/jpeg", ".hdr": "application/octet-stream", ".sdf": "application/octet-stream", ".f32": "application/octet-stream"}
 
     def _serve_static(self, rel):
         if not rel:

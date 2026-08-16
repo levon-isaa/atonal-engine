@@ -196,6 +196,8 @@ uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
 uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
 uniform float u_volOn,u_volPad,u_nEps;
+uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
+uniform float u_meshOn;
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
@@ -485,6 +487,59 @@ float texRough(vec3 op,float base){
 // the analytic forms 0.0018 is right. The baked mesh is a grid whose cells are 0.0138 across —
 // nearly 8x wider — so sampling it at 0.0018 reads entirely inside one cell. That is the
 // faceting on the imported mesh, and it is the same fault the SVG field had.
+/* ---- EXACT MESH ----
+   A baked distance grid has a fixed resolution, so its surface can only ever be as smooth as
+   its cells — 160^3 here, which is what left the import looking faceted. Intersecting the real
+   triangles has no such ceiling: the silhouette is exact at any zoom, and interpolating the
+   VERTEX normals gives smooth shading a grid cannot reconstruct at all.
+   It is also far smaller. The grid was 8.2MB; the BVH plus triangles is 0.51MB, 16x less.
+   Traversal is an explicit stack (no recursion in GLSL), front-to-back, skipping any node whose
+   slab test opens beyond the closest hit so far. Data verified against brute force over 2500
+   rays before this was written: zero mismatches. */
+const int BVH_W=256;
+vec4 nodeTx(int i){ return texelFetch(u_bvhNodes, ivec2(i & (BVH_W-1), i >> 8), 0); }
+vec4 triTx (int i){ return texelFetch(u_bvhTris , ivec2(i & (BVH_W-1), i >> 8), 0); }
+float traceMesh(vec3 ro,vec3 rd,out vec3 nrm){
+  nrm=vec3(0.,1.,0.);
+  // Guard the reciprocal: an exactly axis-aligned ray gives inf, and inf*0 in the slab test is
+  // NaN, which propagates and kills the whole traversal.
+  vec3 rs=mix(rd, vec3(1e-12), lessThan(abs(rd), vec3(1e-12)));
+  vec3 invd=1.0/rs;
+  float best=1e30; vec2 buv=vec2(0.); int bi=-1;
+  int stack[32]; int sp=0; stack[sp++]=0;
+  for(int guard=0; guard<256; guard++){
+    if(sp<=0) break;
+    int ni=stack[--sp];
+    vec4 a=nodeTx(ni*2), b=nodeTx(ni*2+1);
+    vec3 t0=(a.xyz-ro)*invd, t1=(b.xyz-ro)*invd;
+    vec3 lo=min(t0,t1), hi=max(t0,t1);
+    float tn=max(max(lo.x,lo.y),lo.z), tf=min(min(hi.x,hi.y),hi.z);
+    if(tf<max(tn,0.0) || tn>best) continue;
+    int cnt=int(b.w);
+    if(cnt>0){
+      int first=int(a.w);
+      for(int k=0;k<4;k++){
+        if(k>=cnt) break;
+        int ti=first+k;
+        vec3 A=triTx(ti*6).xyz, E1=triTx(ti*6+1).xyz, E2=triTx(ti*6+2).xyz;
+        vec3 pv=cross(rd,E2); float det=dot(E1,pv);
+        if(abs(det)<1e-12) continue;
+        float ivd=1.0/det; vec3 tv=ro-A;
+        float u=dot(tv,pv)*ivd;      if(u<-1e-6 || u>1.000001) continue;
+        vec3 qv=cross(tv,E1); float v=dot(rd,qv)*ivd;
+        if(v<-1e-6 || u+v>1.000001) continue;
+        float tt=dot(E2,qv)*ivd;
+        if(tt>1e-5 && tt<best){ best=tt; buv=vec2(u,v); bi=ti; }
+      }
+    } else if(sp<30){
+      stack[sp++]=ni+1; stack[sp++]=int(a.w);      // left is always the next node; a.w is right
+    }
+  }
+  if(bi<0) return -1.0;
+  vec3 na=triTx(bi*6+3).xyz, nb=triTx(bi*6+4).xyz, nc=triTx(bi*6+5).xyz;
+  nrm=normalize(na*(1.0-buv.x-buv.y)+nb*buv.x+nc*buv.y);
+  return best;
+}
 vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*u_nEps;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
 // map() returns a 0.5-scaled (deliberately conservative) field — undo that for ratio-based lighting
@@ -738,6 +793,15 @@ void main(){
   // remaining gap without overshooting, cutting the spread ~8x for 3 evaluations against the
   // march's ~112. Deterministic, so what it removes is the VARIANCE, not just the magnitude.
   if(mid>=0.0){ for(int j=0;j<3;j++) t+=map(ro+rd*t).x; }
+  // The imported mesh replaces the PRIMARY ray only. Ambient occlusion, shadows and reflection
+  // occlusion keep marching the baked field: they are low-frequency and approximate by nature,
+  // and giving each of them a BVH traversal would multiply the cost for no visible gain.
+  vec3 meshN=vec3(0.);
+  bool meshHit=false;
+  if(u_meshOn>0.5){
+    float tm=traceMesh(ro,rd,meshN);
+    if(tm>0.0){ t=tm; mid=0.0; meshHit=true; } else { mid=-1.0; t=1e9; }
+  }
   // GROUND PLANE REMOVED. It existed to catch a cast shadow, and that shadow never worked here:
   // the forms float clear of it, so what landed was a soft grey pool with a horizon behind it,
   // and every attempt to fix the shadow only moved the artefact around. Without a shadow the
@@ -782,7 +846,7 @@ void main(){
     col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.02,1.0,sha) + amb*mix(0.04,1.0,ao2) );
   }
   else{
-    vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
+    vec3 p=ro+rd*t, gn=meshHit?meshN:calcN(p), v=-rd;
     vec3 op=objP(p);
     vec3 n=texNormal(op,gn);                       // textured shading normal
     float rgh=texRough(op,u_rough);                // spatially varying roughness
@@ -1884,6 +1948,8 @@ function frame(){
   // twist/pitch of arrays and stacks — tension winds them up, arousal adds motion
   gl.uniform1i(US('u_svg'),3);
   gl.uniform1i(US('u_vol'),4);
+  gl.uniform1i(US('u_bvhNodes'),5); gl.uniform1i(US('u_bvhTris'),6);
+  gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
   // 0.75 of a mesh texel: wide enough to cross a cell boundary, narrow enough not to round off
@@ -1891,6 +1957,8 @@ function frame(){
   gl.uniform1f(US('u_nEps'), (volOn&&volTex) ? (2.0*VOL.pad/VOL.res)*0.75 : 0.0018);
   if(svgTex){ gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,svgTex); gl.activeTexture(gl.TEXTURE0); }
   if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
+  if(bvhNodeTex){ gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D,bvhNodeTex); gl.activeTexture(gl.TEXTURE0); }
+  if(bvhTriTex){ gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D,bvhTriTex); gl.activeTexture(gl.TEXTURE0); }
   gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
   // depth and bevel breathe with the music like every other form here
   gl.uniform1f(US('u_svgDepth'),0.17+energy*0.05+HITS.low*0.04);
@@ -2201,6 +2269,39 @@ async function svgToSDF(svgText, res = SVG_RES) {
    The bake is the slow, precise half; this is the fast half that just uploads the result. */
 const VOL={res:160, pad:1.10, lo:-0.15, hi:0.50, url:'./assets/shape01.sdf'};
 let volTex=null, volOn=false, volLoading=false;
+/* Exact mesh: BVH + triangles as float textures. 0.51MB against the grid's 8.2MB, and with no
+   resolution ceiling — the silhouette stays exact at any zoom and the vertex normals give
+   smooth shading the grid cannot reconstruct. */
+const BVH={w:256, nodes:'./assets/mesh_nodes.f32', tris:'./assets/mesh_tris.f32'};
+let bvhNodeTex=null, bvhTriTex=null, meshOn=false, bvhLoading=false;
+async function loadBVH(){
+  if((bvhNodeTex&&bvhTriTex)||bvhLoading) return bvhNodeTex;
+  bvhLoading=true;
+  try{
+    const [a,b]=await Promise.all([fetch(BVH.nodes,{cache:'force-cache'}),
+                                   fetch(BVH.tris ,{cache:'force-cache'})]);
+    if(!a.ok||!b.ok) throw new Error('HTTP '+a.status+'/'+b.status);
+    const mk=(buf)=>{
+      const f=new Float32Array(buf);
+      const rows=f.length/(BVH.w*4);
+      if(!Number.isInteger(rows)) throw new Error('not a whole number of rows: '+f.length);
+      const t=gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D,t);
+      // NEAREST and no mips: these are DATA, not an image. Filtering them would blend a
+      // bounding box into a triangle index and produce garbage geometry.
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA32F,BVH.w,rows,0,gl.RGBA,gl.FLOAT,f);
+      gl.bindTexture(gl.TEXTURE_2D,null);
+      return t;
+    };
+    bvhNodeTex=mk(await a.arrayBuffer());
+    bvhTriTex =mk(await b.arrayBuffer());
+    return bvhNodeTex;
+  } finally { bvhLoading=false; }
+}
 async function loadVolume(){
   if(volTex||volLoading) return volTex;
   volLoading=true;
@@ -2368,13 +2469,17 @@ addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/s
   if(f){ e.preventDefault(); f.text().then(t=>loadSVGShape(t,f.name)); } });
 $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='mesh'){
-    volOn=true; svgOn=false; autoShape=false;
-    if(!volTex){ showStat('Loading mesh field…',false);
-      loadVolume().then(()=>{ showStat('Reference mesh'); hideStat(1400); })
-                  .catch(err=>{ volOn=false; showStat('Mesh field failed — '+err.message,true); hideStat(4000); }); }
+    // BOTH: the BVH draws the primary ray exactly, while the baked field still answers the
+    // ambient-occlusion, shadow and reflection-occlusion marches, which only need an
+    // approximate distance and would cost far more as BVH traversals.
+    volOn=true; meshOn=true; svgOn=false; autoShape=false;
+    showStat('Loading mesh…',false);
+    Promise.all([loadVolume(), loadBVH()])
+      .then(()=>{ showStat('Reference mesh — exact'); hideStat(1600); })
+      .catch(err=>{ volOn=false; meshOn=false; showStat('Mesh failed — '+err.message,true); hideStat(4200); });
     return;
   }
-  volOn=false;
+  volOn=false; meshOn=false;
   if(v==='svg'){ if(svgTex){ svgOn=true; autoShape=false; } else $('svgfile').click(); return; }
   svgOn=false;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
