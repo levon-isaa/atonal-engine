@@ -93,6 +93,10 @@
     <option value="solar">Solar</option><option value="mono">Mono</option>
     <option value="studio">Studio (light)</option>
     <option value="custom">Custom</option></select></div>
+  <div class="row"><label>Detail</label><select id="selDetail">
+    <option value="machined" selected>Machined</option>
+    <option value="micro">Micro tooth</option>
+    <option value="off">None</option></select></div>
   <div class="row"><label>Finish</label><select id="selFinish">
     <option value="satin" selected>Satin</option>
     <option value="matte">Matte</option>
@@ -199,6 +203,8 @@ uniform float u_volOn,u_volPad,u_nEps;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
 uniform float u_meshOn,u_stepK,u_stepFar;
 uniform int u_shaN;
+uniform sampler2D u_detail;          // RGB = tangent-space normal, A = roughness modulation
+uniform float u_detailOn,u_detailScale;
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
@@ -453,34 +459,50 @@ vec3 objP(vec3 p){
   p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
   return p;
 }
+/* ---- SURFACE DETAIL ----
+   An IMAGE, triplanar-projected, rather than procedural fbm.
+
+   fbm can only make cloudy blobs. Real surfaces have STRUCTURE — brushing runs one way,
+   scratches are discrete lines, tooth is even and fine — and none of that is expressible as a
+   sum of octaves of value noise. That is why the old surface read as a stain on plaster rather
+   than as a material, and no amount of amplitude tuning was going to change it.
+
+   It is also better behaved. fbm was evaluated five octaves deep and then differenced three
+   times to get a normal, which both costs and aliases: the difference amplifies exactly the
+   highest frequencies that are already undersampled. A texture is mip-mapped by the hardware,
+   so it filters correctly at every distance and every scale for three fetches.
+
+   Triplanar because these forms have no UVs — there is nothing to unwrap an implicit surface
+   or a bored shell onto. Blend weights are the normal raised to a power, which keeps the
+   seams between the three projections tight. */
 vec3 texNormal(vec3 op,vec3 n){
   if(u_txAmp<0.0005) return n;
-  vec3 sc=vec3(u_txScale,u_txScale*u_txAniso,u_txScale);
-  // e has to resolve the FINEST octave, not the base one. fbmT stacks 5 octaves at lacunarity
-  // 2.13, so the top octave's period here is 1/2.13^4 = 0.049. At e=0.10 the difference straddled
-  // TWO full periods of it, so the fine octaves returned an essentially random value per pixel
-  // rather than a derivative — and because that error does not shrink with frequency the way a
-  // real derivative does, the finest octaves ended up dominating the normal. That is the uniform
-  // sandpaper stipple, and it is why the gain-0.42 rolloff (chosen so the coarse form leads)
-  // never actually showed. 0.012 is a quarter of the top octave's period.
-  float e=0.012;
-  float f0=fbmT(op*sc);
-  vec3 g=vec3(fbmT(op*sc+vec3(e,0,0))-f0, fbmT(op*sc+vec3(0,e,0))-f0, fbmT(op*sc+vec3(0,0,e))-f0);
-  g-=n*dot(g,n);                                  // tangential only -> a bump, not a dent
-  float gl=length(g); if(gl<1e-5) return n;
-  // use the gradient DIRECTION and let u_txAmp be the tilt in radians. Scaling by the raw
-  // gradient magnitude instead swamps the surface normal and the material reads as grime.
-  // 6.0 -> 2.4 because the epsilon fix above changed what this gradient IS. The old direction was
-  // dominated by per-pixel noise, so neighbouring pixels tilted incoherently and largely
-  // cancelled; the corrected one is spatially coherent, and a coherent tilt of the same angle
-  // shades far more strongly. Every per-material tamp was calibrated against the broken version,
-  // so the compensation goes HERE, once, rather than into five material constants — that keeps
-  // the relative weighting between materials exactly as it was tuned.
-  return normalize(n-(g/gl)*u_txAmp*2.4);
+  if(u_detailOn<0.5) return n;
+  float s=u_detailScale*u_txScale*0.01;
+  vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
+  vec3 tx=texture(u_detail,op.zy*s).xyz*2.0-1.0;
+  vec3 ty=texture(u_detail,op.xz*vec2(s*u_txAniso,s)).xyz*2.0-1.0;
+  vec3 tz=texture(u_detail,op.xy*s).xyz*2.0-1.0;
+  // Whiteout blend: perturb the geometric normal inside each projection frame, then combine.
+  // Blending the SAMPLED normals first and perturbing once flattens anything facing a corner.
+  vec3 bx=vec3(tx.xy+n.zy, abs(tx.z)*n.x);
+  vec3 by=vec3(ty.xy+n.xz, abs(ty.z)*n.y);
+  vec3 bz=vec3(tz.xy+n.xy, abs(tz.z)*n.z);
+  vec3 pn=normalize(bx.zyx*w.x + by.xzy*w.y + bz.xyz*w.z);
+  // u_txAmp stays the material's tilt in radians, so every preset keeps its relative weighting.
+  return normalize(mix(n, pn, clamp(u_txAmp*26.0,0.0,1.0)));
 }
-float texRough(vec3 op,float base){
+float detailRough(vec3 op,vec3 n){
+  if(u_detailOn<0.5) return 0.5;
+  float s=u_detailScale*u_txScale*0.01;
+  vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
+  return texture(u_detail,op.zy*s).a*w.x
+       + texture(u_detail,op.xz*vec2(s*u_txAniso,s)).a*w.y
+       + texture(u_detail,op.xy*s).a*w.z;
+}
+float texRough(vec3 op,vec3 n,float base){
   if(u_txRough<0.001) return base;
-  float v=fbmT(op*vec3(u_txScale,u_txScale*u_txAniso,u_txScale)*0.42);
+  float v=detailRough(op,n);
   return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
 }
 // Normal sampling radius. It must straddle a CELL BOUNDARY of whatever field is being read, or
@@ -850,7 +872,7 @@ void main(){
     vec3 p=ro+rd*t, gn=meshHit?meshN:calcN(p), v=-rd;
     vec3 op=objP(p);
     vec3 n=texNormal(op,gn);                       // textured shading normal
-    float rgh=texRough(op,u_rough);                // spatially varying roughness
+    float rgh=texRough(op,gn,u_rough);                // spatially varying roughness
     // GEOMETRIC SPECULAR AA. A narrow GGX lobe over a high-frequency normal map aliases into
     // crawling white sparkle along every silhouette — one pixel catches the lobe, its neighbour
     // misses it entirely. Widen roughness by how fast the shading normal turns across this
@@ -1970,6 +1992,8 @@ function frame(){
   gl.uniform1i(US('u_svg'),3);
   gl.uniform1i(US('u_vol'),4);
   gl.uniform1i(US('u_bvhNodes'),5); gl.uniform1i(US('u_bvhTris'),6);
+  gl.uniform1i(US('u_detail'),7);
+  gl.uniform1f(US('u_detailOn'),detailTex?1:0); gl.uniform1f(US('u_detailScale'),detailScale);
   gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
   // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
   // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
@@ -1985,6 +2009,7 @@ function frame(){
   if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
   if(bvhNodeTex){ gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D,bvhNodeTex); gl.activeTexture(gl.TEXTURE0); }
   if(bvhTriTex){ gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D,bvhTriTex); gl.activeTexture(gl.TEXTURE0); }
+  if(detailTex){ gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D,detailTex); gl.activeTexture(gl.TEXTURE0); }
   gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
   // depth and bevel breathe with the music like every other form here
   gl.uniform1f(US('u_svgDepth'),0.17+energy*0.05+HITS.low*0.04);
@@ -2299,6 +2324,35 @@ let volTex=null, volOn=false, volLoading=false;
    resolution ceiling — the silhouette stays exact at any zoom and the vertex normals give
    smooth shading the grid cannot reconstruct. */
 const BVH={w:256, nodes:'./assets/mesh_nodes.f32', tris:'./assets/mesh_tris.f32'};
+/* Surface detail maps. Loaded once, mip-mapped, repeat-wrapped. Anisotropic filtering is
+   requested when the driver offers it: a brushed surface seen at a grazing angle is exactly
+   the case trilinear mips blur into mush, and it is the case that matters most here. */
+const DETAILS={machined:'./assets/detail_machined.png', micro:'./assets/detail_micro.png'};
+let detailTex=null, detailName='machined', detailScale=1.0;
+function loadDetail(name){
+  const url=DETAILS[name]||DETAILS.machined;
+  return new Promise((ok,err)=>{
+    const im=new Image();
+    im.onload=()=>{
+      if(!detailTex) detailTex=gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D,detailTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,gl.RGBA,gl.UNSIGNED_BYTE,im);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      const ext=gl.getExtension('EXT_texture_filter_anisotropic');
+      if(ext) gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,
+                               Math.min(8,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+      gl.bindTexture(gl.TEXTURE_2D,null);
+      detailName=name; ok(detailTex);
+    };
+    im.onerror=()=>err(new Error('could not load '+url));
+    im.src=url;
+  });
+}
 let bvhNodeTex=null, bvhTriTex=null, meshOn=false, bvhLoading=false;
 async function loadBVH(){
   if((bvhNodeTex&&bvhTriTex)||bvhLoading) return bvhNodeTex;
@@ -2518,6 +2572,9 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
 $('selFinish').addEventListener('change',e=>{ const f=FINISHES[e.target.value]; if(f) Object.assign(FINT,f); });
+$('selDetail').addEventListener('change',e=>{ const v=e.target.value;
+  if(v==='off'){ if(detailTex) gl.deleteTexture(detailTex); detailTex=null; return; }
+  loadDetail(v).catch(err=>showStat('Detail map failed — '+err.message,true)); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
@@ -2537,5 +2594,6 @@ addEventListener('dragover',e=>e.preventDefault());
 addEventListener('drop',e=>{ e.preventDefault(); const a=[...e.dataTransfer.files].find(f=>f.type.startsWith('audio')); if(a)loadFile(a); });
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();$('play').click();} });
 
+loadDetail('machined').catch(e=>__showErr('detail map: '+e.message));
 frame();
 </script>
