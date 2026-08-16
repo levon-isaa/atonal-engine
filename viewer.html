@@ -197,7 +197,8 @@ uniform sampler2D u_svg;            // R = signed distance, in object units, fro
 uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
 uniform float u_volOn,u_volPad,u_nEps;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
-uniform float u_meshOn;
+uniform float u_meshOn,u_stepK,u_stepFar;
+uniform int u_shaN;
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
@@ -591,7 +592,7 @@ float calcSha(vec3 p,vec3 l){
   // of samples over [t0,t1] makes every sample position a continuous function of the shaded point
   // and never adds or removes one, so nothing can pop. It also spends the samples where they are
   // needed: a grazing ray gets a fine step, a chord straight through the form gets a coarse one.
-  const int N=40;
+  int N=u_shaN;
   float ds=(t1-t0)/float(N);
   for(int i=0;i<N;i++){
     float t=t0+(float(i)+0.5)*ds;
@@ -781,7 +782,7 @@ void main(){
     // surface the 0.62 factor guards the displaced field; out in empty space (where h.x is
     // large and the value comes straight off the bounding sphere) that is doubly conservative
     // and burns steps crossing nothing. 1.35*h.x is still only ~0.68 of the true distance.
-    t+=h.x*(h.x>0.20 ? 1.35 : 0.62);
+    t+=h.x*(h.x>0.20 ? u_stepFar : u_stepK);
     if(t>18.)break; }
   // SURFACE REFINEMENT. The loop stops on a RELATIVE epsilon (0.0015*t), so each pixel halts at
   // its own residual anywhere in [0, eps] — and the start is dithered per pixel, which decides
@@ -1318,6 +1319,14 @@ function applyQMode(){
   if(q.scale>0){ rscale=q.scale; dprScale=1.0; resize(); }
   const b=$('qual'); if(b){ b.textContent=q.label; b.title=q.hint; b.classList.toggle('on',q.scale>0); }
 }
+// Sphere-tracing step, as a multiple of the HALF-scaled field, so 2.0 is exactly the true
+// distance — the theoretical ceiling for a 1-Lipschitz field, which every form here measures as
+// (max positive directional derivative 1.00). 0.62 was stepping 0.31x the true distance: three
+// times shorter than necessary, and it cost 44% of the frame rate for nothing.
+// Measured at native 2330x1996: 0.62 -> 16fps, 1.00 -> 20, 1.40 -> 23, 1.70 -> 24, 1.90 -> 24.
+// 1.45 takes almost the whole win while leaving 27% margin against the theoretical limit, which
+// the SVG extrusion and the morph blend have not been measured against individually.
+const STEP={near:1.45,far:1.75,shaN:40};
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -1962,6 +1971,11 @@ function frame(){
   gl.uniform1i(US('u_vol'),4);
   gl.uniform1i(US('u_bvhNodes'),5); gl.uniform1i(US('u_bvhTris'),6);
   gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
+  // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
+  // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
+  // at max positive directional derivative 1.00). Below that is pure margin.
+  gl.uniform1f(US('u_stepK'),STEP.near); gl.uniform1f(US('u_stepFar'),STEP.far);
+  gl.uniform1i(US('u_shaN'),STEP.shaN);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
   // 0.75 of a mesh texel: wide enough to cross a cell boundary, narrow enough not to round off
