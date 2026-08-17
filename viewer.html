@@ -70,9 +70,9 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="0" selected>Shell</option><option value="1">Ovoid</option>
-    <option value="2">Cross</option><option value="3">Lattice</option>
-    <option value="4">Column</option><option value="5">Disc</option>
+    <option value="0" selected>Triskelion</option><option value="1">Clover</option>
+    <option value="2">Arc</option><option value="3">Chevron</option>
+    <option value="4">Wave</option><option value="5">Plate</option>
     <option value="mesh">Reference mesh</option>
     <option value="svg">Custom SVG…</option></select></div>
   <div class="row"><label>Material</label><select id="selMat">
@@ -295,39 +295,130 @@ float boreTet(float d,vec3 p,float r,float k){
   for(int i=0;i<4;i++) d=boreSub(d,p,tetAxis(i),r,k);
   return d;
 }
-float mArray(vec3 p){                                  // SHELL   — the closest to the reference
-  float d=shellBody(p,vec3(0.88,0.95,1.00),0.13+u_gThick*0.03);
-  return boreTet(d,p,0.46+u_gCut*0.03,0.10+u_gThick*0.03);
+/* ================= EXTRUDED PROFILE SHAPES =================
+   Rebuilt to the reference's form language. The previous set were ellipsoid shells with holes
+   bored through them — organic blobs, which is why they read as lumps of material rather than as
+   designed objects however good the shading got. The reference forms are EXTRUDED 2D PROFILES:
+   a flat front face, a flat back face, straight side walls between them, and a small rounded
+   bevel where face meets wall. That bevel is the whole thing visually — it is a narrow, almost
+   cylindrical band that sweeps a specular highlight along the entire silhouette as the form
+   turns, and it is what separates a "designed object" from a "blob" long before material or
+   lighting get a say.
+
+   Built the same way mSVG already extrudes uploaded artwork, so the two paths agree: define the
+   profile in 2D, inflate by the bevel, extrude, deflate. Profiles are composed from rounded
+   capsules and discs, because a rounded-capsule union gives exactly the fat, even-weight stroke
+   the reference draws with, and its distance field stays close to euclidean so the march does
+   not slow down. */
+float s2Seg(vec2 p,vec2 a,vec2 b,float r){
+  vec2 pa=p-a, ba=b-a;
+  float h=clamp(dot(pa,ba)/max(dot(ba,ba),1e-6),0.0,1.0);
+  return length(pa-ba*h)-r;
 }
-float mStack(vec3 p){                                  // OVOID   — egg body, four apertures
-  float d=shellBody(p,vec3(1.00,0.90,0.84),0.15+u_gThick*0.03);
-  return boreTet(d,p,0.44+u_gCut*0.03,0.10+u_gThick*0.03);
+float s2Disc(vec2 p,float r){ return length(p)-r; }
+float s2Box(vec2 p,vec2 b,float r){ vec2 d=abs(p)-b+r; return min(max(d.x,d.y),0.0)+length(max(d,0.0))-r; }
+float s2Ring(vec2 p,float R,float w){ return abs(length(p)-R)-w; }
+float sMin2(float a,float b,float k){ float h=clamp(0.5+0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)-k*h*(1.0-h); }
+float sMax2(float a,float b,float k){ float h=clamp(0.5-0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)+k*h*(1.0-h); }
+mat2 rr2(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
+
+/* Flat faces + straight walls + rounded bevel. Inflate the profile and the slab by the bevel,
+   take the rounded intersection, deflate — the standard rounded extrusion, and the same one
+   mSVG uses so an uploaded shape and a built-in one are the same kind of object. */
+float extr(float d2,float pz,float halfD,float bev){
+  d2 += bev;
+  float dz = abs(pz) - halfD + bev;
+  vec2 w = vec2(d2,dz);
+  return min(max(d2,dz),0.0) + length(max(w,0.0)) - bev;
 }
-float mRings(vec3 p){                                  // CROSS   — three orthogonal bores
-  float d=shellBody(p,vec3(0.92,0.92,1.00),0.13+u_gThick*0.03);
-  float r=0.52+u_gCut*0.02, k=0.12+u_gThick*0.03;
-  d=boreSub(d,p,vec3(1,0,0),r,k);
-  d=boreSub(d,p,vec3(0,1,0),r,k);
-  d=boreSub(d,p,vec3(0,0,1),r,k);
+// depth and bevel ride the track: the slab thickens on low end, the bevel sharpens on air
+float exDepth(){ return 0.30 + u_gThick*0.05; }
+float exBevel(){ return 0.055 + u_gCut*0.012; }
+
+// ---- profiles ----
+// TRISKELION — three arms, each running out from the centre then hooking a quarter turn. The
+// reference's own shape; the hook is what makes the silhouette read differently from every angle.
+float p2Tris(vec2 p){
+  float d=1e9, w=0.19+u_gDense*0.03;
+  for(int i=0;i<3;i++){
+    vec2 q=rr2(float(i)*2.0943951+u_gTwist*0.25)*p;
+    float a=s2Seg(q,vec2(0.02,0.0),vec2(0.66,0.0),w);
+    float b=s2Seg(q,vec2(0.66,0.0),vec2(0.66,0.70),w);
+    d=min(d, sMin2(a,b,0.16));
+  }
   return d;
 }
-float mTruss(vec3 p){                                  // LATTICE — six bores, twelve openings
-  float d=shellBody(p,vec3(0.95),0.14+u_gThick*0.03);
-  float r=0.38+u_gCut*0.03, k=0.10+u_gThick*0.03;
-  const float s=0.7071067812;
-  d=boreSub(d,p,vec3( s, s,0),r,k); d=boreSub(d,p,vec3( s,-s,0),r,k);
-  d=boreSub(d,p,vec3(0, s, s),r,k); d=boreSub(d,p,vec3(0, s,-s),r,k);
-  d=boreSub(d,p,vec3( s,0, s),r,k); d=boreSub(d,p,vec3( s,0,-s),r,k);
+// CLOVER — three fat lobes on a hub, the simplest bold poster form
+float p2Clover(vec2 p){
+  float d=s2Disc(p,0.30+u_gDense*0.04);
+  for(int i=0;i<3;i++){
+    vec2 q=rr2(float(i)*2.0943951+1.5707963)*p;
+    d=sMin2(d, s2Disc(q-vec2(0.0,0.62),0.40+u_gDense*0.04), 0.22);
+  }
   return d;
 }
-float mPods(vec3 p){                                   // COLUMN  — upright body
-  float d=shellBody(p,vec3(0.74,1.00,0.80),0.13+u_gThick*0.03);
-  return boreTet(d,p,0.36+u_gCut*0.03,0.12+u_gThick*0.03);
+// ARC — a broken ring, the counter-shape. Reads as a single confident stroke.
+// Analytic, not chained. Two earlier versions failed differently and both are worth remembering:
+// cutting a gap out of a full ring needed its end caps placed by hand at the cut angles and one
+// landed inside the removed wedge, rendering as a disc floating free of the body; chaining nine
+// capsules along the arc fixed that but left the outer silhouette visibly FACETED, because the
+// boundary sits a fixed width from each straight chord and a 30-degree chord has a 2.6% sagitta.
+// Raising the count would fix the facets and multiply the per-sample cost, in a function the
+// raymarch evaluates millions of times a frame.
+// The closed form has neither problem: exact curvature everywhere, round ends for free, one
+// branch, constant cost. Outside the aperture the nearest point is the end cap, inside it the
+// nearest point is the ring — which is exactly the two cases below.
+float p2Arc(vec2 p){
+  float w=0.21+u_gDense*0.03, R=0.72;
+  p=rr2(-0.70)*p;                       // orient the opening
+  const float HA=2.356;                 // half-aperture 135 deg -> a 270 deg arc
+  vec2 sc=vec2(sin(HA),cos(HA));
+  p.x=abs(p.x);
+  return ((sc.y*p.x>sc.x*p.y) ? length(p-sc*R) : abs(length(p)-R)) - w;
 }
-float mAperture(vec3 p){                               // DISC    — flattened body
-  float d=shellBody(p,vec3(1.00,0.64,0.94),0.13+u_gThick*0.03);
-  return boreTet(d,p,0.34+u_gCut*0.03,0.12+u_gThick*0.03);
+// CHEVRON — nested Vs, the most graphic of the set
+float p2Chev(vec2 p){
+  float d=1e9, w=0.115+u_gDense*0.02;
+  for(int i=0;i<2;i++){
+    float o=0.30+float(i)*0.46;
+    vec2 q=p+vec2(0.0,0.30);
+    float a=s2Seg(q,vec2(-0.74,o-0.34),vec2(0.0,o+0.18),w);
+    float b=s2Seg(q,vec2( 0.74,o-0.34),vec2(0.0,o+0.18),w);
+    d=min(d, sMin2(a,b,0.09));
+  }
+  return d;
 }
+// WAVE — an S laid on its side, so the extrusion wall turns through the whole silhouette
+float p2Wave(vec2 p){
+  float w=0.20+u_gDense*0.03, d=1e9;
+  d=min(d, s2Seg(p,vec2(-0.80, 0.34),vec2(-0.26, 0.34),w));
+  d=sMin2(d, s2Seg(p,vec2(-0.26, 0.34),vec2( 0.26,-0.34),w), 0.26);
+  d=sMin2(d, s2Seg(p,vec2( 0.26,-0.34),vec2( 0.80,-0.34),w), 0.26);
+  return d;
+}
+// PLATE — a rounded slab with three bores. Closest to the old set, kept so the family has a
+// solid, quiet member between the busier ones.
+float p2Plate(vec2 p){
+  float d=s2Box(p,vec2(0.86,0.86),0.34);
+  for(int i=0;i<3;i++){
+    vec2 q=rr2(float(i)*2.0943951+0.5)*p;
+    d=sMax2(d, -s2Disc(q-vec2(0.0,0.42),0.26+u_gCut*0.04), 0.06);
+  }
+  return d;
+}
+
+/* Each profile is drawn at whatever size its construction happens to give, then normalised to a
+   common radius here — d(p/S)*S is the exact SDF scale, so the field stays valid. Without this
+   the framing constants below would have to encode six different natural extents, and every one
+   of them would silently drift the moment a profile constant was touched. One target radius, six
+   scales derived from the geometry, and the camera can frame them all identically. */
+const float EXR = 1.15;                    // the radius every profile is normalised to
+float mArray(vec3 p){    float S=EXR/1.152; return extr(p2Tris (p.xy/S)*S, p.z, exDepth(), exBevel()); }
+float mStack(vec3 p){    float S=EXR/1.020; return extr(p2Clover(p.xy/S)*S, p.z, exDepth(), exBevel()); }
+float mRings(vec3 p){    float S=EXR/0.930; return extr(p2Arc  (p.xy/S)*S, p.z, exDepth(), exBevel()); }
+float mTruss(vec3 p){    float S=EXR/0.870; return extr(p2Chev (p.xy/S)*S, p.z, exDepth()*0.92, exBevel()); }
+float mPods(vec3 p){     float S=EXR/1.070; return extr(p2Wave (p.xy/S)*S, p.z, exDepth(), exBevel()); }
+float mAperture(vec3 p){ float S=EXR/1.075; return extr(p2Plate(p.xy/S)*S, p.z, exDepth()*1.05, exBevel()); }
 
 /* ---- CUSTOM SVG ----
    The uploaded artwork arrives as a 2D signed distance field baked into a texture, so the
@@ -1469,13 +1560,13 @@ let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 //   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
 // Each body is an ellipsoid, so the framing radius is its LARGEST semi-axis.
 // 0 shell 1.00  1 ovoid 1.00  2 cross 1.00  3 lattice 0.95  4 column 1.00  5 disc 1.00
-const REACH=[1.00,1.00,1.00,0.95,1.00,1.00];
+const REACH=[1.15,1.15,1.15,1.15,1.15,1.15];   // all six normalised to EXR in the shader
 // Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
 // sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
 // unit below the form and the contact shadow had nothing to make contact with.
 // DISC is the case this table exists for: 1.00 across and 0.64 deep, so framing it on the
 // radius alone would leave a third of the frame empty above and below it.
-const REACH_Y=[0.95,0.90,0.92,0.95,1.00,0.64];
+const REACH_Y=[0.89,1.15,1.15,1.00,0.58,0.92];  // Y extent of each profile after that scale
 // The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
