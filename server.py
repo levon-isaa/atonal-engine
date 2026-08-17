@@ -16,7 +16,6 @@ from urllib.parse import urlparse, parse_qs, unquote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import analyze, tagger
 
-MAX_UPLOAD = 256 * 1024 * 1024          # refuse absurd bodies instead of reading them into RAM
 # One analysis at a time. librosa + a 300MB PANNs model are both CPU and memory heavy; two
 # concurrent requests do not run twice as fast, they thrash and can exhaust memory.
 _ANALYSIS = threading.Semaphore(1)

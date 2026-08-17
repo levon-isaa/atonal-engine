@@ -104,8 +104,9 @@ frequency — `freq * amp` must stay bounded or the field stops being a valid SD
 raymarch creases.
 
 ## Viewer controls (top right)
-- **Shape** — `Auto · Director` lets the Director pick, or lock one of Pods / Ribbon /
-  Tower / Gyroscope / Space Frame / Shell.
+- **Shape** — `Auto · Director` lets the Director pick, or lock one of Shell / Ovoid / Cross /
+  Lattice / Column / Disc, plus `Reference mesh` (a BVH over a 4,608-triangle mesh packed into
+  textures, `assets/mesh_*.f32`) and `Custom SVG…`.
 - **Material** — Pearl, Glass, Clay, Frosted, Holographic. Glass **marches its own
   interior**: the field is negative inside the form, so `-mapD` carries the refracted ray to where
   it actually leaves. That gives thickness, which drives Beer-Lambert absorption so thin edges stay
@@ -118,14 +119,24 @@ raymarch creases.
   because the shared near-white base blew out across every lit face.
 
 
-Surface detail is **procedural** — there are no image textures, so there is no map resolution to
-raise. Detail is amplitude x frequency, and the lever is the per-material base frequency `tscale`,
-not octave count: the fbm runs at gain 0.42, so octaves 6 and 7 would together carry about 4% of
-the amplitude for 40% more noise evaluations. Both "more octaves" and procedural mipmapping
-(fading octaves by `fwidth` footprint) were implemented, measured and reverted — the mipmapping
-moved pixel-scale energy inside the silhouette by 1.5-3.1% across four materials, one of them
-negative, which is noise. It has nothing to filter because the octaves fine enough to alias are
-the ones already carrying almost no amplitude.
+- **Detail** — the surface normal map: `Machined` or `Micro` (`assets/detail_*.png`). Sampled
+  **triplanar**, since a raymarched SDF has no UVs: three projections along the object axes,
+  weighted by `pow(abs(n), 6)`. The three are combined with a **whiteout blend** — the geometric
+  normal is perturbed inside each projection frame and the results are then mixed, because
+  blending the sampled normals first and perturbing once flattens anything facing a corner.
+  `u_txAmp` stays the material's tilt in radians, so every preset keeps its relative weighting.
+- **Finish** — gloss/iridescence multiplier layered over the material preset.
+
+Detail used to be **procedural** (`fbmT`), and the notes from that period are kept because the
+measurements still hold for anyone reaching for noise here. Detail is amplitude x frequency, and
+the lever was the per-material base frequency `tscale`, not octave count: the fbm ran at gain
+0.42, so octaves 6 and 7 would together carry about 4% of the amplitude for 40% more noise
+evaluations. Both "more octaves" and procedural mipmapping (fading octaves by `fwidth` footprint)
+were implemented, measured and reverted — the mipmapping moved pixel-scale energy inside the
+silhouette by 1.5-3.1% across four materials, one of them negative, which is noise. It had
+nothing to filter because the octaves fine enough to alias were the ones already carrying almost
+no amplitude. A sampled map sidesteps that ceiling entirely: its detail is band-limited by the
+image and filtered by the hardware.
 - **Scene** — `Colour field` (default) floats the form in the fluid backdrop with no ground.
   `Studio` puts it in a lit cyclorama with a real floor and a cast shadow.
 - **Look** — the *press grade*, i.e. the label aesthetic. `Studio`, `Label`, `Riso`,
