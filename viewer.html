@@ -196,6 +196,12 @@ uniform float u_surf;
 // right, so the terms are switchable at runtime and the question gets settled by turning them
 // off one at a time. Set from the console: DXS.ao=0.
 uniform vec4 u_dxs;
+// WHITE FURNACE TEST. 1 = the environment returns exactly 1.0 in every direction and every
+// direct source is off. A lossless white dielectric lit by a uniform unit environment must
+// return exactly 1.0 at every pixel: anything above is energy the BRDF is inventing, anything
+// below is energy it is losing. It is the only way to tell "this material is too bright" from
+// "this material is lit too brightly", and those two have opposite fixes. Set DXS.furnace=1.
+uniform float u_furnace;
 uniform float u_spec,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
@@ -760,7 +766,18 @@ float softbox(vec3 d, vec3 n, vec2 sz, float soft){
 // three-point studio: key + cool fill + hot rim, over a soft gradient with a floor bounce.
 // roughness widens every source, which is what makes rough materials read as rough.
 // (NB: never use backticks in here — this GLSL lives inside a JS template literal.)
+// Karis' analytic fit to the split-sum DFG integral (the thing a real engine bakes into a LUT).
+// x scales f0, y is the additive bias, and x+y is the single-scatter directional albedo — which
+// is what makes energy compensation possible at all. Two ALU ops instead of a texture fetch.
+vec2 envDFG(float NoV,float rgh){
+  const vec4 c0=vec4(-1.0,-0.0275,-0.572, 0.022);
+  const vec4 c1=vec4( 1.0, 0.0425,  1.040,-0.040);
+  vec4 r=rgh*c0+c1;
+  float a004=min(r.x*r.x, exp2(-9.28*NoV))*r.x+r.y;
+  return vec2(-1.04,1.04)*a004+r.zw;
+}
 vec3 env(vec3 d,float rough){
+  if(u_furnace>0.5) return vec3(1.0);          // see u_furnace
   float sf=0.05+rough*0.45;
   // A BRIGHT room, not a dark one with lamps in it. This is the difference between a
   // product shot and a night render: nothing on the object ever falls to black, because
@@ -1027,7 +1044,45 @@ void main(){
     // the section's mood reaches the surface); metals want to stay near-white and take their
     // colour from the thin film instead.
     vec3 base=mix(vec3(0.9), tint, u_tintAmt)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
+    // The furnace test needs a WHITE, lossless albedo or it measures the paint rather than the
+    // BRDF: a lavender base returns 0.83 under a unit environment simply because it is lavender.
+    base=mix(base, vec3(1.0), u_furnace);
     vec3 f0=mix(vec3(0.04), base, u_metal);
+    /* ---- ENERGY ----
+       White furnace test before this block: a WHITE, lossless dielectric under a uniform unit
+       environment returned 1.245 (clay, which has no reflection or specular at all, returned
+       1.220 — so the error was almost entirely in the diffuse path), and metals returned 0.908.
+       A lossless material must return exactly 1.0. Both numbers are what "plastic" looks like
+       from the inside: 24% of the light on every dielectric was invented, which flattens the
+       shading because energy that should have been absorbed is being added back uniformly, and
+       9% was being lost on metals, which is what makes rough metal read chalky.
+
+       Three faults, all in this one place:
+       (NB: no backticks anywhere in this comment — this GLSL lives inside a JS template literal,
+       and one in a comment ends the literal and takes the whole script down.)
+       1. amb = env(n,1.0)*1.22 -- a hand-tuned gain. Irradiance under a unit environment IS 1.0;
+          1.22 injects 22% and it was the bulk of the error.
+       2. No (1-F) on the diffuse. Specular was added ON TOP of a full-strength diffuse, so the
+          two together reflect more than arrives — worst exactly at grazing, which is where the
+          eye reads material.
+       3. Schlick-with-roughness for the IBL Fresnel. It has no geometry term, so it over-reflects
+          at grazing on rough surfaces, and it gives no handle on the energy single-scatter GGX
+          loses to shadowing (that is the metals' missing 9%).
+
+       Replaced with the split-sum DFG fit and Fdez-Aguera's multiple-scattering compensation,
+       which is the standard closed form for exactly this. Brightness is NOT preserved here on
+       purpose — the correct answer is dimmer, and the difference is paid back in exposure, where
+       it belongs, rather than by re-breaking the BRDF. */
+    vec2 dfg=envDFG(NoV,rgh);
+    // u_reflect is folded in HERE, not at the reflection line, so the diffuse only gives up the
+    // energy the material actually returns. Deducting the full physical specular from a material
+    // that emits 40% of it (pearl) or none of it (clay) is a pure loss: clay measured 0.926 in
+    // the furnace with the deduction unscaled, and it has no specular path at all to put it back.
+    vec3 FssEss=(f0*dfg.x+dfg.y)*u_reflect;     // single-scatter specular, as actually emitted
+    float Ems=1.0-(dfg.x+dfg.y);                // energy the single-scatter lobe threw away
+    vec3 Favg=f0+(1.0-f0)/21.0;                 // average Fresnel over the hemisphere
+    vec3 Fms=FssEss*Favg/(1.0-Ems*Favg);        // ...returned as additional diffuse-like bounce
+    vec3 kD=base*(1.0-u_metal)*(1.0-FssEss-Fms*Ems);   // what is left over to scatter diffusely
     // thin-film colour, shifted by the micro surface so it mottles like real pearl
     vec3 irid=0.5+0.5*cos(6.2831*(fr*u_iridFreq+n.y*0.5+av*0.7*u_surf+u_time*0.03+u_iridHue+u_hAir*0.25)
                           + vec3(0.,2.1,4.2));
@@ -1036,25 +1091,28 @@ void main(){
     vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
     vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
     vec3 rimC=mix(vec3(0.28,0.48,1.00), vec3(1.00,0.46,0.28), u_valence);
-    float NoL=max(0.,dot(n,L));
-    float occ=mix(1.0,calcAO(p,gn),u_dxs.x);
+    float NoL=max(0.,dot(n,L))*(1.0-u_furnace);   // furnace: uniform environment only, no sources
+    float occ=mix(1.0,calcAO(p,gn),u_dxs.x)*(1.0-u_furnace)+u_furnace;
     float sha=(NoL>0.001)?mix(1.0,calcSha(p,L),u_dxs.y):1.0;
     // diffuse body (fades out for metals) — occluded + self-shadowed.
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
-    vec3 amb=env(n,1.0)*1.22;
+    vec3 amb=env(n,1.0);          // irradiance, not irradiance times a fudge — see ENERGY above
     // The KEY BREATHES. u_pulse already drove the geometry and the backdrop but never the
     // lighting, so the form was scaled by the beat while being lit by a lamp that ignored it.
     // Pulsing the light instead of the shape is the stronger cue: it moves the highlight and the
     // terminator, which is what the eye reads as a room reacting rather than an object wobbling.
     // Ambient is deliberately NOT pulsed — modulating the fill as well lifts the whole frame
     // together, which reads as an exposure flicker, not as a light.
-    vec3 c=base*(1.-u_metal)*( keyC*(0.95*u_keyPulse*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
-                             + amb*mix(0.22,1.0,occ) );
+    // kD carries base*(1-metal) already, and it is what is LEFT after the specular takes its
+    // share. Fms*Ems is the multiple-scattering term riding along with the irradiance.
+    vec3 c=kD*( keyC*(0.95*u_keyPulse*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
+              + amb*mix(0.22,1.0,occ) )
+          + Fms*Ems*amb*mix(0.22,1.0,occ);
     // emotional rim: swells with epicness/arousal, colour from valence
     // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
     // not to zero, because it is how the section's valence reaches the form at all.
-    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec);
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec)*(1.0-u_furnace);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
@@ -1117,8 +1175,8 @@ void main(){
     // roughness entirely, so a matte surface still lit a bright reflective rim and a polished
     // one never reached full grazing reflectance. Edge-on, smooth materials now go fully
     // mirror-like — that grazing sweep is most of what reads as "glossy" rather than "chalky".
-    vec3 Fr=f0+(max(vec3(1.0-rgh),f0)-f0)*pow(1.0-NoV,5.0);
-    c += refl*Fr*u_reflect*mix(0.45,1.0,occ);
+    vec3 Fr=FssEss;              // split-sum weight; u_reflect is already folded into it
+    c += refl*Fr*mix(0.45,1.0,occ);
     // Thin film TINTS THE REFLECTION — it does not add light. Adding it emissively is what
     // painted a saturated rim (green whenever the section's random hue landed there); a real
     // pearl shows its colour in what it reflects.
@@ -1185,9 +1243,9 @@ void main(){
       c=mix(c, through*att*1.04, u_trans*(1.0-F));
     }
     // translucent backlight (frosted)
-    c += base*max(0.,dot(n,-L))*0.18*u_transl;
+    c += base*max(0.,dot(n,-L))*0.18*u_transl*(1.0-u_furnace);
     // emissive glow (neon) — high-band stabs flare it, desaturated so it cannot band
-    c += base*fr*(u_emis*1.6+u_hHigh*0.30+u_hMid*0.16);
+    c += base*fr*(u_emis*1.6+u_hHigh*0.30+u_hMid*0.16)*(1.0-u_furnace);
     // Direct specular: Cook-Torrance GGX (roughness still comes from the TEXTURED field, so the
     // lobe breaks up instead of reading as plastic). Blinn-Phong's pow(NoH,k) was the single
     // biggest "not a real render" cue here — its lobe has the wrong falloff and no geometry
@@ -1207,7 +1265,7 @@ void main(){
     // u_spec gates the DIRECT lobe separately from u_reflect. Dropping reflect to zero only
     // removes the environment reflection; this term keeps a 0.35 floor, so a material asked to
     // be free of reflections still carried a highlight. Clay sets it to zero.
-    c += keyC*spec*(0.35+u_reflect*0.7)*u_spec*sha*mix(0.5,1.0,occ);
+    c += keyC*spec*(0.35+u_reflect*0.7)*u_spec*sha*mix(0.5,1.0,occ)*(1.0-u_furnace);
     col=c;
   }
   // aerial fade: dissolve the form into the fluid background (holistic, professional)
@@ -1484,7 +1542,7 @@ addEventListener('resize',resize);resize();
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
 const DX={bloom:1,chroma:1,sharpen:1,thr:1};   // per-term ablation switches for measuring edge artefacts
-const DXS={ao:1,shadow:1,disp:1,twoTone:1};    // ...and the same for the scene pass; see u_dxs
+const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0};  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
    The governor trades quality for frame rate, which is right for playback and wrong when the
@@ -2216,6 +2274,7 @@ function frame(){
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT);
   gl.uniform1f(US('u_surf'),surfT);
   gl.uniform4f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.disp,DXS.twoTone);
+  gl.uniform1f(US('u_furnace'),DXS.furnace?1:0);
   drawFS(aScene);
 
   if(floatOK){
