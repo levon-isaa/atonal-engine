@@ -119,7 +119,10 @@ raymarch creases.
   because the shared near-white base blew out across every lit face.
 
 
-- **Detail** — the surface normal map: `Machined` or `Micro` (`assets/detail_*.png`). Sampled
+- **Detail** — the surface normal map: `Micro tooth` (default, isotropic) or `Machined`
+  (brushed). **Baked on the GPU at load** into a 2048² RGBA16F texture, not loaded from disk;
+  `assets/detail_*.png` remain only as the fallback for a context without float render targets.
+  See *Surface detail* below for why. Sampled
   **triplanar**, since a raymarched SDF has no UVs: three projections along the object axes,
   weighted by `pow(abs(n), 6)`. The three are combined with a **whiteout blend** — the geometric
   normal is perturbed inside each projection frame and the results are then mixed, because
@@ -137,6 +140,47 @@ silhouette by 1.5-3.1% across four materials, one of them negative, which is noi
 nothing to filter because the octaves fine enough to alias were the ones already carrying almost
 no amplitude. A sampled map sidesteps that ceiling entirely: its detail is band-limited by the
 image and filtered by the hardware.
+
+### Surface detail: why it is baked, not shipped
+
+The 512² 8-bit PNGs that preceded this were wrong in three separate ways, each measured on a
+locked frame with the form filling 1474 canvas px.
+
+**Resolution.** The detail uv spans 2.21 tiles across the form, so one tile covers 667 px — a
+512-texel map is being *magnified* 1.30×. Past 1:1 the mip chain has nothing to do and the
+hardware is simply stretching texels. At 2048² the same tile sits at 3.07× *minification*, which
+is the regime mips and anisotropic filtering exist for.
+
+**Precision.** A normal in 8 bits steps by 2/255, i.e. 0.45° of tilt per code — about a tenth of
+the specular lobe width at `rough` 0.35, so it lands as terracing in the highlight rather than as
+noise beneath it. RGBA16F has no such floor.
+
+**Content.** Measured on the shipped PNGs: `machined` was 2.27:1 anisotropic with 6.8° mean tilt
+(19.3° at p99); `micro` was 13.9° mean and **31.3° at p99**, which is gravel, not microstructure.
+Their alpha (the roughness modulation) was mean 0.49 ± 0.28, and `texRough()` maps it through
+`0.45 + 1.5v` — so both maps biased roughness up 19% *and* strobed it ±42%. The bake centres
+alpha on 0.367, the value that makes that mapping return the material's own roughness unchanged,
+and swings it a third as far. Rendered high-frequency energy over the form fell from 2.01
+(`machined`) and 3.59 (`micro`) to 0.84 and 0.87, against a 0.77 floor measured with detail off
+entirely.
+
+Two things the bake had to get right that are easy to miss:
+
+- **The hash.** `fract(sin(dot(i,k)))` projects the 2D lattice onto one axis before hashing, so
+  cells on a line of constant `dot(i,k)` come out correlated — at these periods (9–112 cells)
+  that bakes as long axis-aligned ridges. Replaced with a bit-mixing integer hash.
+- **Measuring anisotropy at all.** A per-channel `nx`/`ny` variance ratio reported 1.04 for a map
+  that was visibly streaked, because variance sees stretching but not *alignment*. An orientation
+  histogram of the tilt direction over the whole map is the measure that works; it reported
+  1.53:1 with peaks at exactly 0° and 90°, the lattice showing through. A per-octave tileable
+  domain warp brings that to 1.44:1. `machined` sits at 3.58:1 by design — it is the brushed
+  option — which is why the isotropic map is now the default: any directional map reads as
+  streaking on the large flat faces of an extruded profile.
+
+The bake self-calibrates rather than hard-coding a gain: it runs once at unit gradient scale,
+reads the result back, recovers the raw gradient from the encoded normal, and solves for the
+scale that hits the preset's requested mean tilt. Hard-coding would drift silently the moment the
+octave mix changed, which is how the PNGs ended up at 14° without anyone choosing 14°.
 - **Scene** — `Colour field` (default) floats the form in the fluid backdrop with no ground.
   `Studio` puts it in a lit cyclorama with a real floor and a cast shadow.
 - **Look** — the *press grade*, i.e. the label aesthetic. `Studio`, `Label`, `Riso`,
@@ -188,6 +232,26 @@ metre-long steps across open floor printed terraced contour rings. It instead in
 bounding sphere analytically — no hit means lit, at zero field evaluations — then spends a
 fixed *count* of samples across the chord, so no sample can pop in or out.
 
+That fixed count was **40, and it was too few** — not on the floor, which was already clean, but
+on the form itself, where it left nested contours running parallel to the silhouette across every
+flat face. Against a converged N=800 reference over the whole object the error is 4.31 levels RMS
+at N=40 and falls as a clean 1/N (2.83 at 64, 1.90 at 96, 1.40 at 128, 0.86 at 200) — plain
+undersampling, which converges that slowly because `k*h/t` is V-shaped near a grazing occluder.
+
+Three reformulations were measured against that reference and **all three were worse**:
+
+| attempt | RMS | why it fails |
+|---|---|---|
+| even spread, N=40 (baseline) | 4.31 | — |
+| 60% of the budget front-loaded into the first 0.7 units | 5.11 | the minimum is not decided near the surface; on a form 2.3 across, the ray passes closest to *another lobe* at t = 1..3 |
+| constant 2R step instead of chord-relative | 6.74 | positions stop sliding, but most of the budget lands past `t1` where nothing can occlude |
+| closest-approach correction between samples | 4.35 | moves the penumbra (2.42 RMS from the plain answer) without removing the sampling error |
+
+So the fix is simply `STEP.shaN = 128`. Measured cost, interleaved A/B/A over 45 paired frames at
+a native 4.6 Mpx target: 12.6 ms → 15.1 ms, about +20%, or 0.028 ms per sample — cheap because
+only pixels that hit the form run the shadow ray at all. It is one constant if you want the
+frame time back.
+
 The deeper cause of the same rings: `map()`'s bounding-sphere early-out returns the distance
 to a sphere of radius 1.45 while the branch below returns the distance to the real form, and
 the two disagree at the switch. A raymarch tolerates that (the value is still a conservative
@@ -198,8 +262,13 @@ budget on resolution instead.
 
 **Debug hooks.** `QLOCK = true` freezes the adaptive quality governor; `TFREEZE = <seconds>`
 pins the clock *and* every dt-integrated value, which is the only way to A/B two builds on an
-identical frame. Both exist because reasoning about render defects instead of measuring them
-has cost several wrong fixes here.
+identical frame. `DBGMASK = 1` outputs the depth-derived silhouette instead of the image.
+`DX = {bloom, chroma, sharpen, thr}` ablates individual post-pass terms and
+`DXS = {ao, shadow, disp, twoTone}` does the same for the scene pass — set `DXS.shadow = 0` and
+the contour banding above vanishes in one step, which is how it was pinned on `calcSha()` rather
+than on the detail map it was sitting under. `window.__DBAKE` reports what the detail bake
+actually uploaded (size, format, solved gradient scale). All of it exists because reasoning about
+render defects instead of measuring them has cost several wrong fixes here.
 
 ## Next
 Camera + world evolution driven further by the Director State (per-section framing,
