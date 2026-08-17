@@ -93,6 +93,10 @@
     <option value="solar">Solar</option><option value="mono">Mono</option>
     <option value="studio">Studio (light)</option>
     <option value="custom">Custom</option></select></div>
+  <div class="row"><label>Detail</label><select id="selDetail">
+    <option value="machined" selected>Machined</option>
+    <option value="micro">Micro tooth</option>
+    <option value="off">None</option></select></div>
   <div class="row"><label>Finish</label><select id="selFinish">
     <option value="satin" selected>Satin</option>
     <option value="matte">Matte</option>
@@ -172,6 +176,17 @@ uniform float u_spin;
 uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans;
+// Thin-film BAND FREQUENCY. This was hard-coded at 1.7, which puts roughly ONE colour cycle
+// across the whole fresnel range — that reads as a faint tint, which is right for pearl and is
+// why the holo preset never looked holographic. Real holo film shows many bands across a
+// curved surface; it is the band COUNT, not the saturation, that makes it read as foil.
+uniform float u_iridFreq,u_tintAmt;
+// SURFACE GATE, 1 = detail on, 0 = smooth. The fbm field 'av' feeds three separate terms and
+// only one of them (the albedo grain) was scaled by u_txRough, so switching surface detail off
+// still left noise modulating the colour sweep AND the thin-film phase. That is the cloudy
+// mottling that survived both the Smooth toggle and 2x supersampling — it is not aliasing and
+// not a texture, it is noise driving a COLOUR channel that nothing was turning down.
+uniform float u_surf;
 uniform float u_spec,u_alb,u_absorb;
 uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
@@ -184,7 +199,12 @@ uniform float u_shock,u_shockA;
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
 uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
-uniform float u_volOn,u_volPad;
+uniform float u_volOn,u_volPad,u_nEps;
+uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
+uniform float u_meshOn,u_stepK,u_stepFar;
+uniform int u_shaN;
+uniform sampler2D u_detail;          // RGB = tangent-space normal, A = roughness modulation
+uniform float u_detailOn,u_detailScale;
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
@@ -439,37 +459,111 @@ vec3 objP(vec3 p){
   p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
   return p;
 }
+/* ---- SURFACE DETAIL ----
+   An IMAGE, triplanar-projected, rather than procedural fbm.
+
+   fbm can only make cloudy blobs. Real surfaces have STRUCTURE — brushing runs one way,
+   scratches are discrete lines, tooth is even and fine — and none of that is expressible as a
+   sum of octaves of value noise. That is why the old surface read as a stain on plaster rather
+   than as a material, and no amount of amplitude tuning was going to change it.
+
+   It is also better behaved. fbm was evaluated five octaves deep and then differenced three
+   times to get a normal, which both costs and aliases: the difference amplifies exactly the
+   highest frequencies that are already undersampled. A texture is mip-mapped by the hardware,
+   so it filters correctly at every distance and every scale for three fetches.
+
+   Triplanar because these forms have no UVs — there is nothing to unwrap an implicit surface
+   or a bored shell onto. Blend weights are the normal raised to a power, which keeps the
+   seams between the three projections tight. */
 vec3 texNormal(vec3 op,vec3 n){
   if(u_txAmp<0.0005) return n;
-  vec3 sc=vec3(u_txScale,u_txScale*u_txAniso,u_txScale);
-  // e has to resolve the FINEST octave, not the base one. fbmT stacks 5 octaves at lacunarity
-  // 2.13, so the top octave's period here is 1/2.13^4 = 0.049. At e=0.10 the difference straddled
-  // TWO full periods of it, so the fine octaves returned an essentially random value per pixel
-  // rather than a derivative — and because that error does not shrink with frequency the way a
-  // real derivative does, the finest octaves ended up dominating the normal. That is the uniform
-  // sandpaper stipple, and it is why the gain-0.42 rolloff (chosen so the coarse form leads)
-  // never actually showed. 0.012 is a quarter of the top octave's period.
-  float e=0.012;
-  float f0=fbmT(op*sc);
-  vec3 g=vec3(fbmT(op*sc+vec3(e,0,0))-f0, fbmT(op*sc+vec3(0,e,0))-f0, fbmT(op*sc+vec3(0,0,e))-f0);
-  g-=n*dot(g,n);                                  // tangential only -> a bump, not a dent
-  float gl=length(g); if(gl<1e-5) return n;
-  // use the gradient DIRECTION and let u_txAmp be the tilt in radians. Scaling by the raw
-  // gradient magnitude instead swamps the surface normal and the material reads as grime.
-  // 6.0 -> 2.4 because the epsilon fix above changed what this gradient IS. The old direction was
-  // dominated by per-pixel noise, so neighbouring pixels tilted incoherently and largely
-  // cancelled; the corrected one is spatially coherent, and a coherent tilt of the same angle
-  // shades far more strongly. Every per-material tamp was calibrated against the broken version,
-  // so the compensation goes HERE, once, rather than into five material constants — that keeps
-  // the relative weighting between materials exactly as it was tuned.
-  return normalize(n-(g/gl)*u_txAmp*2.4);
+  if(u_detailOn<0.5) return n;
+  float s=u_detailScale*u_txScale*0.01;
+  vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
+  vec3 tx=texture(u_detail,op.zy*s).xyz*2.0-1.0;
+  vec3 ty=texture(u_detail,op.xz*vec2(s*u_txAniso,s)).xyz*2.0-1.0;
+  vec3 tz=texture(u_detail,op.xy*s).xyz*2.0-1.0;
+  // Whiteout blend: perturb the geometric normal inside each projection frame, then combine.
+  // Blending the SAMPLED normals first and perturbing once flattens anything facing a corner.
+  vec3 bx=vec3(tx.xy+n.zy, abs(tx.z)*n.x);
+  vec3 by=vec3(ty.xy+n.xz, abs(ty.z)*n.y);
+  vec3 bz=vec3(tz.xy+n.xy, abs(tz.z)*n.z);
+  vec3 pn=normalize(bx.zyx*w.x + by.xzy*w.y + bz.xyz*w.z);
+  // u_txAmp stays the material's tilt in radians, so every preset keeps its relative weighting.
+  return normalize(mix(n, pn, clamp(u_txAmp*26.0,0.0,1.0)));
 }
-float texRough(vec3 op,float base){
+float detailRough(vec3 op,vec3 n){
+  if(u_detailOn<0.5) return 0.5;
+  float s=u_detailScale*u_txScale*0.01;
+  vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
+  return texture(u_detail,op.zy*s).a*w.x
+       + texture(u_detail,op.xz*vec2(s*u_txAniso,s)).a*w.y
+       + texture(u_detail,op.xy*s).a*w.z;
+}
+float texRough(vec3 op,vec3 n,float base){
   if(u_txRough<0.001) return base;
-  float v=fbmT(op*vec3(u_txScale,u_txScale*u_txAniso,u_txScale)*0.42);
+  float v=detailRough(op,n);
   return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
 }
-vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*0.0018;
+// Normal sampling radius. It must straddle a CELL BOUNDARY of whatever field is being read, or
+// the gradient comes back constant across each cell and the surface lights as flat facets. For
+// the analytic forms 0.0018 is right. The baked mesh is a grid whose cells are 0.0138 across —
+// nearly 8x wider — so sampling it at 0.0018 reads entirely inside one cell. That is the
+// faceting on the imported mesh, and it is the same fault the SVG field had.
+/* ---- EXACT MESH ----
+   A baked distance grid has a fixed resolution, so its surface can only ever be as smooth as
+   its cells — 160^3 here, which is what left the import looking faceted. Intersecting the real
+   triangles has no such ceiling: the silhouette is exact at any zoom, and interpolating the
+   VERTEX normals gives smooth shading a grid cannot reconstruct at all.
+   It is also far smaller. The grid was 8.2MB; the BVH plus triangles is 0.51MB, 16x less.
+   Traversal is an explicit stack (no recursion in GLSL), front-to-back, skipping any node whose
+   slab test opens beyond the closest hit so far. Data verified against brute force over 2500
+   rays before this was written: zero mismatches. */
+const int BVH_W=256;
+vec4 nodeTx(int i){ return texelFetch(u_bvhNodes, ivec2(i & (BVH_W-1), i >> 8), 0); }
+vec4 triTx (int i){ return texelFetch(u_bvhTris , ivec2(i & (BVH_W-1), i >> 8), 0); }
+float traceMesh(vec3 ro,vec3 rd,out vec3 nrm){
+  nrm=vec3(0.,1.,0.);
+  // Guard the reciprocal: an exactly axis-aligned ray gives inf, and inf*0 in the slab test is
+  // NaN, which propagates and kills the whole traversal.
+  vec3 rs=mix(rd, vec3(1e-12), lessThan(abs(rd), vec3(1e-12)));
+  vec3 invd=1.0/rs;
+  float best=1e30; vec2 buv=vec2(0.); int bi=-1;
+  int stack[32]; int sp=0; stack[sp++]=0;
+  for(int guard=0; guard<256; guard++){
+    if(sp<=0) break;
+    int ni=stack[--sp];
+    vec4 a=nodeTx(ni*2), b=nodeTx(ni*2+1);
+    vec3 t0=(a.xyz-ro)*invd, t1=(b.xyz-ro)*invd;
+    vec3 lo=min(t0,t1), hi=max(t0,t1);
+    float tn=max(max(lo.x,lo.y),lo.z), tf=min(min(hi.x,hi.y),hi.z);
+    if(tf<max(tn,0.0) || tn>best) continue;
+    int cnt=int(b.w);
+    if(cnt>0){
+      int first=int(a.w);
+      for(int k=0;k<4;k++){
+        if(k>=cnt) break;
+        int ti=first+k;
+        vec3 A=triTx(ti*6).xyz, E1=triTx(ti*6+1).xyz, E2=triTx(ti*6+2).xyz;
+        vec3 pv=cross(rd,E2); float det=dot(E1,pv);
+        if(abs(det)<1e-12) continue;
+        float ivd=1.0/det; vec3 tv=ro-A;
+        float u=dot(tv,pv)*ivd;      if(u<-1e-6 || u>1.000001) continue;
+        vec3 qv=cross(tv,E1); float v=dot(rd,qv)*ivd;
+        if(v<-1e-6 || u+v>1.000001) continue;
+        float tt=dot(E2,qv)*ivd;
+        if(tt>1e-5 && tt<best){ best=tt; buv=vec2(u,v); bi=ti; }
+      }
+    } else if(sp<30){
+      stack[sp++]=ni+1; stack[sp++]=int(a.w);      // left is always the next node; a.w is right
+    }
+  }
+  if(bi<0) return -1.0;
+  vec3 na=triTx(bi*6+3).xyz, nb=triTx(bi*6+4).xyz, nc=triTx(bi*6+5).xyz;
+  nrm=normalize(na*(1.0-buv.x-buv.y)+nb*buv.x+nc*buv.y);
+  return best;
+}
+vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*u_nEps;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
 // map() returns a 0.5-scaled (deliberately conservative) field — undo that for ratio-based lighting
 float mapD(vec3 p){ return map(p).x*2.0; }
@@ -520,7 +614,7 @@ float calcSha(vec3 p,vec3 l){
   // of samples over [t0,t1] makes every sample position a continuous function of the shaded point
   // and never adds or removes one, so nothing can pop. It also spends the samples where they are
   // needed: a grazing ray gets a fine step, a chord straight through the form gets a coarse one.
-  const int N=40;
+  int N=u_shaN;
   float ds=(t1-t0)/float(N);
   for(int i=0;i<N;i++){
     float t=t0+(float(i)+0.5)*ds;
@@ -694,13 +788,43 @@ void main(){
   float dth=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
   float t=0.02+dth*0.012,mid=-1.;                 // dithered start kills stair-step banding
   for(int i=0;i<112;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
-    if(h.x<0.0015*t){mid=h.y;break;}
+    // SURFACE EPSILON. 0.0015 was far too loose for thin-walled forms. Measured against a
+    // high-precision reference march on the Shell: at 0.0015, 1.42% of interior rays converged
+    // on the FAR wall instead of the near one, p99 depth error 1.097 — about the depth of the
+    // object. Those are isolated pixels showing the inside of the form, scattered across it,
+    // and that is the noise. Not aliasing, not the texture, not step exhaustion (every ray
+    // converged); the march simply stepped through a wall thinner than its own tolerance.
+    //   eps      median err   p99 err   wrong-wall rays
+    //   0.0015   0.00465      1.0971    1.42%
+    //   0.0004   0.00128      0.0104    0.46%
+    // Cost is 8 steps: rays that hit used a mean of 29 and now use 37, p99 79 -> 92, against a
+    // budget of 112. Cheapest fix available and it needs no extra passes.
+    if(h.x<0.0004*t){mid=h.y;break;}
     // map() returns a HALF-scaled field, so h.x is at most half the true clearance. Near the
     // surface the 0.62 factor guards the displaced field; out in empty space (where h.x is
     // large and the value comes straight off the bounding sphere) that is doubly conservative
     // and burns steps crossing nothing. 1.35*h.x is still only ~0.68 of the true distance.
-    t+=h.x*(h.x>0.20 ? 1.35 : 0.62);
+    t+=h.x*(h.x>0.20 ? u_stepFar : u_stepK);
     if(t>18.)break; }
+  // SURFACE REFINEMENT. The loop stops on a RELATIVE epsilon (0.0015*t), so each pixel halts at
+  // its own residual anywhere in [0, eps] — and the start is dithered per pixel, which decides
+  // where in that interval it lands. At t~4 the spread is ~0.004 object units while calcN reads
+  // the normal over 0.0018, so the normal was being sampled at a position varying by more than
+  // twice its own scale. That is per-pixel shading noise, and no amount of supersampling removes
+  // it because every sample has an independent offset.
+  // Three Newton steps on the field. map() is half-scaled so each step closes about half the
+  // remaining gap without overshooting, cutting the spread ~8x for 3 evaluations against the
+  // march's ~112. Deterministic, so what it removes is the VARIANCE, not just the magnitude.
+  if(mid>=0.0){ for(int j=0;j<3;j++) t+=map(ro+rd*t).x; }
+  // The imported mesh replaces the PRIMARY ray only. Ambient occlusion, shadows and reflection
+  // occlusion keep marching the baked field: they are low-frequency and approximate by nature,
+  // and giving each of them a BVH traversal would multiply the cost for no visible gain.
+  vec3 meshN=vec3(0.);
+  bool meshHit=false;
+  if(u_meshOn>0.5){
+    float tm=traceMesh(ro,rd,meshN);
+    if(tm>0.0){ t=tm; mid=0.0; meshHit=true; } else { mid=-1.0; t=1e9; }
+  }
   // GROUND PLANE REMOVED. It existed to catch a cast shadow, and that shadow never worked here:
   // the forms float clear of it, so what landed was a soft grey pool with a horizon behind it,
   // and every attempt to fix the shadow only moved the artefact around. Without a shadow the
@@ -745,10 +869,10 @@ void main(){
     col=alb*( keyC*(0.55*max(0.,dot(gn,L)))*mix(0.02,1.0,sha) + amb*mix(0.04,1.0,ao2) );
   }
   else{
-    vec3 p=ro+rd*t, gn=calcN(p), v=-rd;
+    vec3 p=ro+rd*t, gn=meshHit?meshN:calcN(p), v=-rd;
     vec3 op=objP(p);
     vec3 n=texNormal(op,gn);                       // textured shading normal
-    float rgh=texRough(op,u_rough);                // spatially varying roughness
+    float rgh=texRough(op,gn,u_rough);                // spatially varying roughness
     // GEOMETRIC SPECULAR AA. A narrow GGX lobe over a high-frequency normal map aliases into
     // crawling white sparkle along every silhouette — one pixel catches the lobe, its neighbour
     // misses it entirely. Widen roughness by how fast the shading normal turns across this
@@ -772,17 +896,22 @@ void main(){
     // section's mood and the palette accent, with the surface grain breaking up the boundary
     // so it reads as material rather than a gradient laid over the top.
     vec3 pA,pB; palAB(pA,pB);
-    float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30)+(av-0.5)*0.55, 0., 1.);
+    float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30)+(av-0.5)*0.55*u_surf, 0., 1.);
     vec3 tint=mix(u_mood, clamp(pB*1.12,0.,1.), smoothstep(0.18,0.82,sweep)*u_twoTone);
     // u_alb is a per-material albedo scale. The shared 0.9 base is right for pearl and frosted,
     // which are near-white by nature, but it left clay blowing out to paper white across every lit
     // face — measured at 1.66% of the upper frame above 225/255, of which only a fifth came from
     // the surface texture; the rest was simply a very bright diffuse clipping. Real clay is a
     // mid-tone, and dropping the albedo is what makes it read as clay rather than lit plaster.
-    vec3 base=mix(vec3(0.9), tint, 0.68)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
+    // TINT WEIGHT is per-material. A metal's base colour IS its f0, so tinting it with a dark
+    // palette makes a BLACK MIRROR — it reflects the bright studio at almost zero and the form
+    // goes dark no matter how good the environment is. Dielectrics want the palette (it is how
+    // the section's mood reaches the surface); metals want to stay near-white and take their
+    // colour from the thin film instead.
+    vec3 base=mix(vec3(0.9), tint, u_tintAmt)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
     vec3 f0=mix(vec3(0.04), base, u_metal);
     // thin-film colour, shifted by the micro surface so it mottles like real pearl
-    vec3 irid=0.5+0.5*cos(6.2831*(fr*1.7+n.y*0.5+av*0.7+u_time*0.03+u_iridHue+u_hAir*0.25)
+    vec3 irid=0.5+0.5*cos(6.2831*(fr*u_iridFreq+n.y*0.5+av*0.7*u_surf+u_time*0.03+u_iridHue+u_hAir*0.25)
                           + vec3(0.,2.1,4.2));
     // EMOTIONAL LIGHT: tension swings the key round to a harder angle, warmth tints it,
     // valence colours the rim. The scene is lit by how the music feels.
@@ -1160,10 +1289,9 @@ function initTargets(w,h){
   brtF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,brtF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,brtT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 }
-// 0.72 starts near where the controller actually settles on a native-resolution canvas. Starting
-// at 0.90 meant the first seconds ran ~29ms, which dragged frameAvg up and tripped the degrade
-// path before anything had stabilised.
-let dpr=1, rscale=0.72, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
+// Starts at native, which is also the floor now — see the governor below for the measurements
+// that set it.
+let dpr=1, rscale=1.00, RW=1, RH=1;                 // raymarch renders at rscale*screen, post upscales
 // Hard ceiling on the march target, independent of what rscale asks for. At 2x on a large
 // display the request can pass both the driver's max texture dimension and any sane memory
 // budget — an RGBA16F target is 8 bytes a pixel, so 2x on a 3456x2160 canvas is 6912x4320,
@@ -1213,6 +1341,14 @@ function applyQMode(){
   if(q.scale>0){ rscale=q.scale; dprScale=1.0; resize(); }
   const b=$('qual'); if(b){ b.textContent=q.label; b.title=q.hint; b.classList.toggle('on',q.scale>0); }
 }
+// Sphere-tracing step, as a multiple of the HALF-scaled field, so 2.0 is exactly the true
+// distance — the theoretical ceiling for a 1-Lipschitz field, which every form here measures as
+// (max positive directional derivative 1.00). 0.62 was stepping 0.31x the true distance: three
+// times shorter than necessary, and it cost 44% of the frame rate for nothing.
+// Measured at native 2330x1996: 0.62 -> 16fps, 1.00 -> 20, 1.40 -> 23, 1.70 -> 24, 1.90 -> 24.
+// 1.45 takes almost the whole win while leaving 27% margin against the theoretical limit, which
+// the SVG extrusion and the morph blend have not been measured against individually.
+const STEP={near:1.45,far:1.75,shaN:40};
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -1361,11 +1497,11 @@ const MATS={
   // alb = albedo scale; the shared base is tuned for near-white materials, clay is a mid-tone,
   // absorb = Beer-Lambert absorption per unit of path length through the interior (glass).
   // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
-  pearl:   {alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,spec:1.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
+  pearl:   {tintw:0.68,iridf:1.7,alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,spec:1.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
   // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
   // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
   // reads as a soap bubble. Almost no surface tilt: texture on glass reads as a dirty window.
-  glass:   {alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
+  glass:   {tintw:0.68,iridf:2.2,alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
   // CLAY. Surface texture is OFF outright — tamp 0 makes texNormal early-out, trough 0 makes
   // texRough early-out AND zeroes the albedo grain, since that term is scaled by trough. So the
   // shading normal is the raw geometric normal and the colour is uniform: nothing on it at all.
@@ -1375,9 +1511,12 @@ const MATS={
   // reflection, while the direct lobe is scaled by (0.35 + reflect*0.7) and keeps a floor. What
   // stops it reading as dead is the translucency, which gives the waxy quality that separates
   // clay from chalk, plus a high-but-not-total roughness so it still takes bounce light.
-  clay:    {alb:0.62,absorb:0.00,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,spec:0.00, tscale:24, tamp:0.000,taniso:1.00,trough:0.00},
-  frosted: {alb:1.00,absorb:0.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,spec:1.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
-  holo:    {alb:1.00,absorb:0.00,metal:0.3,rough:0.16,reflect:0.60,irid:1.4,transl:0.20,emis:0.18,trans:0.00,spec:1.00, tscale:300,tamp:0.020,taniso:0.06,trough:0.30},
+  clay:    {tintw:0.68,iridf:1.7,alb:0.62,absorb:0.00,metal:0.0,rough:0.95,reflect:0.00,irid:0.00,transl:0.24,emis:0.00,trans:0.00,spec:0.00, tscale:24, tamp:0.000,taniso:1.00,trough:0.00},
+  frosted: {tintw:0.68,iridf:2.0,alb:1.00,absorb:0.00,metal:0.0,rough:0.65,reflect:0.25,irid:0.3,transl:0.70,emis:0.00,trans:0.00,spec:1.00, tscale:150,tamp:0.070,taniso:1.00,trough:0.58},
+  // HOLO. Metal 1.0 so the iridescence IS the surface colour rather than a tint floating over
+  // an albedo, and a high band frequency so the film shows many cycles across the form. Emission
+  // dropped to 0 — a self-lit holo cannot show bands in shadow, and the bands are the effect.
+  holo:    {tintw:0.15,iridf:14.0,alb:1.00,absorb:0.00,metal:1.0,rough:0.34,reflect:1.00,irid:1.60,transl:0.00,emis:0.00,trans:0.00,spec:1.00, tscale:300,tamp:0.016,taniso:0.06,trough:0.34},
 };
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
 /* SURFACE DETAIL, as a global scale on the two channels that produce it.
@@ -1642,13 +1781,26 @@ function frame(){
     // is, so it is now bought at up to ~43fps: raise under 23ms, degrade only over 29ms, with a
     // dead band between. Measured on this machine: rscale 1.45 costs ~21.5ms (46fps), so it
     // reaches the cap and holds it.
-    if(QLOCK||QMODES[qIdx].scale>0){} else if(frameAvg>29){
-      if(rscale>0.62){ rscale=Math.max(0.62,rscale-0.08); applyScale(); }
-      else if(dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.08); resize(); }
-    } else if(frameAvg<23){
-      if(dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
-      else if(rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); }
-    } }
+    // FLOOR IS NATIVE. This used to bottom out at 0.62, and that is where it sat: measured on
+    // this machine, canvas 1538x1317,
+    //     0.62  0.78 Mpx  67 fps      1.50  4.56 Mpx  21 fps
+    //     1.00  2.03 Mpx  37 fps      2.00  8.10 Mpx  13 fps
+    // so it was spending 67 fps that nobody asked for and buying it by marching at 38% of the
+    // pixels and upscaling the result. Every form looked soft, permanently, and no amount of
+    // work on the shapes could show through it. Native costs 37 fps, which is fine.
+    // The canvas itself now only backs off past 45ms (~22 fps), where the frame is genuinely
+    // unusable — shrinking it is worse than a soft march, since it takes the UI with it.
+    // The canvas is handled on its OWN thresholds, not nested inside the march's. Nesting is
+    // what made this a one-way trap twice: the canvas dropped on a transient at >45ms, and the
+    // only path back was the march's restore gate at <23ms, which never fires once the canvas
+    // is already costing frames. Degrade at 55ms (18fps) and restore at 48 — both in the slow
+    // regime, so it can always climb back out, with a band between to stop it oscillating.
+    if(QLOCK||QMODES[qIdx].scale>0){}
+    else if(frameAvg>55 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
+    else if(frameAvg<48 && dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
+    else if(frameAvg>29 && rscale>1.00){ rscale=Math.max(1.00,rscale-0.08); applyScale(); }
+    else if(frameAvg<23 && rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); }
+  }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
@@ -1839,10 +1991,25 @@ function frame(){
   // twist/pitch of arrays and stacks — tension winds them up, arousal adds motion
   gl.uniform1i(US('u_svg'),3);
   gl.uniform1i(US('u_vol'),4);
+  gl.uniform1i(US('u_bvhNodes'),5); gl.uniform1i(US('u_bvhTris'),6);
+  gl.uniform1i(US('u_detail'),7);
+  gl.uniform1f(US('u_detailOn'),detailTex?1:0); gl.uniform1f(US('u_detailScale'),detailScale);
+  gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
+  // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
+  // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
+  // at max positive directional derivative 1.00). Below that is pure margin.
+  gl.uniform1f(US('u_stepK'),STEP.near); gl.uniform1f(US('u_stepFar'),STEP.far);
+  gl.uniform1i(US('u_shaN'),STEP.shaN);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
+  // 0.75 of a mesh texel: wide enough to cross a cell boundary, narrow enough not to round off
+  // detail the grid actually holds.
+  gl.uniform1f(US('u_nEps'), (volOn&&volTex) ? (2.0*VOL.pad/VOL.res)*0.75 : 0.0018);
   if(svgTex){ gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,svgTex); gl.activeTexture(gl.TEXTURE0); }
   if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
+  if(bvhNodeTex){ gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D,bvhNodeTex); gl.activeTexture(gl.TEXTURE0); }
+  if(bvhTriTex){ gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D,bvhTriTex); gl.activeTexture(gl.TEXTURE0); }
+  if(detailTex){ gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D,detailTex); gl.activeTexture(gl.TEXTURE0); }
   gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
   // depth and bevel breathe with the music like every other form here
   gl.uniform1f(US('u_svgDepth'),0.17+energy*0.05+HITS.low*0.04);
@@ -1870,12 +2037,13 @@ function frame(){
   // Clamped at 1: gloss multiplies by 1.7 so it can lift a satin material, but the reflection
   // term is energy, and letting it past 1 adds light the environment never contained.
   gl.uniform1f(US('u_reflect'),Math.min(1.0,MAT.reflect*FIN.refl));
-  gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
+  gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_iridFreq'),MAT.iridf); gl.uniform1f(US('u_tintAmt'),MAT.tintw); gl.uniform1f(US('u_transl'),MAT.transl); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans);
   gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec);
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
   gl.uniform1f(US('u_txScale'),MAT.tscale); gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT);
+  gl.uniform1f(US('u_surf'),surfT);
   drawFS(aScene);
 
   if(floatOK){
@@ -2152,6 +2320,68 @@ async function svgToSDF(svgText, res = SVG_RES) {
    The bake is the slow, precise half; this is the fast half that just uploads the result. */
 const VOL={res:160, pad:1.10, lo:-0.15, hi:0.50, url:'./assets/shape01.sdf'};
 let volTex=null, volOn=false, volLoading=false;
+/* Exact mesh: BVH + triangles as float textures. 0.51MB against the grid's 8.2MB, and with no
+   resolution ceiling — the silhouette stays exact at any zoom and the vertex normals give
+   smooth shading the grid cannot reconstruct. */
+const BVH={w:256, nodes:'./assets/mesh_nodes.f32', tris:'./assets/mesh_tris.f32'};
+/* Surface detail maps. Loaded once, mip-mapped, repeat-wrapped. Anisotropic filtering is
+   requested when the driver offers it: a brushed surface seen at a grazing angle is exactly
+   the case trilinear mips blur into mush, and it is the case that matters most here. */
+const DETAILS={machined:'./assets/detail_machined.png', micro:'./assets/detail_micro.png'};
+let detailTex=null, detailName='machined', detailScale=1.0;
+function loadDetail(name){
+  const url=DETAILS[name]||DETAILS.machined;
+  return new Promise((ok,err)=>{
+    const im=new Image();
+    im.onload=()=>{
+      if(!detailTex) detailTex=gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D,detailTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,gl.RGBA,gl.UNSIGNED_BYTE,im);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      const ext=gl.getExtension('EXT_texture_filter_anisotropic');
+      if(ext) gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,
+                               Math.min(8,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+      gl.bindTexture(gl.TEXTURE_2D,null);
+      detailName=name; ok(detailTex);
+    };
+    im.onerror=()=>err(new Error('could not load '+url));
+    im.src=url;
+  });
+}
+let bvhNodeTex=null, bvhTriTex=null, meshOn=false, bvhLoading=false;
+async function loadBVH(){
+  if((bvhNodeTex&&bvhTriTex)||bvhLoading) return bvhNodeTex;
+  bvhLoading=true;
+  try{
+    const [a,b]=await Promise.all([fetch(BVH.nodes,{cache:'force-cache'}),
+                                   fetch(BVH.tris ,{cache:'force-cache'})]);
+    if(!a.ok||!b.ok) throw new Error('HTTP '+a.status+'/'+b.status);
+    const mk=(buf)=>{
+      const f=new Float32Array(buf);
+      const rows=f.length/(BVH.w*4);
+      if(!Number.isInteger(rows)) throw new Error('not a whole number of rows: '+f.length);
+      const t=gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D,t);
+      // NEAREST and no mips: these are DATA, not an image. Filtering them would blend a
+      // bounding box into a triangle index and produce garbage geometry.
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA32F,BVH.w,rows,0,gl.RGBA,gl.FLOAT,f);
+      gl.bindTexture(gl.TEXTURE_2D,null);
+      return t;
+    };
+    bvhNodeTex=mk(await a.arrayBuffer());
+    bvhTriTex =mk(await b.arrayBuffer());
+    return bvhNodeTex;
+  } finally { bvhLoading=false; }
+}
 async function loadVolume(){
   if(volTex||volLoading) return volTex;
   volLoading=true;
@@ -2319,18 +2549,32 @@ addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/s
   if(f){ e.preventDefault(); f.text().then(t=>loadSVGShape(t,f.name)); } });
 $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='mesh'){
-    volOn=true; svgOn=false; autoShape=false;
-    if(!volTex){ showStat('Loading mesh field…',false);
-      loadVolume().then(()=>{ showStat('Reference mesh'); hideStat(1400); })
-                  .catch(err=>{ volOn=false; showStat('Mesh field failed — '+err.message,true); hideStat(4000); }); }
+    // BOTH: the BVH draws the primary ray exactly, while the baked field still answers the
+    // ambient-occlusion, shadow and reflection-occlusion marches, which only need an
+    // approximate distance and would cost far more as BVH traversals.
+    volOn=true; meshOn=true; svgOn=false; autoShape=false;
+    showStat('Loading mesh…',false);
+    Promise.all([loadVolume(), loadBVH()])
+      .then(()=>{ showStat('Reference mesh — exact'); hideStat(1600); })
+      .catch(err=>{ volOn=false; meshOn=false;
+        // A page opened from disk cannot fetch its own assets — the browser blocks it. That is
+        // a different problem from a missing file, and saying "mesh failed" for it sends people
+        // looking for a bug that is not there.
+        showStat(FILE_MODE
+          ? 'Opened from file:// — the browser blocks loading the mesh. Open http://localhost:8770/viewer.html'
+          : 'Mesh failed — '+err.message, true);
+        hideStat(FILE_MODE?12000:4200); });
     return;
   }
-  volOn=false;
+  volOn=false; meshOn=false;
   if(v==='svg'){ if(svgTex){ svgOn=true; autoShape=false; } else $('svgfile').click(); return; }
   svgOn=false;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
 $('selFinish').addEventListener('change',e=>{ const f=FINISHES[e.target.value]; if(f) Object.assign(FINT,f); });
+$('selDetail').addEventListener('change',e=>{ const v=e.target.value;
+  if(v==='off'){ if(detailTex) gl.deleteTexture(detailTex); detailTex=null; return; }
+  loadDetail(v).catch(err=>showStat('Detail map failed — '+err.message,true)); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
@@ -2350,5 +2594,6 @@ addEventListener('dragover',e=>e.preventDefault());
 addEventListener('drop',e=>{ e.preventDefault(); const a=[...e.dataTransfer.files].find(f=>f.type.startsWith('audio')); if(a)loadFile(a); });
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();$('play').click();} });
 
+loadDetail('machined').catch(e=>__showErr('detail map: '+e.message));
 frame();
 </script>
