@@ -148,6 +148,77 @@ def test_schema_and_tempo():
     check(not bad, f"no NaN/inf in curves{' — ' + str(bad) if bad else ''}")
 
 
+def make_chord(root_hz, semitones, seconds=12.0):
+    """A sustained triad at a KNOWN root and quality, for the key detector.
+
+    Same reasoning as make_track: a synthesised chord has a key we know, so the assertion means
+    something. A recorded fixture would only assert that today's detector agrees with yesterday's.
+    Three harmonics per note, because chroma-CQT reads harmonic content and a bare sine gives it
+    almost nothing to bin.
+    """
+    n = int(SR * seconds)
+    x = np.zeros(n)
+    t = np.arange(n) / SR
+    for s in semitones:
+        f0 = root_hz * 2 ** (s / 12.0)
+        x += 0.4 * (np.sin(2*np.pi*f0*t) + 0.5*np.sin(4*np.pi*f0*t) + 0.25*np.sin(6*np.pi*f0*t))
+    x /= max(1e-9, np.max(np.abs(x)))
+    path = tempfile.mktemp(suffix=".wav")
+    sf.write(path, np.column_stack([x, x]).astype("float32"), SR)
+    return path
+
+
+def test_tonality():
+    print("\nkey and mode, against chords whose key is known")
+    cases = [("C", "major", 261.63, [0, 4, 7, 12]),
+             ("A", "minor", 220.00, [0, 3, 7, 12]),
+             ("F", "major", 174.61, [0, 4, 7, 12]),
+             ("D", "minor", 146.83, [0, 3, 7, 12])]
+    for key, mode, hz, semis in cases:
+        path = make_chord(hz, semis)
+        try:
+            mono, stereo, sr = analyze.load_audio(path)
+            f = analyze.layer1_signal(mono, stereo, sr)
+            t = analyze.layer2c_tonality(f)
+        finally:
+            os.remove(path)
+        check(t["key"] == key and t["mode"] == mode,
+              f"{key} {mode} detected as {t['key']} {t['mode']} (conf {t['confidence']})")
+        check(t["strength"] > 0.5, f"{key} {mode} reads as tonal (strength {t['strength']})")
+
+
+def test_new_signals():
+    print("\nemotion / structure signals added to the contract")
+    path = make_track(128.0)
+    try:
+        d = analyze.build_director(path)
+    finally:
+        os.remove(path)
+    for key in ("tonality", "instruments", "vocals"):
+        check(key in d, f"top-level key '{key}'")
+    for key in ("key", "mode", "confidence", "strength"):
+        check(key in d["tonality"], f"tonality.{key}")
+    for key in ("presence", "is_vocal", "types"):
+        check(key in d["vocals"], f"vocals.{key}")
+    c = d["curves"]
+    n = len(c["t"])
+    for key in ("release", "dynamics", "atmosphere", "density"):
+        check(key in c, f"curves.{key}")
+        check(len(c.get(key, [])) == n, f"curves.{key} aligned to t ({n})")
+        vals = c.get(key, [])
+        check(all(v == v and abs(v) != float("inf") for v in vals), f"curves.{key} finite")
+    # density shipped as `density=danceability` — a distinct name for a duplicate curve.
+    # How busy a passage is and how danceable it is are different questions.
+    check(c["density"] != c["danceability"], "density is measured, not aliased to danceability")
+    for s in d["sections"]:
+        for key in ("release", "dynamics", "atmosphere", "density"):
+            if key not in s:
+                check(False, f"section missing '{key}'")
+                break
+    else:
+        check(True, "every section carries the new signals")
+
+
 def test_tempo_across_range():
     print("\ntempo across the usable range")
     for bpm in (100.0, 140.0):
@@ -163,6 +234,8 @@ if __name__ == "__main__":
     test_fold_tempo()
     test_schema_and_tempo()
     test_tempo_across_range()
+    test_tonality()
+    test_new_signals()
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED")

@@ -79,16 +79,99 @@ The PANNs model auto-downloads to `~/panns_data/` on first run.
 
 ## Contract: director.json (schema `atonal.director/1`)
 ```
-meta{duration,director_fps,analysis_sr,hop}
+meta{duration,director_fps,analysis_sr,hop,analysis_version}
 tempo{bpm,stability,crest_db,dynamic_range_db,stereo_width}
+tonality{key,mode,confidence,strength}
+instruments{drums,synth,piano,guitar,strings,…}          # 0..1, PANNs; {} on the fallback
+vocals{presence,is_vocal,types{singing,choir,rapping,speech,whistle}}
 genre{primary,confidence,secondary,method,top_tags[],moods{}}
-sections[]{t0,t1,label,energy,tension,valence,camera,composition,mood,palette,
-           motion,fog,bloom,grain,intent}
+sections[]{t0,t1,label,energy,tension,valence,release,dynamics,atmosphere,density,
+           camera,composition,mood,palette,motion,fog,bloom,grain,intent}
 events{beats[], onsets{sub|low|mid|high|air: [[t,strength],…]}, predictions[]{t,type,lead}}
 curves{t[], energy[],brightness[],arousal[],valence[],tension[],darkness[],
        warmth[],danceability[],epicness[],flux[],percussive[],harmonic[],density[],
+       release[],dynamics[],atmosphere[],
        sub[],low[],mid[],high[],air[]}                                              # 30 Hz
 ```
+
+### Tonality, release, dynamics, atmosphere, density
+
+**Key and mode come free.** chroma-CQT was already the second most expensive feature after HPSS
+and was used only to give the segmenter a stable similarity space — the key was sitting in it
+unread. Krumhansl-Schmuckler profiles, correlated against all 24 rotations. Validated against
+synthesised triads whose key is known: C major, A minor, F major and D minor all detected
+correctly at confidence 0.85–1.0. `confidence` is the **margin over the best competing key**, not
+the raw correlation — every key correlates decently with a chromatic average, so the raw number
+is high, flat and uninformative. `strength` answers a different question, whether the track is
+tonal at all: a drum loop has a near-flat chroma that still produces a winning key, just a
+meaningless one, so the renderer can ignore the key when there is not really one.
+
+**Release is not the inverse of tension.** Low tension is a calm passage; release is the moment
+tension is actively being let go, which is where the visual payoff belongs. It is the rectified
+negative slope of tension — positive only while tension falls, zero while it is merely low.
+
+**Dynamics is local, not the whole-track scalar.** `dynamic_range_db` already reports one number
+per track; this curve is where the track is *being* dynamic against where it is squashed flat.
+
+**Atmosphere** is sustained harmonic wash against transient attack — high on pads, tails and
+reverb, low on hits. It now drives `fog` alongside darkness, because fog on darkness alone gave a
+bright airy pad passage no haze and a dark percussive one plenty.
+
+**Density was not a measurement.** It shipped as `density=danceability` — a distinct name in the
+contract for a straight alias of a curve already in it. It is now onsets per second across all
+five bands over a 2s window. The two are different questions: a half-time breakdown over a dense
+hat pattern is high density and low danceability.
+
+**Instrumentation and voice cost nothing.** The Cnn14 forward pass already scores all 527 AudioSet
+classes and the pipeline kept two of them; the instrument and voice classes were computed and
+discarded on every run. Matched by keyword against the checkpoint's own label list rather than by
+exact string, because the AudioSet names carry commas and parentheticals ("Violin, fiddle",
+"Keyboard (musical)") and a dict keyed on exact spelling fails by returning an empty section
+rather than an error. Speech is scored but excluded from `is_vocal`: AudioSet fires it on an MC
+over an instrumental, and that is not a lead vocal. On the synthesised test track — kick, hats,
+sub and a pad — it reports `drums 0.68, synth 0.39` and `is_vocal false`.
+
+**`meta.analysis_version` exists so the cache cannot go stale.** Entries are keyed on the audio's
+SHA-256, which answers "same bytes?" and not "same analysis?", so without a version a track
+analysed before a pipeline change returns the old director for ever — silently, and shaped
+exactly like a renderer bug, with contract fields simply absent on some tracks and not others.
+The server rejects any entry whose version does not match and recomputes.
+
+### How the new signals drive the visuals
+
+Every mapping below was ablated on a frozen peak-energy frame (playback position pinned via
+`startedAt`, clock frozen, noise floor 0) by forcing the curve to 0 and to 1 and diffing the
+frame. The percentage is pixels moved by more than 8 levels.
+
+| signal | drives | measured 0 → 1 |
+|---|---|---|
+| dynamics | the **key:fill ratio** — a dynamic passage gets less fill and is modelled harder; a squashed one gets more and flattens | **9.64%** |
+| tonality | hue of the Auto colourway, ordered round the circle of fifths | **67.3%** at full gate, **7.24%** for this track's actual A minor |
+| atmosphere | gates the volumetric shafts, and `fog` | **4.73%** |
+| release | bloom lifts and contrast eases as tension is let go | **2.36%** |
+| vocals | rim light strength — a voice is the thing sitting in front | **2.04%** |
+| density | surface tooth and grain | **0.2% zoomed, 0% at rest** — see below |
+
+Three of these needed a second attempt, and the reasons are worth keeping.
+
+**Tonality first measured 0.00%.** The rotation was applied in `bgPair()`, which only feeds the
+duotone inks — and the default `Studio` look sets `ink` to 0, so it was multiplied away. The Auto
+background is built *inside* the shader from `u_mood`. Rotating the mood at that single source
+reaches the background, the form's tint and the inks together and keeps them agreeing.
+
+**Dynamics drives the lighting, not the grade.** Pushing contrast crushes the whole frame
+together; changing the key:fill ratio changes how the *object* is lit, which is what a lighting
+cameraman does with a bounce card. It is the strongest of the six for that reason.
+
+**Density is the weakest and stays that way.** It moves the surface tooth and the grain, and both
+are near-invisible at the default framing — the detail map is mip-filtered down so far that
+toggling Detail off entirely is only 1.26%, so a fraction of that is nothing. Widening it and
+adding grain lifted the mean from 0.04 to 0.11 but still crosses 8 levels on no pixel at rest,
+and 0.2% zoomed in. It is honestly wired and honestly faint; making it louder would mean giving
+it a lever it has no business holding.
+
+**Release is on release, not on low tension.** A calm passage should look calm, not blown — the
+bloom lift belongs to the moment of letting go, not to the quiet that follows.
 
 ### How each band drives the visuals
 | band | onset lands as | level sustains as |
@@ -104,8 +187,9 @@ frequency — `freq * amp` must stay bounded or the field stops being a valid SD
 raymarch creases.
 
 ## Viewer controls (top right)
-- **Shape** — `Auto · Director` lets the Director pick, or lock one of Pods / Ribbon /
-  Tower / Gyroscope / Space Frame / Shell.
+- **Shape** — `Auto · Director` lets the Director pick, or lock one of Shell / Ovoid / Cross /
+  Lattice / Column / Disc, plus `Reference mesh` (a BVH over a 4,608-triangle mesh packed into
+  textures, `assets/mesh_*.f32`) and `Custom SVG…`.
 - **Material** — Pearl, Glass, Clay, Frosted, Holographic. Glass **marches its own
   interior**: the field is negative inside the form, so `-mapD` carries the refracted ray to where
   it actually leaves. That gives thickness, which drives Beer-Lambert absorption so thin edges stay
@@ -118,14 +202,94 @@ raymarch creases.
   because the shared near-white base blew out across every lit face.
 
 
-Surface detail is **procedural** — there are no image textures, so there is no map resolution to
-raise. Detail is amplitude x frequency, and the lever is the per-material base frequency `tscale`,
-not octave count: the fbm runs at gain 0.42, so octaves 6 and 7 would together carry about 4% of
-the amplitude for 40% more noise evaluations. Both "more octaves" and procedural mipmapping
-(fading octaves by `fwidth` footprint) were implemented, measured and reverted — the mipmapping
-moved pixel-scale energy inside the silhouette by 1.5-3.1% across four materials, one of them
-negative, which is noise. It has nothing to filter because the octaves fine enough to alias are
-the ones already carrying almost no amplitude.
+- **Detail** — the surface normal map: `Micro tooth` (default, isotropic) or `Machined`
+  (brushed). **Baked on the GPU at load** into an 8192² RGBA16F texture, not loaded from disk;
+  `assets/detail_*.png` remain only as the fallback for a context without float render targets.
+  See *Surface detail* below for why. Sampled
+  **triplanar**, since a raymarched SDF has no UVs: three projections along the object axes,
+  weighted by `pow(abs(n), 6)`. The three are combined with a **whiteout blend** — the geometric
+  normal is perturbed inside each projection frame and the results are then mixed, because
+  blending the sampled normals first and perturbing once flattens anything facing a corner.
+  `u_txAmp` stays the material's tilt in radians, so every preset keeps its relative weighting.
+- **Finish** — gloss/iridescence multiplier layered over the material preset.
+
+Detail used to be **procedural** (`fbmT`), and the notes from that period are kept because the
+measurements still hold for anyone reaching for noise here. Detail is amplitude x frequency, and
+the lever was the per-material base frequency `tscale`, not octave count: the fbm ran at gain
+0.42, so octaves 6 and 7 would together carry about 4% of the amplitude for 40% more noise
+evaluations. Both "more octaves" and procedural mipmapping (fading octaves by `fwidth` footprint)
+were implemented, measured and reverted — the mipmapping moved pixel-scale energy inside the
+silhouette by 1.5-3.1% across four materials, one of them negative, which is noise. It had
+nothing to filter because the octaves fine enough to alias were the ones already carrying almost
+no amplitude. A sampled map sidesteps that ceiling entirely: its detail is band-limited by the
+image and filtered by the hardware.
+
+### Surface detail: why it is baked, not shipped
+
+The 512² 8-bit PNGs that preceded this were wrong in three separate ways, each measured on a
+locked frame with the form filling 1474 canvas px.
+
+**Resolution.** The detail uv spans 2.21 tiles across the form, so one tile covers 667 px — a
+512-texel map is being *magnified* 1.30×. Past 1:1 the mip chain has nothing to do and the
+hardware is simply stretching texels. At 2048² the same tile sits at 3.07× *minification*, which
+is the regime mips and anisotropic filtering exist for.
+
+**Precision.** A normal in 8 bits steps by 2/255, i.e. 0.45° of tilt per code — about a tenth of
+the specular lobe width at `rough` 0.35, so it lands as terracing in the highlight rather than as
+noise beneath it. RGBA16F has no such floor.
+
+**Content.** Measured on the shipped PNGs: `machined` was 2.27:1 anisotropic with 6.8° mean tilt
+(19.3° at p99); `micro` was 13.9° mean and **31.3° at p99**, which is gravel, not microstructure.
+Their alpha (the roughness modulation) was mean 0.49 ± 0.28, and `texRough()` maps it through
+`0.45 + 1.5v` — so both maps biased roughness up 19% *and* strobed it ±42%. The bake centres
+alpha on 0.367, the value that makes that mapping return the material's own roughness unchanged,
+and swings it a third as far. Rendered high-frequency energy over the form fell from 2.01
+(`machined`) and 3.59 (`micro`) to 0.84 and 0.87, against a 0.77 floor measured with detail off
+entirely.
+
+Two things the bake had to get right that are easy to miss:
+
+- **The hash.** `fract(sin(dot(i,k)))` projects the 2D lattice onto one axis before hashing, so
+  cells on a line of constant `dot(i,k)` come out correlated — at these periods (9–112 cells)
+  that bakes as long axis-aligned ridges. Replaced with a bit-mixing integer hash.
+- **Measuring anisotropy at all.** A per-channel `nx`/`ny` variance ratio reported 1.04 for a map
+  that was visibly streaked, because variance sees stretching but not *alignment*. An orientation
+  histogram of the tilt direction over the whole map is the measure that works; it reported
+  1.53:1 with peaks at exactly 0° and 90°, the lattice showing through. A per-octave tileable
+  domain warp brings that to 1.44:1. `machined` sits at 3.58:1 by design — it is the brushed
+  option — which is why the isotropic map is now the default: any directional map reads as
+  streaking on the large flat faces of an extruded profile.
+
+The bake self-calibrates rather than hard-coding a gain: it runs once at unit gradient scale,
+reads the result back, recovers the raw gradient from the encoded normal, and solves for the
+scale that hits the preset's requested mean tilt. Hard-coding would drift silently the moment the
+octave mix changed, which is how the PNGs ended up at 14° without anyone choosing 14°. The
+solved scale moves with the resolution — 0.0078 at 2048, 0.0101 at 8192 for the same 4° target —
+which is the calibration doing exactly the job it exists for.
+
+**The bake is now 8192², and the honest account of what that buys is: nothing at the default
+framing, and a real gain when you push in.** At the framing everything above was measured on, one
+detail tile covers 667 px and the map is already minified 3.07× — the mip chain discards the extra
+levels, and measured high-frequency energy over the form is 1.671 at 8192 against 1.672 at 2048,
+i.e. identical. Pushed in to the zoom clamp (`userZoom` 0.45) the same measurement is **2.398 at
+8192 against 2.277 at 2048, +5.2%**, with an A/A repeat of 0.13% — so the gain is well clear of
+noise. That is the regime the resolution is for: 4× the linear detail keeps the tile above 1:1
+until the form fills roughly four times the frame width it does at rest.
+
+**Runtime cost is nil; the cost is memory and bake time.** Interleaved A/B/A at the close framing:
+20.1 fps at 2048, 20.1 at 8192, 20.1 back at 2048 — mip selection means the shader fetches the
+same number of texels either way. The bake itself goes 68 ms → 203 ms, paid once at load and
+again on a Detail change. Memory goes **43 MB → 683 MB** with the mip chain, which is the number
+to watch: that is why the size is negotiated rather than assumed. `texImage2D` does not throw on
+an over-large allocation — it raises a GL error and leaves the texture incomplete, which would
+surface later as a black surface rather than as a failed bake — so the error queue is drained,
+checked, and the FBO tested for completeness before anything is drawn; anything the driver
+refuses is halved and retried down to 512, and the PNG fallback still sits under all of it.
+`window.DETAILN = 2048` before a Detail change pins the size by hand.
+
+Anisotropic filtering was raised 8× → 16× at the same time. At 12× minification the anisotropy
+cap carries more of the result than the texel count does, and the hardware here reports 16 while
+the code was asking for half of it.
 - **Scene** — `Colour field` (default) floats the form in the fluid backdrop with no ground.
   `Studio` puts it in a lit cyclorama with a real floor and a cast shadow.
 - **Look** — the *press grade*, i.e. the label aesthetic. `Studio`, `Label`, `Riso`,
@@ -135,6 +299,115 @@ the ones already carrying almost no amplitude.
   current section's mood and slams the saturation; or pick Blood / Acid / Ultra / Cyber /
   Solar / Mono, or set the two colours by hand. The palette also feeds the duotone inks,
   so the whole frame stays on one colourway.
+
+## Clearcoat and subsurface
+
+**Clearcoat** is a second GGX lobe over everything else, at its own roughness, with F0 fixed at
+0.04 — a clear coat *is* a dielectric at IOR ~1.5 and its reflectance is not the artist's to pick.
+It is what separates a glazed surface from a painted one: a tight highlight sitting on top of a
+broad, rougher body highlight, instead of the single lobe both were previously sharing. The base
+is attenuated by the coat's Fresnel, because light the coat reflects never reaches the material
+underneath — skipping that is how a clearcoat ends up returning more light than it was given. The
+coat reflects the environment as well as the key.
+
+**Subsurface** replaces a flat back-lambert. What was there was `dot(n,-L)*0.18`, with no notion
+of how much material the light had crossed, so a thin lip and the thickest part of the body glowed
+identically — it read as a rim someone had drawn on rather than as light coming through something.
+An SDF makes the honest version cheap: the field is negative inside the form, so marching from
+just under the surface along -L and counting how much of that path stays interior **is** the
+thickness. Beer-Lambert on that, exactly as glass already does with its absorption, plus a
+forward-scatter lobe, because light leaving a translucent body is strongest looking back down the
+beam. Six taps, bounded on purpose.
+
+| material | clearcoat | coat roughness | subsurface extinction |
+|---|---|---|---|
+| pearl | 0.35 | 0.15 | 2.4 |
+| clay (the ceramic entry) | 0.10 | 0.34 | 3.6 |
+| frosted | 0.18 | 0.26 | 1.3 |
+| holo | 0.45 | 0.08 | — (metal, no subsurface) |
+| glass | — | — | — (transmission already carries it) |
+
+Ablated on a pinned frame: clearcoat moves 0.33% of pixels and subsurface 0.73%, against a drift
+floor of 0.04%. Both are real and both are meant to be quiet — a coat that announces itself is a
+coat you have overdone.
+
+**Measuring either requires setting the target as well as the value.** `MAT` is lerped toward
+`MATT` every frame, so `MAT.cc = 0` had already decayed back to 0.244 within 500ms and the first
+ablation measured pure drift for both terms. Set both, or measure nothing.
+
+## Motion blur
+
+**Reprojection, not accumulation.** Temporal accumulation was implemented here once, measured and
+removed (`0130974`) — it trails on every cut and needs a history buffer that the adaptive render
+scale invalidates the moment it resizes. This reconstructs where each pixel *was* one frame ago
+and blurs along that vector, which is a pure function of the current frame: nothing to invalidate,
+nothing to trail, correct through a resize.
+
+The reconstruction is exact rather than a screen-space heuristic, because everything it needs is
+already known. Alpha carries the ray's `t`, so the world point is `ro + rd*t`; the object's motion
+is a rotation about the tilted Y axis by the spin delta; the previous camera basis is last frame's.
+Undo the object rotation, project with the previous camera, and the difference is the velocity —
+camera orbit and object spin fall out of the same expression with no separate cases. Pixels past
+the `17.0` miss sentinel skip the object rotation and reproject on camera motion alone, which is
+what makes the backdrop shear with an orbit while the form smears with its own spin.
+
+Validated by holding the geometry perfectly still and telling the shader the form had rotated by a
+known delta since the last frame — the image is then reproducible and the blur is the only
+variable:
+
+| spin delta (rad/frame) | pixels moved | softening |
+|---|---|---|
+| 0.02 | 0.66% | 0.1% |
+| 0.06 | 1.56% | 10.5% |
+| 0.15 | 2.61% | 17.4% |
+| 0.35 | 3.24% | 19.7% |
+
+Monotonic in velocity, which is the property that matters. **And it is a no-op when nothing
+moves**: with spin and camera both pinned, blur on against blur off measured 0.80 mean / 0.10% of
+pixels against a same-setting drift baseline of 0.76 / 0.06% — indistinguishable, so a held frame
+is not being quietly softened.
+
+Shutter is per tier (Preview 0, High 0.5, Ultra 0.8) and **dt-normalised to 60fps**: velocity is
+measured per *frame*, so on a 30fps machine each frame covers twice the ground, and an
+un-normalised shutter would double the smear exactly where the frame rate can least afford it.
+Taps are jittered per pixel — eight evenly spaced samples of a moving edge print eight copies of
+it, and the offset turns that ghosting into noise the grain already covers. The smear is capped at
+5% of the frame.
+
+Cost is not quoted here because it could not be measured cleanly: over six-frame medians the
+blur-off A/A spread was 49.5 against 37.5 fps, wider than the difference to blur-on at 38.6, so
+the governor and thermal drift dominate at this sample size. What can be said is that both early
+-outs fire — zero shutter and sub-pixel velocity both return before any tap — so a still frame
+pays nothing.
+
+## Quality tiers
+
+`Preview · High · Ultra`, replacing the old `Auto / Rays / Surface` row. Those three asked the
+viewer to understand a render-scale governor, a volumetric toggle and a normal-map switch in order
+to answer "make it look better", and two of the three were named after their implementation. Each
+tier is now a complete point on the cost/quality curve, so the axes move together and cannot be
+left in a nonsensical combination — supersampled, with the shadow budget of a preview.
+
+| | render scale | shadow samples | march step | shafts | detail bake | measured |
+|---|---|---|---|---|---|---|
+| Preview | governor capped at 0.72 | 40 | 1.70 | off | 2048 (43 MB) | 5.2 Mpx, **59.3 fps** |
+| High | governor to 1.0 | 128 | 1.45 | on | 8192 (683 MB) | 5.3 Mpx, **41.2 fps** |
+| Ultra | 1.35 fixed, no adaptation | 200 | 1.25 | on | 8192 (683 MB) | 8.6 Mpx, **26.0 fps** |
+
+Every knob is one with measured cost behind it: 40 → 128 shadow samples was 12.6 → 15.1 ms for a
+3.1× error cut, so Preview takes it back and Ultra spends 200 where the 1/N curve is still paying;
+the march step was measured at 1.45 → 20 fps against 1.70 → 24 fps at native, so Preview buys real
+time there. The detail bake is re-run only when the size actually changes — it is 170–230 ms at
+8192, and running it on every press would stall the frame for nothing.
+
+**A tier binds the governor rather than suggesting to it.** Preview's render scale was handed
+straight back on the first build: the governor saw the headroom Preview had just bought, spent it
+on resolution, and the declared 0.72 became decorative — Preview and High measured an identical
+8.0 Mpx grid. The tier now sets the ceiling the governor may climb to. Ultra pins its scale
+outright and is excluded from adaptation, which is the difference between a tier and a hint.
+
+The individual switches are still reachable from the console for measuring — `raysOn`,
+`surfTarget`, `STEP.shaN`, `STEP.near` — they simply no longer have buttons.
 
 ## Export (bottom bar)
 **Frame** saves a PNG at full canvas resolution; **Record** captures the canvas to WebM via
@@ -177,6 +450,26 @@ metre-long steps across open floor printed terraced contour rings. It instead in
 bounding sphere analytically — no hit means lit, at zero field evaluations — then spends a
 fixed *count* of samples across the chord, so no sample can pop in or out.
 
+That fixed count was **40, and it was too few** — not on the floor, which was already clean, but
+on the form itself, where it left nested contours running parallel to the silhouette across every
+flat face. Against a converged N=800 reference over the whole object the error is 4.31 levels RMS
+at N=40 and falls as a clean 1/N (2.83 at 64, 1.90 at 96, 1.40 at 128, 0.86 at 200) — plain
+undersampling, which converges that slowly because `k*h/t` is V-shaped near a grazing occluder.
+
+Three reformulations were measured against that reference and **all three were worse**:
+
+| attempt | RMS | why it fails |
+|---|---|---|
+| even spread, N=40 (baseline) | 4.31 | — |
+| 60% of the budget front-loaded into the first 0.7 units | 5.11 | the minimum is not decided near the surface; on a form 2.3 across, the ray passes closest to *another lobe* at t = 1..3 |
+| constant 2R step instead of chord-relative | 6.74 | positions stop sliding, but most of the budget lands past `t1` where nothing can occlude |
+| closest-approach correction between samples | 4.35 | moves the penumbra (2.42 RMS from the plain answer) without removing the sampling error |
+
+So the fix is simply `STEP.shaN = 128`. Measured cost, interleaved A/B/A over 45 paired frames at
+a native 4.6 Mpx target: 12.6 ms → 15.1 ms, about +20%, or 0.028 ms per sample — cheap because
+only pixels that hit the form run the shadow ray at all. It is one constant if you want the
+frame time back.
+
 The deeper cause of the same rings: `map()`'s bounding-sphere early-out returns the distance
 to a sphere of radius 1.45 while the branch below returns the distance to the real form, and
 the two disagree at the switch. A raymarch tolerates that (the value is still a conservative
@@ -187,8 +480,13 @@ budget on resolution instead.
 
 **Debug hooks.** `QLOCK = true` freezes the adaptive quality governor; `TFREEZE = <seconds>`
 pins the clock *and* every dt-integrated value, which is the only way to A/B two builds on an
-identical frame. Both exist because reasoning about render defects instead of measuring them
-has cost several wrong fixes here.
+identical frame. `DBGMASK = 1` outputs the depth-derived silhouette instead of the image.
+`DX = {bloom, chroma, sharpen, thr}` ablates individual post-pass terms and
+`DXS = {ao, shadow, disp, twoTone}` does the same for the scene pass — set `DXS.shadow = 0` and
+the contour banding above vanishes in one step, which is how it was pinned on `calcSha()` rather
+than on the detail map it was sitting under. `window.__DBAKE` reports what the detail bake
+actually uploaded (size, format, solved gradient scale). All of it exists because reasoning about
+render defects instead of measuring them has cost several wrong fixes here.
 
 ## Next
 Camera + world evolution driven further by the Director State (per-section framing,

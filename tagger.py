@@ -52,6 +52,52 @@ MOOD_TAGS = {
     "Funny music": "funny",
 }
 
+# INSTRUMENTATION AND VOICE. The Cnn14 forward pass already scores all 527 AudioSet classes and
+# we were keeping two of them; the instrument and voice classes were computed and discarded on
+# every run. This costs nothing extra.
+#
+# Matched by KEYWORD against the checkpoint's own label list rather than by exact string. The
+# AudioSet names carry commas and parenthetical qualifiers ("Violin, fiddle", "Keyboard
+# (musical)", "Male speech, man speaking"), and a dict keyed on exact spelling silently returns
+# nothing the day a label is punctuated differently — the failure mode is an empty section, not
+# an error, which is the kind that survives for months.
+INSTRUMENT_RULES = [
+    ("piano",       ("piano", "electric piano")),
+    ("organ",       ("organ",)),
+    ("guitar",      ("guitar",)),
+    ("bass",        ("bass guitar", "double bass")),
+    ("drums",       ("drum", "snare", "hi-hat", "cymbal", "percussion", "timpani", "tabla")),
+    ("synth",       ("synthesizer", "sampler", "electronic organ", "theremin")),
+    ("strings",     ("violin", "cello", "fiddle", "string section", "bowed string", "harp")),
+    ("brass",       ("trumpet", "trombone", "french horn", "brass")),
+    ("woodwind",    ("saxophone", "flute", "clarinet", "oboe", "bassoon", "woodwind")),
+    ("mallet",      ("marimba", "xylophone", "vibraphone", "glockenspiel", "mallet")),
+    ("plucked",     ("banjo", "ukulele", "mandolin", "sitar", "plucked string")),
+    ("orchestra",   ("orchestra",)),
+    ("bell",        ("bell", "chime")),
+    ("accordion",   ("accordion",)),
+]
+VOICE_RULES = [
+    ("singing",  ("singing", "vocal music", "a capella", "yodeling", "humming", "chant")),
+    ("choir",    ("choir",)),
+    ("rapping",  ("rapping",)),
+    ("speech",   ("speech", "narration", "conversation")),
+    ("whistle",  ("whistling",)),
+]
+
+
+def _bucket(labels, clip, rules):
+    """Max score per bucket, over every label whose name contains one of its keywords."""
+    out = {}
+    for i, nm in enumerate(labels):
+        low = nm.lower()
+        for bucket, keys in rules:
+            if any(k in low for k in keys):
+                v = float(clip[i])
+                if v > out.get(bucket, 0.0):
+                    out[bucket] = v
+    return {k: round(v, 3) for k, v in sorted(out.items(), key=lambda kv: -kv[1]) if v >= 0.02}
+
 def tag(mono, sr):
     import librosa
     model, labels = _load()
@@ -71,6 +117,16 @@ def tag(mono, sr):
         secondary = order[1][0] if len(order) > 1 else None
     else:
         primary, conf, secondary = "electronic", 0.0, None
+    instruments = _bucket(labels, clip, INSTRUMENT_RULES)
+    voices = _bucket(labels, clip, VOICE_RULES)
+    # A track is "vocal" on the strongest VOICE bucket, but speech is scored separately and not
+    # counted toward it: AudioSet fires "Speech" on a spoken sample or an MC over an instrumental,
+    # and calling that a vocal track would put a lead vocal in the director where there is none.
+    sung = max([v for k, v in voices.items() if k in ("singing", "choir", "rapping")] or [0.0])
     return {"primary": primary, "confidence": round(conf, 3), "secondary": secondary,
             "method": "panns_cnn14", "top_tags": top,
-            "moods": {k: round(v, 3) for k, v in sorted(mscore.items(), key=lambda kv: -kv[1])}}
+            "moods": {k: round(v, 3) for k, v in sorted(mscore.items(), key=lambda kv: -kv[1])},
+            "instruments": instruments,
+            "vocals": {"presence": round(sung, 3),
+                       "is_vocal": bool(sung >= 0.20),
+                       "types": voices}}
