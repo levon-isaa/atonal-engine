@@ -3249,7 +3249,12 @@ window.__DBAKE=null;
    drained first, checked after, and the framebuffer tested for completeness before anything is
    drawn into it. Anything the driver refuses is halved and retried, down to 512. Set
    window.DETAILN before a Detail change to pin a size by hand. */
-const DETAIL_TARGET = 8192;
+// 8192 -> 4096. The case for 8192 was headroom for close framing, and the close framing is
+// exactly where it was compared: at the zoom clamp the two are visually indistinguishable, while
+// 8192 costs 683MB against 171MB and 344ms of bake against 104ms. A quarter of the memory for no
+// visible difference is not a trade worth defending. The +5.2% high-frequency figure that
+// justified 8192 still stands as a measurement; it simply does not survive being looked at.
+const DETAIL_TARGET = 4096;
 function bakeDetail(name){
   const P=DPRESET[name]; if(!P) return false;
   const maxDim=gl.getParameter(gl.MAX_TEXTURE_SIZE)||2048;
