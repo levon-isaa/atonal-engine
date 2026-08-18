@@ -890,7 +890,17 @@ vec3 env(vec3 d,float rough){
   float az=atan(d.z,d.x);
   float cell=abs(fract(az*(6.0/6.28318530)+0.5)-0.5)*2.0;
   float strip=smoothstep(0.62+sf*1.3, 0.30-sf*0.4, cell);
-  e+=vec3(0.96,0.97,1.00)*strip*smoothstep(-0.15,0.62,d.y)*0.42;
+  // FADE THEM AWAY FROM THE HORIZON. The strips are a function of azimuth ONLY, so they have no
+  // vertical extent and every one of them converges to a point at d.y = +/-1: six spokes meeting
+  // at the zenith. A curved reflective surface sweeps its reflection vector straight through that
+  // convergence, and what it shows is a radial starburst rather than a room. The previous fade
+  // made it worse by ramping the panels UP toward the pole, which is where the degeneracy is.
+  //
+  // Wall panels belong around the horizon and are simply not there overhead, so fading on |d.y|
+  // both removes the artefact and matches what a studio actually looks like. The lower fade is
+  // kept so they do not appear beneath the floor line.
+  float wall=1.0-smoothstep(0.28,0.90,abs(d.y));
+  e+=vec3(0.96,0.97,1.00)*strip*wall*smoothstep(-0.15,0.30,d.y)*0.42;
   return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
 }
 // Four-stop colour ramp with overlapping smoothstep bands. The overlap matters: butted-up
