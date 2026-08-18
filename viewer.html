@@ -251,6 +251,7 @@ uniform float u_meshOn,u_stepK,u_stepFar;
 uniform int u_shaN;
 uniform sampler2D u_detail;          // RGB = tangent-space normal, A = roughness modulation
 uniform float u_detailOn,u_detailScale;
+uniform float u_diag;                // 0 off; 1 triplanar weights; 2 geometric normal; 3 detail deviation; 4 blend RMS
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
@@ -663,11 +664,13 @@ vec3 objP(vec3 p){
 // the SAME coordinates and each discarding the other's channels -- six fetches and two
 // pow(abs(n),6) triplanar blends where three and one do. The roughness rides in alpha and
 // arrives with the RGB for free. Returns the shading normal; writes the roughness modulation.
+vec3 DIAGW=vec3(0.0); float DIAGD=0.0;      // diagnostic taps, written by texDetail
 vec3 texDetail(vec3 op,vec3 n,out float rghOut){
   rghOut=0.5;
   if(u_detailOn<0.5) return n;
   float s=u_detailScale*u_txScale*0.01;
   vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
+  DIAGW=w;
   vec4 sx=texture(u_detail,op.zy*s);
   vec4 sy=texture(u_detail,op.xz*vec2(s*u_txAniso,s));
   vec4 sz=texture(u_detail,op.xy*s);
@@ -683,7 +686,9 @@ vec3 texDetail(vec3 op,vec3 n,out float rghOut){
   vec3 bz=vec3(tz.xy+n.xy, abs(tz.z)*n.z);
   vec3 pn=normalize(bx.zyx*w.x + by.xzy*w.y + bz.xyz*w.z);
   // u_txAmp stays the material's tilt in radians, so every preset keeps its relative weighting.
-  return normalize(mix(n, pn, clamp(u_txAmp*26.0,0.0,1.0)));
+  vec3 outN=normalize(mix(n, pn, clamp(u_txAmp*26.0,0.0,1.0)));
+  DIAGD=length(outN-n);
+  return outN;
 }
 float texRough(float v,float base){
   if(u_txRough<0.001) return base;
@@ -1024,6 +1029,13 @@ vec3 bg(vec3 rd, vec2 sv){
 
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
+  // DIAG 6/7: the detail map itself, screen-mapped, with no triplanar and no lighting in the way.
+  // The only honest way to ask whether a structure is IN the map or is being made by the read.
+  if(u_diag>5.5){
+    vec2 t6=gl_FragCoord.xy/u_res.y*(u_diag>6.5?4.0:1.0);
+    vec4 s6=texture(u_detail,t6);
+    o=vec4(u_diag>6.5? vec3(s6.a) : s6.xyz, 99.0); return;
+  }
   float f=0.5/tan(u_fov*0.5);        // uv.y spans +/-0.5, so the 0.5 is required or the FOV halves
   vec3 rd=normalize(uv.x*u_rt+uv.y*u_up+f*u_fw), ro=u_ro;
   float dth=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
@@ -1113,6 +1125,18 @@ void main(){
     vec3 p=ro+rd*t, gn=meshHit?meshN:calcN(p), v=-rd;
     vec3 op=objP(p);
     float dRgh; vec3 n=texDetail(op,gn,dRgh);      // textured shading normal + roughness, one pass
+    // DIAGNOSTIC. Shows the triplanar machinery directly instead of its effect on the lighting,
+    // which is the only way to tell a blend artefact from a shading one. Costs nothing when off.
+    if(u_diag>0.5){
+      int dm=int(u_diag+0.5);
+      vec3 dc=vec3(0.);
+      if(dm==1) dc=DIAGW;                              // blend weights as RGB
+      if(dm==2) dc=gn*0.5+0.5;                         // geometric normal
+      if(dm==3) dc=vec3(DIAGD*8.0);                    // how far detail bent the normal
+      if(dm==4) dc=vec3(sqrt(dot(DIAGW,DIAGW)));       // amplitude the blend actually passes
+      if(dm==5) dc=vec3(fract(dRgh*16.0));             // roughness field, contoured
+      o=vec4(dc,t); return;
+    }
     float rgh=texRough(dRgh,u_rough);                 // spatially varying roughness
     // GEOMETRIC SPECULAR AA. A narrow GGX lobe over a high-frequency normal map aliases into
     // crawling white sparkle along every silhouette — one pixel catches the lobe, its neighbour
@@ -1203,7 +1227,34 @@ void main(){
     // diffuse body (fades out for metals) — occluded + self-shadowed.
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
-    vec3 amb=env(n,1.0);          // irradiance, not irradiance times a fudge — see ENERGY above
+    // THE STRIATIONS WERE HERE. This read env() along the DETAIL-PERTURBED normal, and that is
+    // what put contour banding across every large face — four rounds of looking for it in the
+    // bake, the projection and the filtering, when the map was never the problem.
+    //
+    // Measured on a locked pose, high-passed RMS of the lit surface over a 280px patch inside a
+    // flat face (noise floor = the same patch with Detail set to None, 0.665):
+    //     detail micro, room as shipped        1.409     <- the artefact
+    //     detail micro, u_room = 0             1.252     not the wall panels
+    //     detail micro, reflection off         1.391     not the reflection
+    //     detail micro, specular off           1.410     not the specular either
+    //     detail micro, FURNACE (env == 1.0)   0.671     <- floor. It is the environment.
+    // Mip filtering was ruled out in the same run: LINEAR_MIPMAP_LINEAR at 16x, at 1x, plain
+    // LINEAR with no mips and NEAREST_MIPMAP_LINEAR all measured 1.38-1.40. Identical.
+    //
+    // The cause is a category error, not a tuning value. env(d,1.0) is RADIANCE along one
+    // direction; what belongs on the diffuse term is IRRADIANCE, the cosine-weighted integral of
+    // the whole hemisphere, and irradiance is band-limited to about two SH bands — it physically
+    // CANNOT carry detail this fine. Sampling radiance instead hands the diffuse term the room's
+    // full angular structure, and this room is dominated by a vertical gradient plus a 38%
+    // horizon step, so ambient is effectively a steep function of n.y alone. Push n.y around by
+    // an isotropic 2.4-degree micro normal and out comes banding aligned with the contours of
+    // constant n.y — which on a convex form is exactly a set of radial contours.
+    //
+    // A normal map stands for structure BELOW the pixel. Its average normal is the geometric one,
+    // so it has no business moving a hemispherical integral at all: micro detail belongs in the
+    // specular lobe, where the narrow BRDF is what makes it visible, and in AO. n still drives
+    // NoL, the specular and the reflection; the irradiance reads gn, which is what it means.
+    vec3 amb=env(gn,1.0);         // irradiance, not irradiance times a fudge — see ENERGY above
     // The KEY BREATHES. u_pulse already drove the geometry and the backdrop but never the
     // lighting, so the form was scaled by the beat while being lit by a lamp that ignored it.
     // Pulsing the light instead of the shape is the stronger cue: it moves the highlight and the
@@ -2366,6 +2417,25 @@ function springTo(target,dt,f){                                 // f = natural f
 let last=performance.now(), t0=last;
 function frame(){
   requestAnimationFrame(frame);
+  /* ---- MEASUREMENT HOOKS, all console-only, all no-cost when unset ----
+       window.POSE   = {spin, cam}   pins the form and the orbit. Nothing below is a valid A/B
+                                     without it: both move between two captures otherwise, and
+                                     that has silently invalidated comparisons in this file before.
+       window.TFREEZE= seconds       pins the clock and sets dt to 0 (see below).
+       window.QLOCK  = true          freezes the quality governor.
+       window.DIAG   = 1..7          renders the shading intermediates instead of the image:
+                                     1 triplanar weights, 2 geometric normal, 3 detail deviation,
+                                     4 blend RMS, 5 roughness contours, 6 the detail map itself,
+                                     7 the detail map's alpha. 6 and 7 are the only honest way to
+                                     ask whether a structure is IN the map or made by the read.
+       window.DSCL   = k             multiplies the detail tiling. If an artefact scales with it,
+                                     it is the map; if it does not, it is not.
+       window.DWARP  = k             the bake's domain-warp amount, in cells (default 0.95).
+       window.__TAP  = {x,y,w,h}     reads that patch of the DEFAULT framebuffer, once, at the one
+                                     point in the frame where it holds this frame's pixels;
+                                     result lands in window.__TAPOUT. Every readPixels written
+                                     outside that point read a bound FBO or a cleared buffer.
+       window.DX{} / window.DXS{}    per-effect ablation switches, post and surface respectively.  */
   // TFREEZE pins the clock so the camera stops, which is the only way to A/B two builds on the
   // same frame. Companion to QLOCK; both exist because reasoning about render defects instead of
   // measuring them has cost several wrong fixes here.
@@ -2524,6 +2594,10 @@ function frame(){
   // framing distance, height, roll, the dolly on the kick — keeps running, because those are
   // composition decisions rather than "movement the user might want to take over".
   if(autoRotate) camAng += (CM.spin*(0.45+energy*0.45) + 0.008)*dt;
+  // POSE PIN, for measurement only. Every A/B in this file has to compare the SAME frame, and
+  // without this the form and the camera have both moved by the time the second capture lands —
+  // which has invalidated more than one comparison here. window.POSE={spin,cam} holds both.
+  if(window.POSE){ formSpin=window.POSE.spin; camAng=window.POSE.cam; }
   camKick  += ((HITS.low*0.014 + HITS.sub*0.010) - camKick)*(1-Math.exp(-4.0*dt));
   // Drag inertia: the grab ends but the orbit keeps carrying and settles, which is what makes a
   // camera feel like it has weight instead of stopping dead with the pointer.
@@ -2644,7 +2718,8 @@ function frame(){
   gl.uniform1i(US('u_vol'),4);
   gl.uniform1i(US('u_bvhNodes'),5); gl.uniform1i(US('u_bvhTris'),6);
   gl.uniform1i(US('u_detail'),7);
-  gl.uniform1f(US('u_detailOn'),detailTex?1:0); gl.uniform1f(US('u_detailScale'),detailScale);
+  gl.uniform1f(US('u_detailOn'),detailTex?1:0); gl.uniform1f(US('u_detailScale'),detailScale*(window.DSCL||1));
+  gl.uniform1f(US('u_diag'),window.DIAG||0);
   gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
   // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
   // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
@@ -2867,6 +2942,13 @@ function frame(){
     // a blank image. Setting a flag and servicing it at the end of the draw is what makes the
     // capture land on real pixels.
     if(shotPending){ shotPending=false; grabFrame(); }
+    // MEASUREMENT TAP. Same reason as the grab above: this is the only point in the frame where
+    // the default framebuffer is bound AND has this frame's pixels in it. Every readPixels I have
+    // written outside this point read either a bound FBO or a cleared buffer.
+    if(window.__TAP){ const q=window.__TAP; window.__TAP=null;
+      const buf=new Uint8Array(q.w*q.h*4);
+      gl.readPixels(q.x,q.y,q.w,q.h,gl.RGBA,gl.UNSIGNED_BYTE,buf);
+      window.__TAPOUT={x:q.x,y:q.y,w:q.w,h:q.h,px:buf}; }
   }
 }
 
@@ -3111,6 +3193,7 @@ uniform vec2 u_base;        // lattice cells across one tile, coarsest octave (x
 uniform float u_gain;       // per-octave amplitude falloff
 uniform float u_gscale;     // gradient -> tilt scale, solved for by the calibration pass
 uniform float u_rvar;       // roughness swing around neutral
+uniform float u_warp;       // domain-warp amount, in cells
 uniform int u_oct;
 
 // PERIODIC hash: the lattice index is wrapped to the octave's period before hashing, so the
@@ -3180,7 +3263,7 @@ float dheight(vec2 uv){
     vec2 Pw=max(floor(P*0.5+0.5),vec2(2.0));
     vec2 wq=vec2(dvn(uv*Pw,Pw), dvn(uv*Pw+vec2(19.0,7.0),Pw))-0.5;
     // The warp bends ridges off the axes but cannot remove the lattice itself; see dvn().
-    h+=a*dvn((uv+wq*(0.95/P.x))*P, P);
+    h+=a*dvn((uv+wq*(u_warp/P.x))*P, P);
     w+=a; a*=u_gain; P=floor(P*2.0+0.5);   // integer periods keep every octave tileable
   }
   return h/max(w,1e-6);
@@ -3294,6 +3377,7 @@ function bakeDetail(name){
     gl.uniform2f(U('u_size'),N,N);
     gl.uniform2f(U('u_base'),P.base[0],P.base[1]);
     gl.uniform1f(U('u_gain'),P.gain); gl.uniform1f(U('u_rvar'),P.rvar);
+    gl.uniform1f(U('u_warp'), (window.DWARP!==undefined)?window.DWARP:(P.warp!==undefined?P.warp:0.95));
     gl.uniform1i(U('u_oct'),P.oct);
 
     // PASS 1 — calibration. Bake at unit gradient scale, read a 128^2 patch back, and recover
