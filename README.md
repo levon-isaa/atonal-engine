@@ -137,6 +137,42 @@ analysed before a pipeline change returns the old director for ever — silently
 exactly like a renderer bug, with contract fields simply absent on some tracks and not others.
 The server rejects any entry whose version does not match and recomputes.
 
+### How the new signals drive the visuals
+
+Every mapping below was ablated on a frozen peak-energy frame (playback position pinned via
+`startedAt`, clock frozen, noise floor 0) by forcing the curve to 0 and to 1 and diffing the
+frame. The percentage is pixels moved by more than 8 levels.
+
+| signal | drives | measured 0 → 1 |
+|---|---|---|
+| dynamics | the **key:fill ratio** — a dynamic passage gets less fill and is modelled harder; a squashed one gets more and flattens | **9.64%** |
+| tonality | hue of the Auto colourway, ordered round the circle of fifths | **67.3%** at full gate, **7.24%** for this track's actual A minor |
+| atmosphere | gates the volumetric shafts, and `fog` | **4.73%** |
+| release | bloom lifts and contrast eases as tension is let go | **2.36%** |
+| vocals | rim light strength — a voice is the thing sitting in front | **2.04%** |
+| density | surface tooth and grain | **0.2% zoomed, 0% at rest** — see below |
+
+Three of these needed a second attempt, and the reasons are worth keeping.
+
+**Tonality first measured 0.00%.** The rotation was applied in `bgPair()`, which only feeds the
+duotone inks — and the default `Studio` look sets `ink` to 0, so it was multiplied away. The Auto
+background is built *inside* the shader from `u_mood`. Rotating the mood at that single source
+reaches the background, the form's tint and the inks together and keeps them agreeing.
+
+**Dynamics drives the lighting, not the grade.** Pushing contrast crushes the whole frame
+together; changing the key:fill ratio changes how the *object* is lit, which is what a lighting
+cameraman does with a bounce card. It is the strongest of the six for that reason.
+
+**Density is the weakest and stays that way.** It moves the surface tooth and the grain, and both
+are near-invisible at the default framing — the detail map is mip-filtered down so far that
+toggling Detail off entirely is only 1.26%, so a fraction of that is nothing. Widening it and
+adding grain lifted the mean from 0.04 to 0.11 but still crosses 8 levels on no pixel at rest,
+and 0.2% zoomed in. It is honestly wired and honestly faint; making it louder would mean giving
+it a lever it has no business holding.
+
+**Release is on release, not on low tension.** A calm passage should look calm, not blown — the
+bloom lift belongs to the moment of letting go, not to the quiet that follows.
+
 ### How each band drives the visuals
 | band | onset lands as | level sustains as |
 |---|---|---|
