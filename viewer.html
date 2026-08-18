@@ -3184,8 +3184,25 @@ void main(){
    instead would silently drift the moment the octave mix changed, which is how the PNGs ended up
    at 14 degrees without anyone deciding on 14 degrees. */
 const DPRESET={
-  // isotropic; the fine speckle a smooth material actually has
-  micro:    {base:[14,14], oct:4, gain:0.55, tilt:4.0, rvar:0.42},
+  // Isotropic — the fine speckle a smooth material actually has.
+  //
+  // TILT 4.0 -> 2.4. Isolated by ablation on a zoomed frame: with Detail set to None the fine
+  // striations across the large faces vanish entirely, so they are this map and not the geometry,
+  // the shadow or the environment. The cause is the residual anisotropy the bake notes already
+  // record — micro measures 1.44:1 with its peaks at exactly 0 and 90 degrees, the lattice
+  // showing through the domain warp — and the notes also predict the symptom: any directional map
+  // reads as streaking on the large flat faces of an extruded profile. These forms are almost
+  // entirely large flat faces.
+  //
+  // Raising the bake to 8192 made it worse rather than better, which is the part worth recording:
+  // the finer octaves that 2048 was mip-filtering away are now resolved, so the streaking that was
+  // always in the map became visible. More resolution faithfully reproduces a flaw that lower
+  // resolution was hiding.
+  //
+  // Lowering the tilt attacks amplitude rather than direction, which is the honest tradeoff here:
+  // the anisotropy is still 1.44:1, it is simply too shallow to read. Fixing the direction means
+  // a better warp in the bake, which is a bigger change than this one.
+  micro:    {base:[14,14], oct:4, gain:0.55, tilt:2.4, rvar:0.42},
   // brushed, but 1.6:1 rather than the PNG's 2.27:1 — enough to read as a direction, not enough
   // to read as corduroy across a flat face
   machined: {base:[9,14],  oct:4, gain:0.60, tilt:3.2, rvar:0.35},
