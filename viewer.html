@@ -256,6 +256,8 @@ uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
 uniform float u_fill;                  // directional fill leg of the rig; 0 ablates it (DXS.fill)
+uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
+uniform float u_hwlod;                 // 1 = hardware mip selection instead of the analytic one (A/B)
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
@@ -679,15 +681,45 @@ vec3 objP(vec3 p){
 // pow(abs(n),6) triplanar blends where three and one do. The roughness rides in alpha and
 // arrives with the RGB for free. Returns the shading normal; writes the roughness modulation.
 vec3 DIAGW=vec3(0.0); float DIAGD=0.0;      // diagnostic taps, written by texDetail
-vec3 texDetail(vec3 op,vec3 n,out float rghOut){
+/* ANALYTIC RAY DIFFERENTIALS, not the hardware's derivatives. The mip level texture() picks comes
+   from dFdx/dFdy of the coordinate across the pixel quad, and in a raymarcher that derivative is
+   not trustworthy: the quad straddling a silhouette has one lane on the near face and its
+   neighbour on a side band a long way off, and lanes that missed the surface entirely still
+   contribute their garbage op to the difference. So exactly at the silhouette -- where the
+   footprint is largest and the right mip matters most -- the selected level is noise. That is the
+   speckled fringe along the grazing edges, and it is why turning mipmapping off outright CLEANED
+   those edges rather than aliasing them further: no mip at all beats the wrong mip.
+
+   The footprint is available in closed form and needs no derivatives at all. One pixel moves the
+   ray by u_rt/(res.y*f); projected onto the tangent plane at distance t that is
+       dp = t * (dr - rd * dot(dr,n)/dot(rd,n))
+   which is the real elliptical footprint, not a scalar. Passing both axes to textureGrad keeps
+   anisotropic filtering doing its job -- a scalar textureLod would throw the anisotropy away and
+   measurably softened the INTERIOR by 37% as well, which is detail loss, not de-aliasing.
+
+   dot(rd,n) is floored in magnitude so the footprint cannot run away to a flat grey on the last
+   pixel of the silhouette, where that dot product passes through zero. */
+vec3 texDetail(vec3 op,vec3 n,vec3 dox,vec3 doy,out float rghOut){
   rghOut=0.5;
   if(u_detailOn<0.5) return n;
   float s=u_detailScale*u_txScale*0.01;
   vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
   DIAGW=w;
-  vec4 sx=texture(u_detail,op.zy*s);
-  vec4 sy=texture(u_detail,op.xz*vec2(s*u_txAniso,s));
-  vec4 sz=texture(u_detail,op.xy*s);
+  vec2 cx=op.zy*s, cy=op.xz*vec2(s*u_txAniso,s), cz=op.xy*s;
+  vec2 ax=vec2(s*u_txAniso,s);
+  // u_hwlod restores the hardware's own mip selection, for A/B. It is a uniform, so the branch is
+  // coherent across the draw and costs nothing; keeping both paths in ONE shader is the only way
+  // to compare them on the same frame. Comparing across page loads does not work in this viewer:
+  // the variant re-rolls, and the morph and the framing both depend on wall-clock time since
+  // load, so two loads are two different scenes even with POSE and VARPIN pinned.
+  vec4 sx,sy,sz;
+  if(u_hwlod>0.5){
+    sx=texture(u_detail,cx); sy=texture(u_detail,cy); sz=texture(u_detail,cz);
+  } else {
+    sx=textureGrad(u_detail,cx, dox.zy*s,   doy.zy*s);
+    sy=textureGrad(u_detail,cy, dox.xz*ax,  doy.xz*ax);
+    sz=textureGrad(u_detail,cz, dox.xy*s,   doy.xy*s);
+  }
   rghOut=sx.a*w.x+sy.a*w.y+sz.a*w.z;
   if(u_txAmp<0.0005) return n;                 // normal perturbation off; roughness still valid
   vec3 tx=sx.xyz*2.0-1.0;
@@ -1138,7 +1170,14 @@ void main(){
   else{
     vec3 p=ro+rd*t, gn=meshHit?meshN:calcN(p), v=-rd;
     vec3 op=objP(p);
-    float dRgh; vec3 n=texDetail(op,gn,dRgh);      // textured shading normal + roughness, one pass
+    // Ray differentials for the detail fetch. f, t and rd are the frame's own numbers, so this
+    // tracks render scale and FOV with no uniform of its own. objP is a pure rotation, so it
+    // transforms these direction vectors exactly as it transforms the position.
+    float ndv=dot(rd,gn); ndv=(abs(ndv)<0.08)?(ndv<0.0?-0.08:0.08):ndv;
+    vec3 rdx=u_rt/(u_res.y*f), rdy=u_up/(u_res.y*f);
+    vec3 dox=objP(t*(rdx-rd*(dot(rdx,gn)/ndv)));
+    vec3 doy=objP(t*(rdy-rd*(dot(rdy,gn)/ndv)));
+    float dRgh; vec3 n=texDetail(op,gn,dox,doy,dRgh); // textured shading normal + roughness, one pass
     // DIAGNOSTIC. Shows the triplanar machinery directly instead of its effect on the lighting,
     // which is the only way to tell a blend artefact from a shading one. Costs nothing when off.
     if(u_diag>0.5){
@@ -1163,7 +1202,7 @@ void main(){
     // WORSE, not better — but the metric (frame-to-frame pixel change) cannot separate genuine
     // shimmer from sharp reflections legitimately sweeping across a rotating chrome surface, so
     // it could not justify the change either way. Keeping the value that was tuned by eye.
-    float kvar=min(0.030, 0.5*(dot(dnx,dnx)+dot(dny,dny)));
+    float kvar=min(u_kvar, 0.5*(dot(dnx,dnx)+dot(dny,dny)));
     rgh=min(1.0, sqrt(rgh*rgh+kvar));
     float NoV=clamp(dot(n,v),1e-4,1.);
     float fr=pow(1.-NoV,2.6);
@@ -1955,6 +1994,7 @@ const TIERS={
   ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, bake:8192, shutter:0,
            note:'Ultra — supersampled, no adaptation'},
 };
+const KVAR_CAP=0.030;   // see the GEOMETRIC SPECULAR AA note in the shader
 let TIER='high';
 // Last frame's camera and spin, for the reprojection in motionBlur(). Seeded on first use so the
 // opening frame cannot smear from a camera that never existed.
@@ -2043,6 +2083,13 @@ const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 let lastSecKey='';
 function rerollVariant(){
+  // VARPIN neutralises the per-section random variant. It has to exist for the same reason POSE
+  // does: the variant changes the FIELD, so it changes how many march steps a frame costs, and
+  // two builds timed across separate page loads are otherwise being compared on two different
+  // scenes. A frame-time A/B without this is not a comparison. (Learned the hard way: a 73 ms
+  // vs 50 ms result that looked like a clean win was two different variants.)
+  if(window.VARPIN||location.search.indexOf('varpin')>=0){ VART.tilt=0; VART.twist=0; VART.ring=0; VART.wob=0; VART.hue=0.5;
+                     VART.countMul=1; VART.thickMul=1; return; }
   const R=Math.random;
   VART.tilt=(R()-0.5)*0.5;
   VART.twist=(R()-0.5)*0.9;
@@ -2734,6 +2781,8 @@ function frame(){
   gl.uniform1i(US('u_detail'),7);
   gl.uniform1f(US('u_detailOn'),detailTex?1:0); gl.uniform1f(US('u_detailScale'),detailScale*(window.DSCL||1));
   gl.uniform1f(US('u_diag'),window.DIAG||0);
+  gl.uniform1f(US('u_kvar'),(window.KVAR!==undefined)?window.KVAR:KVAR_CAP);
+  gl.uniform1f(US('u_hwlod'),window.HWLOD?1:0);
   gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
   // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
   // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
