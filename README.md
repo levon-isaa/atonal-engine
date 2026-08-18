@@ -120,7 +120,7 @@ raymarch creases.
 
 
 - **Detail** — the surface normal map: `Micro tooth` (default, isotropic) or `Machined`
-  (brushed). **Baked on the GPU at load** into a 2048² RGBA16F texture, not loaded from disk;
+  (brushed). **Baked on the GPU at load** into an 8192² RGBA16F texture, not loaded from disk;
   `assets/detail_*.png` remain only as the fallback for a context without float render targets.
   See *Surface detail* below for why. Sampled
   **triplanar**, since a raymarched SDF has no UVs: three projections along the object axes,
@@ -180,7 +180,33 @@ Two things the bake had to get right that are easy to miss:
 The bake self-calibrates rather than hard-coding a gain: it runs once at unit gradient scale,
 reads the result back, recovers the raw gradient from the encoded normal, and solves for the
 scale that hits the preset's requested mean tilt. Hard-coding would drift silently the moment the
-octave mix changed, which is how the PNGs ended up at 14° without anyone choosing 14°.
+octave mix changed, which is how the PNGs ended up at 14° without anyone choosing 14°. The
+solved scale moves with the resolution — 0.0078 at 2048, 0.0101 at 8192 for the same 4° target —
+which is the calibration doing exactly the job it exists for.
+
+**The bake is now 8192², and the honest account of what that buys is: nothing at the default
+framing, and a real gain when you push in.** At the framing everything above was measured on, one
+detail tile covers 667 px and the map is already minified 3.07× — the mip chain discards the extra
+levels, and measured high-frequency energy over the form is 1.671 at 8192 against 1.672 at 2048,
+i.e. identical. Pushed in to the zoom clamp (`userZoom` 0.45) the same measurement is **2.398 at
+8192 against 2.277 at 2048, +5.2%**, with an A/A repeat of 0.13% — so the gain is well clear of
+noise. That is the regime the resolution is for: 4× the linear detail keeps the tile above 1:1
+until the form fills roughly four times the frame width it does at rest.
+
+**Runtime cost is nil; the cost is memory and bake time.** Interleaved A/B/A at the close framing:
+20.1 fps at 2048, 20.1 at 8192, 20.1 back at 2048 — mip selection means the shader fetches the
+same number of texels either way. The bake itself goes 68 ms → 203 ms, paid once at load and
+again on a Detail change. Memory goes **43 MB → 683 MB** with the mip chain, which is the number
+to watch: that is why the size is negotiated rather than assumed. `texImage2D` does not throw on
+an over-large allocation — it raises a GL error and leaves the texture incomplete, which would
+surface later as a black surface rather than as a failed bake — so the error queue is drained,
+checked, and the FBO tested for completeness before anything is drawn; anything the driver
+refuses is halved and retried down to 512, and the PNG fallback still sits under all of it.
+`window.DETAILN = 2048` before a Detail change pins the size by hand.
+
+Anisotropic filtering was raised 8× → 16× at the same time. At 12× minification the anisotropy
+cap carries more of the result than the texel count does, and the hardware here reports 16 while
+the code was asking for half of it.
 - **Scene** — `Colour field` (default) floats the form in the fluid backdrop with no ground.
   `Studio` puts it in a lit cyclorama with a real floor and a cast shadow.
 - **Look** — the *press grade*, i.e. the label aesthetic. `Studio`, `Label`, `Riso`,

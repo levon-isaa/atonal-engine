@@ -223,6 +223,7 @@ uniform float u_detailOn,u_detailScale;
 uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
+uniform float u_fill;                  // directional fill leg of the rig; 0 ablates it (DXS.fill)
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
@@ -581,14 +582,23 @@ vec3 objP(vec3 p){
    Triplanar because these forms have no UVs — there is nothing to unwrap an implicit surface
    or a bored shell onto. Blend weights are the normal raised to a power, which keeps the
    seams between the three projections tight. */
-vec3 texNormal(vec3 op,vec3 n){
-  if(u_txAmp<0.0005) return n;
+// ONE fetch set, not two. texNormal() and detailRough() were sampling the SAME three texels at
+// the SAME coordinates and each discarding the other's channels -- six fetches and two
+// pow(abs(n),6) triplanar blends where three and one do. The roughness rides in alpha and
+// arrives with the RGB for free. Returns the shading normal; writes the roughness modulation.
+vec3 texDetail(vec3 op,vec3 n,out float rghOut){
+  rghOut=0.5;
   if(u_detailOn<0.5) return n;
   float s=u_detailScale*u_txScale*0.01;
   vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
-  vec3 tx=texture(u_detail,op.zy*s).xyz*2.0-1.0;
-  vec3 ty=texture(u_detail,op.xz*vec2(s*u_txAniso,s)).xyz*2.0-1.0;
-  vec3 tz=texture(u_detail,op.xy*s).xyz*2.0-1.0;
+  vec4 sx=texture(u_detail,op.zy*s);
+  vec4 sy=texture(u_detail,op.xz*vec2(s*u_txAniso,s));
+  vec4 sz=texture(u_detail,op.xy*s);
+  rghOut=sx.a*w.x+sy.a*w.y+sz.a*w.z;
+  if(u_txAmp<0.0005) return n;                 // normal perturbation off; roughness still valid
+  vec3 tx=sx.xyz*2.0-1.0;
+  vec3 ty=sy.xyz*2.0-1.0;
+  vec3 tz=sz.xyz*2.0-1.0;
   // Whiteout blend: perturb the geometric normal inside each projection frame, then combine.
   // Blending the SAMPLED normals first and perturbing once flattens anything facing a corner.
   vec3 bx=vec3(tx.xy+n.zy, abs(tx.z)*n.x);
@@ -598,17 +608,8 @@ vec3 texNormal(vec3 op,vec3 n){
   // u_txAmp stays the material's tilt in radians, so every preset keeps its relative weighting.
   return normalize(mix(n, pn, clamp(u_txAmp*26.0,0.0,1.0)));
 }
-float detailRough(vec3 op,vec3 n){
-  if(u_detailOn<0.5) return 0.5;
-  float s=u_detailScale*u_txScale*0.01;
-  vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
-  return texture(u_detail,op.zy*s).a*w.x
-       + texture(u_detail,op.xz*vec2(s*u_txAniso,s)).a*w.y
-       + texture(u_detail,op.xy*s).a*w.z;
-}
-float texRough(vec3 op,vec3 n,float base){
+float texRough(float v,float base){
   if(u_txRough<0.001) return base;
-  float v=detailRough(op,n);
   return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
 }
 // Normal sampling radius. It must straddle a CELL BOUNDARY of whatever field is being read, or
@@ -707,7 +708,13 @@ float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
 //      the shaded point, so the running minimum does too, and the chord is short enough to bound
 //      the cost. Fixed steps cannot skip the surface here because the step is far below the
 //      penumbra scale this is trying to resolve.
-float calcSha(vec3 p,vec3 l){
+// N is a PARAMETER, not a constant, because the two callers need different budgets. The 128
+// samples exist for the FORM, where the min-over-samples error printed contour bands across the
+// flat faces; the floor was already clean at 40. Gating this on distance from the origin was
+// tried first and bought nothing measurable -- at this framing most of the VISIBLE floor sits
+// inside the 2.6 bounding sphere, so the test excluded almost nothing. Which surface was hit is
+// the thing that actually distinguishes the two cases, and the caller already knows it.
+float calcSha(vec3 p,vec3 l,int N){
   const float R=2.6;
   float b=dot(p,l), c=dot(p,p)-R*R, disc=b*b-c;
   if(disc<0.0) return 1.0;                       // ray misses the bounding sphere: lit
@@ -738,13 +745,15 @@ float calcSha(vec3 p,vec3 l){
   //     not remove the sampling error.
   // Chord-relative even spacing is the efficient distribution and the only thing that moves the
   // error is N. It is bought in STEP.shaN, where the cost measurement is.
-  int N=u_shaN;
   float ds=(t1-t0)/float(N);
   for(int i=0;i<N;i++){
     float t=t0+(float(i)+0.5)*ds;
     float h=mapD(p+l*t);
     if(h<0.0015) return 0.0;
-    r=min(r, 7.0*h/t); }
+    r=min(r, 7.0*h/t);
+    // r only ever decreases, and the result is smoothstep(0,1,r) -- below 0.02 that is 0.0012,
+    // which no amount of further sampling can meaningfully change. Deep shadow stops early.
+    if(r<0.02) break; }
   // The sphere test is itself a hard cutoff, and a hard cutoff is a discontinuity: a ray grazing
   // the sphere takes one sample at h ~ R minus the form's radius, and 7h/t drops below 1 for any
   // shaded point far enough away, so the boundary printed a single crisp arc across the floor.
@@ -994,7 +1003,7 @@ void main(){
     vec3 alb=mix(vec3(0.82),B,0.10);
     vec3 L=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
     vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
-    float sha=calcSha(p,L);                          // cast shadow
+    float sha=calcSha(p,L,min(u_shaN,40));           // cast shadow: the floor never needed more
     float occ=calcAO(p,gn);                          // contact darkening
     vec3 amb=env(gn,1.0)*0.95;
     // Contact shadow has to be DARK right under the form or it reads as a grey smudge. Both
@@ -1006,8 +1015,8 @@ void main(){
   else{
     vec3 p=ro+rd*t, gn=meshHit?meshN:calcN(p), v=-rd;
     vec3 op=objP(p);
-    vec3 n=texNormal(op,gn);                       // textured shading normal
-    float rgh=texRough(op,gn,u_rough);                // spatially varying roughness
+    float dRgh; vec3 n=texDetail(op,gn,dRgh);      // textured shading normal + roughness, one pass
+    float rgh=texRough(dRgh,u_rough);                 // spatially varying roughness
     // GEOMETRIC SPECULAR AA. A narrow GGX lobe over a high-frequency normal map aliases into
     // crawling white sparkle along every silhouette — one pixel catches the lobe, its neighbour
     // misses it entirely. Widen roughness by how fast the shading normal turns across this
@@ -1093,7 +1102,7 @@ void main(){
     vec3 rimC=mix(vec3(0.28,0.48,1.00), vec3(1.00,0.46,0.28), u_valence);
     float NoL=max(0.,dot(n,L))*(1.0-u_furnace);   // furnace: uniform environment only, no sources
     float occ=mix(1.0,calcAO(p,gn),u_dxs.x)*(1.0-u_furnace)+u_furnace;
-    float sha=(NoL>0.001)?mix(1.0,calcSha(p,L),u_dxs.y):1.0;
+    float sha=(NoL>0.001)?mix(1.0,calcSha(p,L,u_shaN),u_dxs.y):1.0;   // the form: full budget
     // diffuse body (fades out for metals) — occluded + self-shadowed.
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
@@ -1106,9 +1115,38 @@ void main(){
     // together, which reads as an exposure flicker, not as a light.
     // kD carries base*(1-metal) already, and it is what is LEFT after the specular takes its
     // share. Fms*Ems is the multiple-scattering term riding along with the irradiance.
+    // FILL — the missing leg of the rig. Before this, "fill" was env() irradiance alone, which
+    // arrives from every direction at once: it lifts an unlit face without telling you which way
+    // that face points, so the form reads flat exactly where it should be turning away. A fill
+    // has to have a DIRECTION to shape anything.
+    //
+    // Placed opposite the key in azimuth and lower in elevation, which is where a bounce card
+    // actually sits, and tinted opposite the key (warm key -> cool fill) so the shadow side
+    // separates by hue as well as by value.
+    //
+    // WRAPPED, not Lambert: (NoF+w)/(1+w) is the cheap stand-in for a large area source, and the
+    // width is the whole point of the leg — a hard fill just reads as a second key and gives the
+    // form two competing terminators. It carries NO shadow ray: a fill that is itself occluded
+    // fills nothing, and the ray would cost as much as the key's while doing far less.
+    vec3  F=normalize(vec3(-L.x, max(0.12, L.y*0.30), -L.z));
+    vec3  fillC=mix(vec3(1.00,0.86,0.66), vec3(0.72,0.82,1.00), u_warmth);  // opposite the key
+    float wrap=0.55;
+    float NoF=max(0.,(dot(n,F)+wrap)/(1.0+wrap))*(1.0-u_furnace);
+    // Ambient is trimmed by what the fill now supplies, so the rig redistributes light rather
+    // than adding a fourth source on top and lifting the whole frame.
+    // Trim only slightly. At 0.82 the ambient this replaced was worth more than the fill puts
+    // back on faces pointing away from F, and the form came out 8 levels DARKER overall with its
+    // shadows 10 deeper — a fill that darkens is not a fill.
+    // Swept against a silhouette-masked luminance histogram of the form. Shadow-side shaping
+    // (std dev over the darker half) rises monotonically with the fill — 0%, 2.3%, 5.4%, 8.3%,
+    // 10.9% — while the 95th percentile sits at 231.0 +/- 0.1 the whole way: the leg models the
+    // turned-away side without touching a single highlight, which is the test for a fill. This
+    // is the 5.4% point. DXS.fill scales it, so the sweep is reproducible from the console.
+    float ambK=mix(1.0,0.90,u_fill);
     vec3 c=kD*( keyC*(0.95*u_keyPulse*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
-              + amb*mix(0.22,1.0,occ) )
-          + Fms*Ems*amb*mix(0.22,1.0,occ);
+              + fillC*(0.68*u_fill*NoF)*mix(0.30,1.0,occ)
+              + amb*ambK*mix(0.22,1.0,occ) )
+          + Fms*Ems*amb*ambK*mix(0.22,1.0,occ);
     // emotional rim: swells with epicness/arousal, colour from valence
     // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
     // not to zero, because it is how the section's valence reaches the form at all.
@@ -1154,7 +1192,7 @@ void main(){
         float rNoL=max(0.0,dot(rn,L));
         // Shaded with the SAME material terms as the primary hit, so the reflected body reads as
         // the same object rather than as a grey proxy pasted into the surface.
-        vec3 rc = base*( keyC*(0.95*rNoL*mix(0.35,1.0,calcSha(hp,L)))*mix(0.35,1.0,rAO)
+        vec3 rc = base*( keyC*(0.95*rNoL*mix(0.35,1.0,calcSha(hp,L,min(u_shaN,40))))*mix(0.35,1.0,rAO)
                        + env(rn,1.0)*1.22*mix(0.22,1.0,rAO) );
         // one cheap gloss term so the reflected surface is not flat matte inside the reflection
         rc += env(reflect(R,rn), min(1.0,rgh+0.22))*0.22*mix(0.3,1.0,rAO);
@@ -1310,6 +1348,7 @@ uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
 uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
 uniform float u_rays; uniform vec2 u_rayPos;   // volumetric shafts: strength, light in screen uv
+uniform float u_rayThr;                        // the shafts' own knee — see godrays()
 uniform float u_dbg;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
@@ -1368,10 +1407,23 @@ vec3 godrays(vec2 uv){
   // so the shafts would silently vanish on exactly the machines that most need the cheap path.
   float lod=u_mip>0.5?2.0:0.0;
   vec2 delta=(uv-u_rayPos)*(0.62/float(RAY_N));
-  vec2 c=uv; float illum=1.0; vec3 sum=vec3(0.);
+  // SHAFTS NEED A LOWER GATE THAN BLOOM. Reading u_brt alone is what made this invisible even
+  // with the emitter in reach: that buffer is thresholded at u_thr ~2.59, raised deliberately to
+  // kill a ring around the silhouette, and MEASURED it leaves 0.082% of its pixels above 0.01
+  // with a mean of 0.00019 — averaging 20 taps of it returns nothing. Bloom wants that gate;
+  // shafts do not. So they take their own knee off the HDR buffer as well, and keep u_brt's
+  // contribution on top for genuinely blown speculars. Still a threshold and not the raw image:
+  // gathering every mid-tone is what turns shafts into a smear rather than into light.
+  // The start is jittered by a per-pixel hash so 20 taps do not print a step ladder along each
+  // ray — the same trick the dither uses, inlined because bayer() is declared further down.
+  float jit=fract(sin(dot(uv,vec2(12.9898,78.233)))*43758.5453);
+  vec2 c=uv-delta*jit; float illum=1.0; vec3 sum=vec3(0.);
   for(int i=0;i<RAY_N;i++){
     c-=delta; illum*=0.93;                       // decay per step
-    sum+=textureLod(u_brt,clamp(c,vec2(0.),vec2(1.)),lod).rgb*illum;
+    vec2 cc=clamp(c,vec2(0.),vec2(1.));
+    vec3 hc=texture(u_tex,cc).rgb;
+    float hl=smoothstep(u_rayThr,u_rayThr*2.2,dot(hc,vec3(0.2126,0.7152,0.0722)));
+    sum+=(textureLod(u_brt,cc,lod).rgb + hc*hl)*illum;
   }
   // Fade with distance from the source: without this the far corners of a wide frame collect a
   // flat lift that reads as fog rather than as shafts.
@@ -1542,7 +1594,7 @@ addEventListener('resize',resize);resize();
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
 const DX={bloom:1,chroma:1,sharpen:1,thr:1};   // per-term ablation switches for measuring edge artefacts
-const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0};  // ...and for the scene pass; see u_dxs / u_furnace
+const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
    The governor trades quality for frame rate, which is right for playback and wrong when the
@@ -2275,6 +2327,7 @@ function frame(){
   gl.uniform1f(US('u_surf'),surfT);
   gl.uniform4f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.disp,DXS.twoTone);
   gl.uniform1f(US('u_furnace'),DXS.furnace?1:0);
+  gl.uniform1f(US('u_fill'),DXS.fill);
   drawFS(aScene);
 
   if(floatOK){
@@ -2331,8 +2384,25 @@ function frame(){
       rayX=((Lx*rx+Ly*ry+Lz*rz)/s)*(H/W)+0.5;   // uv.x is scaled by res.y, hence H/W here
       rayY=((Lx*ux+Ly*uy+Lz*uz)/s)+0.5;
       rayVis=Math.min(1,(LoF-0.05)/0.35);       // ease in as it swings into frame, never a pop
+      // CLAMP THE SOURCE TO THE FRAME EDGE. The key sits high above the camera's view direction,
+      // so its projected position lands 2-3 frame heights above the top of frame at EVERY
+      // azimuth — measured 1.79 to 2.32 from the nearest on-screen pixel, against a falloff that
+      // is exactly zero past 1.15. So every shaft was being gathered and then multiplied by
+      // nothing: the toggle moved 0.02% of pixels against a 0.03% noise floor. Clamping the
+      // emitter to just outside the frame is what screen-space god rays do when the source
+      // leaves view — it preserves the DIRECTION the shafts run, which is the whole read, while
+      // putting them back inside the reach of the falloff. Strength eases down with how far the
+      // true light is from where it is being drawn, so nothing pops as it swings away.
+      const MG=0.55;
+      const cx=Math.max(-MG,Math.min(1+MG,rayX)), cy=Math.max(-MG,Math.min(1+MG,rayY));
+      const off=Math.hypot(rayX-cx,rayY-cy);
+      rayVis*=1/(1+off*off*0.6);
+      rayX=cx; rayY=cy;
     }
     gl.uniform2f(UP('u_rayPos'),rayX,rayY);
+    // Well below bloom's 2.59: high enough to exclude the backdrop and the form's mid-tones,
+    // low enough that the lit edge of the form actually casts something.
+    gl.uniform1f(UP('u_rayThr'),0.85);
     // Air and epicness drive it: shafts are the "big moment" effect, and the high band is what
     // reads as light in the air. Kept low — this sits on top of a bloom that already lifts the
     // same pixels, and doubling up there is how a render turns milky.
@@ -2680,19 +2750,45 @@ let dbakeP=null, dbakeF=null, dbakeA=-1, dbakeSize=0;
 // Set by the bake so a defect can be traced to what was actually uploaded rather than to what
 // the preset asked for. Read it from the console.
 window.__DBAKE=null;
+/* BAKE RESOLUTION. 2048 was measured against a form filling 1474 canvas px, where one detail
+   tile covers 667 px — 3.07x minification, comfortably inside what mips and anisotropy handle.
+   The target is now 8192, and it is worth being precise about what that buys: at the SAME
+   framing it buys nothing visible, because the mip chain discards the extra levels. It buys
+   headroom for the camera pushing in, which is where 2048 ran out — at 4x the linear detail
+   the tile stays above 1:1 until the form fills roughly four times the frame width it does now.
+
+   The cost is memory and it is not small: 8192^2 RGBA16F is 537 MB, 683 MB once the mip chain
+   is built, against 43 MB at 2048. So the size is NEGOTIATED rather than assumed. A too-large
+   texImage2D does not throw — it raises a GL error and leaves the texture incomplete, which
+   would surface later as a black surface rather than as a failed bake — so the error queue is
+   drained first, checked after, and the framebuffer tested for completeness before anything is
+   drawn into it. Anything the driver refuses is halved and retried, down to 512. Set
+   window.DETAILN before a Detail change to pin a size by hand. */
+const DETAIL_TARGET = 8192;
 function bakeDetail(name){
   const P=DPRESET[name]; if(!P) return false;
   const maxDim=gl.getParameter(gl.MAX_TEXTURE_SIZE)||2048;
-  const N=Math.min(2048,maxDim);
-  if(N<512) return false;                       // below the PNGs' own size there is nothing to win
+  const t0=performance.now();
   try{
     if(!dbakeP){ dbakeP=prog(VERT,DBAKE_FS); dbakeA=gl.getAttribLocation(dbakeP,'p'); }
     if(!detailTex) detailTex=gl.createTexture();
     if(!dbakeF) dbakeF=gl.createFramebuffer();
     gl.bindTexture(gl.TEXTURE_2D,detailTex);
-    if(dbakeSize!==N){
-      if(floatOK) gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,N,N,0,gl.RGBA,gl.HALF_FLOAT,null);
-      else        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8 ,N,N,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+    // Negotiate once; later bakes (micro <-> machined) reuse the size already agreed.
+    let N=dbakeSize;
+    if(!N){
+      for(let want=Math.min(window.DETAILN||DETAIL_TARGET,maxDim); want>=512; want>>=1){
+        while(gl.getError()!==gl.NO_ERROR){}          // drain, so the check below is ours
+        if(floatOK) gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,want,want,0,gl.RGBA,gl.HALF_FLOAT,null);
+        else        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8 ,want,want,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+        if(gl.getError()!==gl.NO_ERROR) continue;     // driver refused this size — halve and retry
+        gl.bindFramebuffer(gl.FRAMEBUFFER,dbakeF);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,detailTex,0);
+        const ok=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+        gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+        if(ok){ N=want; break; }
+      }
+      if(!N) throw new Error('no bakeable size');     // the PNG fallback below still covers this
       dbakeSize=N;
     }
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
@@ -2736,12 +2832,13 @@ function bakeDetail(name){
     gl.generateMipmap(gl.TEXTURE_2D);
     const ext=gl.getExtension('EXT_texture_filter_anisotropic');
     if(ext) gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,
-                             Math.min(8,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+                             Math.min(16,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
     gl.bindTexture(gl.TEXTURE_2D,null);
     const err=gl.getError();
     if(err!==gl.NO_ERROR) throw new Error('GL '+err);
     detailName=name;
-    window.__DBAKE={name,size:N,fmt:floatOK?'RGBA16F':'RGBA8',tiltDeg:P.tilt,gscale:+gscale.toFixed(4)};
+    window.__DBAKE={name,size:N,fmt:floatOK?'RGBA16F':'RGBA8',tiltDeg:P.tilt,gscale:+gscale.toFixed(4),
+                    mb:+((N*N*(floatOK?8:4)*4/3)/1048576).toFixed(0),ms:+(performance.now()-t0).toFixed(0)};
     return true;
   }catch(e){
     console.warn('detail bake failed, falling back to the PNG maps:',e.message);
@@ -2769,7 +2866,7 @@ function loadDetail(name){
       gl.generateMipmap(gl.TEXTURE_2D);
       const ext=gl.getExtension('EXT_texture_filter_anisotropic');
       if(ext) gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,
-                               Math.min(8,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+                               Math.min(16,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
       gl.bindTexture(gl.TEXTURE_2D,null);
       detailName=name; ok(detailTex);
     };
