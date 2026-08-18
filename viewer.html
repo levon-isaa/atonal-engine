@@ -260,7 +260,21 @@ uniform float u_fill;                  // directional fill leg of the rig; 0 abl
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
 float h31(vec3 p){p=fract(p*.1031);p+=dot(p,p.zyx+31.32);return fract((p.x+p.y)*p.z);}
-float n3(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*(3.-2.*f);
+// QUINTIC interpolant, not cubic smoothstep — and this is the "low poly" faceting.
+//
+// This noise displaces the SDF, so what the shading reads is not the field but its GRADIENT, and
+// how the gradient VARIES across a pixel is the second derivative. 3t^2-2t^3 is C1 only: its
+// second derivative jumps at every lattice boundary, so the normal is continuous but kinked, and
+// a kinked normal on a smooth body is exactly a flat facet with a straight edge. The displacement
+// runs at 2.0-4.8 cells per unit, which puts those cells at 30-60 screen px at working framing —
+// the size of the polygons that were visible on the Clover.
+//
+// 6t^5-15t^4+10t^3 has zero first AND second derivative at both ends, so the cells join with no
+// crease. The bake shader worked this out for the detail map and says so in its own comment; the
+// same argument applies with far more force here, where the field is the geometry rather than a
+// texture. Isolated by ablation: DXS.disp = 0 removed the faceting completely and nothing else
+// did.
+float n3(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*f*(f*(f*6.-15.)+10.);
   float a=h31(i),b=h31(i+vec3(1,0,0)),c=h31(i+vec3(0,1,0)),d=h31(i+vec3(1,1,0));
   float e=h31(i+vec3(0,0,1)),g=h31(i+vec3(1,0,1)),hh=h31(i+vec3(0,1,1)),k=h31(i+vec3(1,1,1));
   return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,g,f.x),mix(hh,k,f.x),f.y),f.z);}
@@ -3291,23 +3305,28 @@ void main(){
 const DPRESET={
   // Isotropic — the fine speckle a smooth material actually has.
   //
-  // TILT 4.0 -> 2.4. Isolated by ablation on a zoomed frame: with Detail set to None the fine
-  // striations across the large faces vanish entirely, so they are this map and not the geometry,
-  // the shadow or the environment. The cause is the residual anisotropy the bake notes already
-  // record — micro measures 1.44:1 with its peaks at exactly 0 and 90 degrees, the lattice
-  // showing through the domain warp — and the notes also predict the symptom: any directional map
-  // reads as streaking on the large flat faces of an extruded profile. These forms are almost
-  // entirely large flat faces.
+  // TILT: 4.0 -> 2.4 -> 4.0 again. The cut to 2.4 was made to suppress the striations, on the
+  // reading that they were this map's residual anisotropy. They were not: they were the diffuse
+  // irradiance term sampling env() along the perturbed normal, which is fixed at its own site.
+  // Lowering the tilt worked at the time only because it shrank the input to that amplifier.
+  //
+  // With the amplifier gone the tilt is free to be chosen on its own merits again, and 4.0 is
+  // where it was before. Measured at the same pinned pose, high-passed RMS over a 300x650 patch
+  // of the large extruded face, floor (Detail = None) 1.68:
+  //     2.4    2.43     the artefact-era value: barely above the floor, no material read
+  //     3.2    2.82
+  //     4.0    3.32     restored
+  //     6.0    4.52     overshoots -- long streaks across the face, clearly visible
+  //     13.0   ~8       the PNGs' own level; the notes below already call that gravel
+  // The streaking at 6 is not a bug to chase: an isotropic perturbation entering diffuse through
+  // dot(dn, L) is projected onto ONE direction, so it elongates perpendicular to the key. That is
+  // what every normal map does. It just should not be loud enough to see on a satin surface.
   //
   // Raising the bake to 8192 made it worse rather than better, which is the part worth recording:
   // the finer octaves that 2048 was mip-filtering away are now resolved, so the streaking that was
   // always in the map became visible. More resolution faithfully reproduces a flaw that lower
   // resolution was hiding.
-  //
-  // Lowering the tilt attacks amplitude rather than direction, which is the honest tradeoff here:
-  // the anisotropy is still 1.44:1, it is simply too shallow to read. Fixing the direction means
-  // a better warp in the bake, which is a bigger change than this one.
-  micro:    {base:[14,14], oct:4, gain:0.55, tilt:2.4, rvar:0.42},
+  micro:    {base:[14,14], oct:4, gain:0.55, tilt:4.0, rvar:0.42},
   // brushed, but 1.6:1 rather than the PNG's 2.27:1 — enough to read as a direction, not enough
   // to read as corduroy across a flat face
   machined: {base:[9,14],  oct:4, gain:0.60, tilt:3.2, rvar:0.35},
@@ -3396,7 +3415,8 @@ function bakeDetail(name){
     const meanG=ng?sg/ng:1;
     // atan is linear to within 0.3% at these angles, so one correction lands the target; there is
     // no reason to iterate.
-    const gscale=Math.tan(P.tilt*Math.PI/180)/Math.max(1e-6,meanG);
+    const tiltDeg=(window.DTILT!==undefined)?window.DTILT:P.tilt;   // console override, for tuning
+    const gscale=Math.tan(tiltDeg*Math.PI/180)/Math.max(1e-6,meanG);
 
     // PASS 2 — the real bake.
     gl.uniform1f(U('u_gscale'),gscale);
@@ -3411,7 +3431,7 @@ function bakeDetail(name){
     const err=gl.getError();
     if(err!==gl.NO_ERROR) throw new Error('GL '+err);
     detailName=name;
-    window.__DBAKE={name,size:N,fmt:floatOK?'RGBA16F':'RGBA8',tiltDeg:P.tilt,gscale:+gscale.toFixed(4),
+    window.__DBAKE={name,size:N,fmt:floatOK?'RGBA16F':'RGBA8',tiltDeg,gscale:+gscale.toFixed(4),
                     mb:+((N*N*(floatOK?8:4)*4/3)/1048576).toFixed(0),ms:+(performance.now()-t0).toFixed(0)};
     return true;
   }catch(e){
