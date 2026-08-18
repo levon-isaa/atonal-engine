@@ -1440,6 +1440,65 @@ vec3 godrays(vec2 uv){
 const float BAY[16]=float[16](0.,8.,2.,10.,12.,4.,14.,6.,3.,11.,1.,9.,15.,7.,13.,5.);
 float bayer(vec2 p){ivec2 i=ivec2(mod(p,4.0));return BAY[i.y*4+i.x]/16.0-0.46875;}
 mat2 rot2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+
+/* ======================= MOTION BLUR =======================
+   REPROJECTION, not accumulation. Temporal accumulation was implemented here once, measured, and
+   removed — it trails on every cut and needs a history buffer that the adaptive render scale
+   invalidates the moment it resizes. This instead reconstructs where each pixel WAS one frame
+   ago and blurs along that vector, which is a pure function of the current frame: nothing to
+   invalidate, nothing to trail, and correct through a resize.
+
+   The reconstruction is exact rather than approximated from a screen-space heuristic, because
+   every quantity it needs is already known: alpha carries the ray's t, so the world point is
+   ro + rd*t; the object's motion is a rotation about the tilted Y axis by the spin delta; and the
+   previous camera basis is simply last frame's. Undo the object's rotation, project with the
+   previous camera, and the difference is the velocity. Camera orbit and object spin both fall out
+   of the same expression — no separate cases.
+
+   Depth >= 17.0 is the miss sentinel the debug mask uses. Background pixels skip the object
+   rotation and reproject on camera motion alone, which is what makes the backdrop shear with an
+   orbit while the form smears with its own spin. */
+uniform vec3 u_mbRo,u_mbRt,u_mbUp,u_mbFw;
+uniform vec3 u_mbRoP,u_mbRtP,u_mbUpP,u_mbFwP;
+uniform float u_mbFov,u_mbSpin,u_mbSpinP,u_mbTilt,u_shutter;
+const int MB_N=8;
+
+vec2 mbVel(vec2 uv,float depth){
+  float asp=u_res.x/u_res.y;
+  float f=0.5/tan(u_mbFov*0.5);
+  vec2 sv=(uv-0.5)*vec2(asp,1.0);                  // mirrors the scene's (frag-0.5*res)/res.y
+  vec3 rd=normalize(sv.x*u_mbRt+sv.y*u_mbUp+f*u_mbFw);
+  float d=min(depth,40.0);                         // a miss still reprojects, just from far away
+  vec3 wp=u_mbRo+rd*d;
+  float ds=u_mbSpin-u_mbSpinP;
+  if(depth<17.0 && abs(ds)>1e-7){                  // on the form: undo its own rotation too
+    wp.yz*=rot2(u_mbTilt);                         // same order the field applies it in
+    wp.xz*=rot2(ds);
+    wp.yz*=rot2(-u_mbTilt);
+  }
+  vec3 v=wp-u_mbRoP;
+  float zf=dot(v,u_mbFwP);
+  if(zf<1e-3) return vec2(0.);                     // behind the previous camera: no valid vector
+  vec2 sv2=vec2(dot(v,u_mbRtP),dot(v,u_mbUpP))*(f/zf);
+  return uv-(sv2/vec2(asp,1.0)+0.5);
+}
+
+vec3 motionBlur(vec2 uv,vec3 base,float depth){
+  if(u_shutter<0.001) return base;
+  vec2 vel=mbVel(uv,depth)*u_shutter;
+  float len=length(vel);
+  if(len<0.0006) return base;                      // below a pixel: blurring is pure cost
+  vel*=min(1.0,0.05/len);                          // cap the smear at 5% of the frame
+  // Jittered taps. Eight evenly spaced samples of a moving edge print eight copies of it; the
+  // per-pixel offset turns that ghosting into noise the grain already covers.
+  float jit=fract(sin(dot(uv,vec2(12.9898,78.233)))*43758.5453);
+  vec3 sum=base; float w=1.0;
+  for(int i=1;i<MB_N;i++){
+    float k=(float(i)+jit)/float(MB_N);
+    sum+=texture(u_tex,clamp(uv-vel*k,vec2(0.),vec2(1.))).rgb; w+=1.0;
+  }
+  return sum/w;
+}
 // two-ink separation ramp: paper black -> ink A -> ink B -> blown white
 vec3 duo(float l){
   vec3 sh=vec3(0.012,0.012,0.017);
@@ -1467,6 +1526,7 @@ void main(){
     col=(texture(u_tex,uv+vec2(-h.x,-h.y)).rgb+texture(u_tex,uv+vec2(h.x,-h.y)).rgb
         +texture(u_tex,uv+vec2(-h.x, h.y)).rgb+texture(u_tex,uv+vec2(h.x, h.y)).rgb)*0.25;
   } else col=fxaa(uv,t);
+  col=motionBlur(uv,col,texture(u_tex,uv).a);
   // DEPTH OF FIELD REMOVED — measured out, not opinion. Its entire visible effect was the halo
   // the user kept reporting around the silhouette. Ablating it and differencing frames on a frozen
   // camera, by distance from the exact depth-derived silhouette:
@@ -1598,7 +1658,7 @@ addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
-const DX={bloom:1,chroma:1,sharpen:1,thr:1,rays:1};   // per-term ablation switches for measuring edge artefacts
+const DX={bloom:1,chroma:1,sharpen:1,thr:1,rays:1,mblur:1};   // per-term ablation switches for measuring edge artefacts
 const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
@@ -1620,14 +1680,17 @@ window.DX=DX; window.DXS=DXS;
      rays    the volumetric shafts, the single most expensive post term.
      bake    detail map resolution — 8192 is 683MB, which a Preview session has no use for. */
 const TIERS={
-  preview:{label:'Preview', scale:0, dpr:0.72, shaN:40,  near:1.70, far:2.05, rays:0, bake:2048,
+  preview:{label:'Preview', scale:0, dpr:0.72, shaN:40,  near:1.70, far:2.05, rays:0, bake:2048, shutter:0,
            note:'Preview — fast'},
-  high:   {label:'High',    scale:0, dpr:1.00, shaN:128, near:1.45, far:1.75, rays:1, bake:8192,
+  high:   {label:'High',    scale:0, dpr:1.00, shaN:128, near:1.45, far:1.75, rays:1, bake:8192, shutter:0.5,
            note:'High — shadows, shafts, adaptive scale'},
-  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, shaN:200, near:1.25, far:1.55, rays:1, bake:8192,
+  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, shaN:200, near:1.25, far:1.55, rays:1, bake:8192, shutter:0.8,
            note:'Ultra — supersampled, no adaptation'},
 };
 let TIER='high';
+// Last frame's camera and spin, for the reprojection in motionBlur(). Seeded on first use so the
+// opening frame cannot smear from a camera that never existed.
+let MBP=null;
 function applyTier(name){
   const t=TIERS[name]; if(!t) return;
   TIER=name;
@@ -2469,6 +2532,23 @@ function frame(){
     gl.uniform1f(UP('u_ssRatio'),ssR);
     // focus on the form itself; everything behind it falls away into a soft wash
     gl.uniform1f(UP('u_dbg'),window.DBGMASK?1:0);
+    // ---- motion blur: this frame's camera, and last frame's ----
+    // Shutter is per tier, and dt-normalised to 60fps: velocity is measured PER FRAME, so on a
+    // 30fps machine each frame covers twice the distance and an un-normalised shutter would
+    // double the smear exactly where the frame rate can least afford it. TFREEZE sets dt to 0,
+    // which correctly parks the shutter at zero and keeps A/B frames comparable.
+    if(!MBP) MBP={ro:[roX,roY,roZ],rt:[rx,ry,rz],up:[ux,uy,uz],fw:[fx,fy,fz],spin:spin};
+    gl.uniform3f(UP('u_mbRo'),roX,roY,roZ);  gl.uniform3f(UP('u_mbRt'),rx,ry,rz);
+    gl.uniform3f(UP('u_mbUp'),ux,uy,uz);     gl.uniform3f(UP('u_mbFw'),fx,fy,fz);
+    gl.uniform3f(UP('u_mbRoP'),MBP.ro[0],MBP.ro[1],MBP.ro[2]);
+    gl.uniform3f(UP('u_mbRtP'),MBP.rt[0],MBP.rt[1],MBP.rt[2]);
+    gl.uniform3f(UP('u_mbUpP'),MBP.up[0],MBP.up[1],MBP.up[2]);
+    gl.uniform3f(UP('u_mbFwP'),MBP.fw[0],MBP.fw[1],MBP.fw[2]);
+    gl.uniform1f(UP('u_mbFov'),fovY);
+    gl.uniform1f(UP('u_mbSpin'),spin); gl.uniform1f(UP('u_mbSpinP'),MBP.spin);
+    gl.uniform1f(UP('u_mbTilt'),VAR.tilt);
+    gl.uniform1f(UP('u_shutter'),(TIERS[TIER].shutter||0)*Math.min(2.5,dt*60)*(DX.mblur!==undefined?DX.mblur:1));
+    MBP={ro:[roX,roY,roZ],rt:[rx,ry,rz],up:[ux,uy,uz],fw:[fx,fy,fz],spin:spin};
     // underground grade: darker, grittier, higher contrast
     // RELEASE -> the exhale. Bloom lifts as tension is actively let go, which is the payoff
     // frame. Deliberately on RELEASE and not on low tension: a calm passage should look calm,

@@ -300,6 +300,51 @@ the code was asking for half of it.
   Solar / Mono, or set the two colours by hand. The palette also feeds the duotone inks,
   so the whole frame stays on one colourway.
 
+## Motion blur
+
+**Reprojection, not accumulation.** Temporal accumulation was implemented here once, measured and
+removed (`0130974`) — it trails on every cut and needs a history buffer that the adaptive render
+scale invalidates the moment it resizes. This reconstructs where each pixel *was* one frame ago
+and blurs along that vector, which is a pure function of the current frame: nothing to invalidate,
+nothing to trail, correct through a resize.
+
+The reconstruction is exact rather than a screen-space heuristic, because everything it needs is
+already known. Alpha carries the ray's `t`, so the world point is `ro + rd*t`; the object's motion
+is a rotation about the tilted Y axis by the spin delta; the previous camera basis is last frame's.
+Undo the object rotation, project with the previous camera, and the difference is the velocity —
+camera orbit and object spin fall out of the same expression with no separate cases. Pixels past
+the `17.0` miss sentinel skip the object rotation and reproject on camera motion alone, which is
+what makes the backdrop shear with an orbit while the form smears with its own spin.
+
+Validated by holding the geometry perfectly still and telling the shader the form had rotated by a
+known delta since the last frame — the image is then reproducible and the blur is the only
+variable:
+
+| spin delta (rad/frame) | pixels moved | softening |
+|---|---|---|
+| 0.02 | 0.66% | 0.1% |
+| 0.06 | 1.56% | 10.5% |
+| 0.15 | 2.61% | 17.4% |
+| 0.35 | 3.24% | 19.7% |
+
+Monotonic in velocity, which is the property that matters. **And it is a no-op when nothing
+moves**: with spin and camera both pinned, blur on against blur off measured 0.80 mean / 0.10% of
+pixels against a same-setting drift baseline of 0.76 / 0.06% — indistinguishable, so a held frame
+is not being quietly softened.
+
+Shutter is per tier (Preview 0, High 0.5, Ultra 0.8) and **dt-normalised to 60fps**: velocity is
+measured per *frame*, so on a 30fps machine each frame covers twice the ground, and an
+un-normalised shutter would double the smear exactly where the frame rate can least afford it.
+Taps are jittered per pixel — eight evenly spaced samples of a moving edge print eight copies of
+it, and the offset turns that ghosting into noise the grain already covers. The smear is capped at
+5% of the frame.
+
+Cost is not quoted here because it could not be measured cleanly: over six-frame medians the
+blur-off A/A spread was 49.5 against 37.5 fps, wider than the difference to blur-on at 38.6, so
+the governor and thermal drift dominate at this sample size. What can be said is that both early
+-outs fire — zero shutter and sub-pixel velocity both return before any tap — so a still frame
+pays nothing.
+
 ## Quality tiers
 
 `Preview · High · Ultra`, replacing the old `Auto / Rays / Surface` row. Those three asked the
