@@ -300,6 +300,35 @@ the code was asking for half of it.
   Solar / Mono, or set the two colours by hand. The palette also feeds the duotone inks,
   so the whole frame stays on one colourway.
 
+## Quality tiers
+
+`Preview · High · Ultra`, replacing the old `Auto / Rays / Surface` row. Those three asked the
+viewer to understand a render-scale governor, a volumetric toggle and a normal-map switch in order
+to answer "make it look better", and two of the three were named after their implementation. Each
+tier is now a complete point on the cost/quality curve, so the axes move together and cannot be
+left in a nonsensical combination — supersampled, with the shadow budget of a preview.
+
+| | render scale | shadow samples | march step | shafts | detail bake | measured |
+|---|---|---|---|---|---|---|
+| Preview | governor capped at 0.72 | 40 | 1.70 | off | 2048 (43 MB) | 5.2 Mpx, **59.3 fps** |
+| High | governor to 1.0 | 128 | 1.45 | on | 8192 (683 MB) | 5.3 Mpx, **41.2 fps** |
+| Ultra | 1.35 fixed, no adaptation | 200 | 1.25 | on | 8192 (683 MB) | 8.6 Mpx, **26.0 fps** |
+
+Every knob is one with measured cost behind it: 40 → 128 shadow samples was 12.6 → 15.1 ms for a
+3.1× error cut, so Preview takes it back and Ultra spends 200 where the 1/N curve is still paying;
+the march step was measured at 1.45 → 20 fps against 1.70 → 24 fps at native, so Preview buys real
+time there. The detail bake is re-run only when the size actually changes — it is 170–230 ms at
+8192, and running it on every press would stall the frame for nothing.
+
+**A tier binds the governor rather than suggesting to it.** Preview's render scale was handed
+straight back on the first build: the governor saw the headroom Preview had just bought, spent it
+on resolution, and the declared 0.72 became decorative — Preview and High measured an identical
+8.0 Mpx grid. The tier now sets the ceiling the governor may climb to. Ultra pins its scale
+outright and is excluded from adaptation, which is the difference between a tier and a hint.
+
+The individual switches are still reachable from the console for measuring — `raysOn`,
+`surfTarget`, `STEP.shaN`, `STEP.near` — they simply no longer have buttons.
+
 ## Export (bottom bar)
 **Frame** saves a PNG at full canvas resolution; **Record** captures the canvas to WebM via
 `MediaRecorder` (VP9 where available, falling back to VP8 or mp4 for Safari). The frame grab is

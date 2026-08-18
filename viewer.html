@@ -114,10 +114,15 @@
   <div class="row grp"><label>View</label>
     <button id="auto" class="mini on" title="Director's automatic orbit — drag the canvas to take over">Orbit</button>
     <button id="reset" class="mini" title="Return to the Director's framing (or double-click the canvas)">Reset</button></div>
-  <div class="row grp"><label>Render</label>
-    <button id="qual" class="mini" title="Adapts render scale to hold frame rate">Auto</button>
-    <button id="rays" class="mini on" title="Volumetric light shafts from the key light">Rays</button>
-    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Surface</button></div>
+  <!-- One axis, not three. Auto / Rays / Surface asked the viewer to understand a render-scale
+       governor, a volumetric toggle and a normal-map switch in order to answer "make it look
+       better" — and two of the three were named after their implementation. Quality is now a
+       single ladder, and the individual switches remain reachable from the console (raysOn,
+       surfTarget, STEP.shaN) for measuring. -->
+  <div class="row grp"><label>Quality</label>
+    <button id="qPreview" class="mini" title="Fast — half shadow samples, no shafts, coarser march. For scrubbing and setup.">Preview</button>
+    <button id="qHigh" class="mini on" title="Full shadows, shafts, surface detail, render scale adapting to hold frame rate">High</button>
+    <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — no adaptation, will drop frames">Ultra</button></div>
   <div class="row grp"><label>Capture</label>
     <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
     <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
@@ -1602,18 +1607,46 @@ window.DX=DX; window.DXS=DXS;
    above native and turn the governor off, so a heavy frame stays sharp instead of being
    quietly dissolved. 2x is 4x the march samples of native — deliberately available and
    deliberately not the default. */
-const QMODES=[
-  {id:'auto',  label:'Auto',   scale:0,    hint:'Adapts render scale to hold frame rate'},
-  {id:'high',  label:'1.5x',   scale:1.5,  hint:'2.25x the samples of native — fixed, no adaptation'},
-  {id:'ultra', label:'2x',     scale:2.0,  hint:'4x the samples of native — sharpest, and the slowest'},
-];
-let qIdx=0;
-function applyQMode(){
-  const q=QMODES[qIdx];
-  // rscale BEFORE resize: resize() ends in applyScale(), so setting it after would allocate the
-  // whole target set twice — once at the old scale and again at the new one.
-  if(q.scale>0){ rscale=q.scale; dprScale=1.0; resize(); }
-  const b=$('qual'); if(b){ b.textContent=q.label; b.title=q.hint; b.classList.toggle('on',q.scale>0); }
+/* QUALITY TIERS. Each is a complete point on the cost/quality curve rather than a switch, so the
+   axes move together and cannot be left in a nonsensical combination (supersampled, but with the
+   shadow budget of a preview).
+
+   The knobs are the ones with measured cost behind them:
+     scale   render resolution. 0 hands it to the adaptive governor.
+     shaN    shadow samples. 40 -> 128 was measured at 12.6ms -> 15.1ms and a 3.1x error cut;
+             Preview takes the 40 back, Ultra spends 200 where the 1/N curve is still paying.
+     near/far  sphere-trace step as a multiple of the half-scaled field. Higher is fewer steps:
+             measured 1.45 -> 20fps, 1.70 -> 24fps at native, so Preview buys real speed here.
+     rays    the volumetric shafts, the single most expensive post term.
+     bake    detail map resolution — 8192 is 683MB, which a Preview session has no use for. */
+const TIERS={
+  preview:{label:'Preview', scale:0, dpr:0.72, shaN:40,  near:1.70, far:2.05, rays:0, bake:2048,
+           note:'Preview — fast'},
+  high:   {label:'High',    scale:0, dpr:1.00, shaN:128, near:1.45, far:1.75, rays:1, bake:8192,
+           note:'High — shadows, shafts, adaptive scale'},
+  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, shaN:200, near:1.25, far:1.55, rays:1, bake:8192,
+           note:'Ultra — supersampled, no adaptation'},
+};
+let TIER='high';
+function applyTier(name){
+  const t=TIERS[name]; if(!t) return;
+  TIER=name;
+  STEP.shaN=t.shaN; STEP.near=t.near; STEP.far=t.far;
+  raysOn=!!t.rays;
+  // rscale BEFORE resize: resize() ends in applyScale(), so setting it after allocates the whole
+  // target set twice — once at the old scale, once at the new.
+  if(t.scale>0){ rscale=t.scale; dprScale=t.dpr; }
+  else { rscale=1.0; dprScale=t.dpr; }
+  resize();
+  // Re-bake only when the size actually changes: the bake is 170-230ms at 8192 and running it on
+  // every tier press would stall the frame for no reason.
+  if(window.DETAILN!==t.bake && detailName && detailName!=='off'){
+    window.DETAILN=t.bake; dbakeSize=0; bakeDetail(detailName);
+  }
+  for(const k of Object.keys(TIERS)){
+    const b=$('q'+k[0].toUpperCase()+k.slice(1));
+    if(b) b.classList.toggle('on', k===name);
+  }
 }
 // Sphere-tracing step, as a multiple of the HALF-scaled field, so 2.0 is exactly the true
 // distance — the theoretical ceiling for a 1-Lipschitz field, which every form here measures as
@@ -2119,9 +2152,16 @@ function frame(){
     // only path back was the march's restore gate at <23ms, which never fires once the canvas
     // is already costing frames. Degrade at 55ms (18fps) and restore at 48 — both in the slow
     // regime, so it can always climb back out, with a band between to stop it oscillating.
-    if(QLOCK||QMODES[qIdx].scale>0){}
+    // Ultra pins its own render scale, so the governor must not claw it back — that is the
+    // difference between a tier and a suggestion.
+    const DCAP=TIERS[TIER].dpr;
+    if(QLOCK||TIERS[TIER].scale>0){}
+    // The tier sets the CEILING the governor may climb to. Without this, Preview's dpr was
+    // handed straight back: the governor sees the headroom Preview just bought, spends it on
+    // resolution, and the tier's declared 0.72 becomes decorative — measured as an identical
+    // 8.0 Mpx grid in Preview and High. A tier has to bind the governor, not suggest to it.
     else if(frameAvg>55 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
-    else if(frameAvg<48 && dprScale<1.0){ dprScale=Math.min(1.0,dprScale+0.06); resize(); }
+    else if(frameAvg<48 && dprScale<DCAP){ dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
     else if(frameAvg>29 && rscale>1.00){ rscale=Math.max(1.00,rscale-0.08); applyScale(); }
     else if(frameAvg<23 && rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); }
   }
@@ -3137,26 +3177,16 @@ $('reset').addEventListener('click',()=>{
   userAz=0; userEl=0; userZoom=1; userAzV=0; userElV=0;
   showStat('View reset'); hideStat(1100);
 });
-$('surf').addEventListener('click',()=>{
-  surfTarget=surfTarget>0.5?0:1;
-  $('surf').classList.toggle('on',surfTarget>0.5);
-  $('surf').textContent=surfTarget>0.5?'Surface':'Smooth';
-  showStat(surfTarget>0.5?'Surface detail on':'Smooth — micro detail off'); hideStat(1500);
-});
-$('qual').addEventListener('click',()=>{
-  qIdx=(qIdx+1)%QMODES.length;
-  applyQMode();
-  const q=QMODES[qIdx];
-  // Report the grid actually allocated, not the one requested — applyScale clamps to the
-  // driver's texture limit and the memory budget, and on a large display those bite.
-  showStat(q.scale>0 ? `Render ${q.label} — ${RW}x${RH} (${(RW*RH/1e6).toFixed(1)} Mpx)`
-                     : 'Render scale — auto'); hideStat(2200);
-});
-$('rays').addEventListener('click',()=>{
-  raysOn=!raysOn;
-  $('rays').classList.toggle('on',raysOn);
-  showStat(raysOn?'Light shafts on':'Light shafts off'); hideStat(1300);
-});
+for(const k of Object.keys(TIERS)){
+  const b=$('q'+k[0].toUpperCase()+k.slice(1));
+  if(!b) continue;
+  b.addEventListener('click',()=>{
+    applyTier(k);
+    // Report the grid actually allocated, not the one requested — applyScale clamps to the
+    // driver's texture limit and the memory budget, and on a large display those bite.
+    showStat(`${TIERS[k].note} — ${RW}x${RH} (${(RW*RH/1e6).toFixed(1)} Mpx)`); hideStat(2200);
+  });
+}
 
 /* ======================= INPUT ======================= */
 $('svgfile').addEventListener('change',e=>{ const f=e.target.files[0]; e.target.value='';
