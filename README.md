@@ -79,16 +79,63 @@ The PANNs model auto-downloads to `~/panns_data/` on first run.
 
 ## Contract: director.json (schema `atonal.director/1`)
 ```
-meta{duration,director_fps,analysis_sr,hop}
+meta{duration,director_fps,analysis_sr,hop,analysis_version}
 tempo{bpm,stability,crest_db,dynamic_range_db,stereo_width}
+tonality{key,mode,confidence,strength}
+instruments{drums,synth,piano,guitar,strings,…}          # 0..1, PANNs; {} on the fallback
+vocals{presence,is_vocal,types{singing,choir,rapping,speech,whistle}}
 genre{primary,confidence,secondary,method,top_tags[],moods{}}
-sections[]{t0,t1,label,energy,tension,valence,camera,composition,mood,palette,
-           motion,fog,bloom,grain,intent}
+sections[]{t0,t1,label,energy,tension,valence,release,dynamics,atmosphere,density,
+           camera,composition,mood,palette,motion,fog,bloom,grain,intent}
 events{beats[], onsets{sub|low|mid|high|air: [[t,strength],…]}, predictions[]{t,type,lead}}
 curves{t[], energy[],brightness[],arousal[],valence[],tension[],darkness[],
        warmth[],danceability[],epicness[],flux[],percussive[],harmonic[],density[],
+       release[],dynamics[],atmosphere[],
        sub[],low[],mid[],high[],air[]}                                              # 30 Hz
 ```
+
+### Tonality, release, dynamics, atmosphere, density
+
+**Key and mode come free.** chroma-CQT was already the second most expensive feature after HPSS
+and was used only to give the segmenter a stable similarity space — the key was sitting in it
+unread. Krumhansl-Schmuckler profiles, correlated against all 24 rotations. Validated against
+synthesised triads whose key is known: C major, A minor, F major and D minor all detected
+correctly at confidence 0.85–1.0. `confidence` is the **margin over the best competing key**, not
+the raw correlation — every key correlates decently with a chromatic average, so the raw number
+is high, flat and uninformative. `strength` answers a different question, whether the track is
+tonal at all: a drum loop has a near-flat chroma that still produces a winning key, just a
+meaningless one, so the renderer can ignore the key when there is not really one.
+
+**Release is not the inverse of tension.** Low tension is a calm passage; release is the moment
+tension is actively being let go, which is where the visual payoff belongs. It is the rectified
+negative slope of tension — positive only while tension falls, zero while it is merely low.
+
+**Dynamics is local, not the whole-track scalar.** `dynamic_range_db` already reports one number
+per track; this curve is where the track is *being* dynamic against where it is squashed flat.
+
+**Atmosphere** is sustained harmonic wash against transient attack — high on pads, tails and
+reverb, low on hits. It now drives `fog` alongside darkness, because fog on darkness alone gave a
+bright airy pad passage no haze and a dark percussive one plenty.
+
+**Density was not a measurement.** It shipped as `density=danceability` — a distinct name in the
+contract for a straight alias of a curve already in it. It is now onsets per second across all
+five bands over a 2s window. The two are different questions: a half-time breakdown over a dense
+hat pattern is high density and low danceability.
+
+**Instrumentation and voice cost nothing.** The Cnn14 forward pass already scores all 527 AudioSet
+classes and the pipeline kept two of them; the instrument and voice classes were computed and
+discarded on every run. Matched by keyword against the checkpoint's own label list rather than by
+exact string, because the AudioSet names carry commas and parentheticals ("Violin, fiddle",
+"Keyboard (musical)") and a dict keyed on exact spelling fails by returning an empty section
+rather than an error. Speech is scored but excluded from `is_vocal`: AudioSet fires it on an MC
+over an instrumental, and that is not a lead vocal. On the synthesised test track — kick, hats,
+sub and a pad — it reports `drums 0.68, synth 0.39` and `is_vocal false`.
+
+**`meta.analysis_version` exists so the cache cannot go stale.** Entries are keyed on the audio's
+SHA-256, which answers "same bytes?" and not "same analysis?", so without a version a track
+analysed before a pipeline change returns the old director for ever — silently, and shaped
+exactly like a renderer bug, with contract fields simply absent on some tracks and not others.
+The server rejects any entry whose version does not match and recomputes.
 
 ### How each band drives the visuals
 | band | onset lands as | level sustains as |

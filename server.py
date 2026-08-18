@@ -62,10 +62,16 @@ def cache_get(digest):
         return None
     try:
         with open(fp, "r") as fh:
-            return json.load(fh)
+            hit = json.load(fh)
     except Exception:
         # a truncated or corrupt entry must never be fatal — just recompute over it
         return None
+    # The digest answers "same bytes?", not "same analysis?". An entry written by an older
+    # pipeline is stale in exactly the way that is hardest to spot — it returns 200 with a
+    # director that is missing whatever the contract has gained since. Recompute instead.
+    if (hit.get("meta") or {}).get("analysis_version") != analyze.ANALYSIS_VERSION:
+        return None
+    return hit
 
 
 def cache_put(digest, director):

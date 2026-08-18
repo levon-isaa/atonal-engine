@@ -17,6 +17,13 @@ import sys, os, json, argparse, tempfile, subprocess, math, time
 import numpy as np
 import tagger   # Layer 4 ML tagging (PANNs), optional
 
+# Bumped whenever the pipeline's OUTPUT changes — new curves, new blocks, changed maths. The
+# cache is keyed on the audio's SHA-256, which answers "same bytes?" and not "same analysis?", so
+# without this a track analysed before a pipeline change keeps returning the old director for
+# ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
+# promises are simply absent, on some tracks and not others.
+ANALYSIS_VERSION = 2
+
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
 DIRECTOR_FPS = 30     # continuous-curve output rate
@@ -364,6 +371,74 @@ def layer2_structure(f, sr):
         merged = [0.0, max(f["duration"], 0.05)]
     return merged   # boundary times
 
+# ================================================== LAYER 2c: TONALITY
+# Krumhansl-Schmuckler. The chroma-CQT was already being computed — the most expensive single
+# feature after HPSS — and used only to give the segmenter a stable similarity space. The key
+# was sitting in it unread.
+KS_MAJOR = np.array([6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88])
+KS_MINOR = np.array([6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17])
+PITCHES  = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
+
+
+def layer2c_tonality(f):
+    """Key, mode, and how tonal the track is at all.
+
+    `confidence` is the MARGIN over the best competing key, not the raw correlation. Every key
+    correlates decently with a chromatic average, so the raw number is high and flat and says
+    nothing; what carries information is how far the winner sits above the runner-up.
+
+    `strength` is separate and answers a different question — whether the track is tonal in the
+    first place. A drum loop or a noise wash has a near-flat chroma, which still produces a
+    winning key, just a meaningless one. Measured as distance from a uniform distribution, so
+    the renderer can ignore the key when there is not really one.
+    """
+    ch = np.asarray(f["chroma"], dtype=np.float64)
+    prof = ch.mean(axis=1)
+    tot = float(prof.sum())
+    if not np.isfinite(tot) or tot <= 1e-9:
+        return {"key": None, "mode": None, "confidence": 0.0, "strength": 0.0}
+    prof = prof / tot
+    scored = []
+    for mode, tmpl in (("major", KS_MAJOR), ("minor", KS_MINOR)):
+        t = tmpl / tmpl.sum()
+        for r in range(12):
+            c = np.corrcoef(prof, np.roll(t, r))[0, 1]
+            if np.isfinite(c):
+                scored.append((float(c), PITCHES[r], mode))
+    if not scored:
+        return {"key": None, "mode": None, "confidence": 0.0, "strength": 0.0}
+    scored.sort(key=lambda x: -x[0])
+    top = scored[0]
+    rival = next((x for x in scored[1:] if x[1] != top[1]), (0.0, "", ""))
+    margin = float(np.clip((top[0] - rival[0]) / 0.35, 0, 1))
+    # entropy against uniform: 0 = flat chroma (no key worth reporting), 1 = one pitch class
+    ent = -np.sum(prof * np.log(prof + 1e-12)) / np.log(12.0)
+    strength = float(np.clip(1.0 - ent, 0, 1) * 3.0)
+    return {"key": top[1], "mode": top[2],
+            "confidence": round(margin, 3),
+            "strength": round(min(1.0, strength), 3)}
+
+
+def onset_rate(f, win_s=2.0):
+    """Onsets per second across every band, on the feature time grid.
+
+    This is what DENSITY was supposed to be. It shipped as `density=danceability` — a straight
+    alias, so the contract advertised a distinct curve and delivered a duplicate of one already
+    in it. How busy a passage is and how danceable it is are not the same question: a half-time
+    breakdown over a dense hat pattern is high density and low danceability.
+    """
+    t = np.asarray(f["times"], dtype=np.float64)
+    allon = []
+    for lst in f["band_onsets"].values():
+        allon += [o[0] for o in lst]
+    if not allon:
+        return np.zeros(len(t))
+    a = np.sort(np.asarray(allon, dtype=np.float64))
+    left = np.searchsorted(a, t - win_s * 0.5)
+    right = np.searchsorted(a, t + win_s * 0.5)
+    return (right - left) / win_s
+
+
 # =================================================== LAYER 3: EMOTION CURVES
 def layer3_emotion(f, moods=None):
     energy   = nrm(smooth(f["rms"], 9))
@@ -382,6 +457,21 @@ def layer3_emotion(f, moods=None):
     # valence: brighter + harmonic + steady groove reads more positive
     valence    = nrm(smooth(0.4 * bright + 0.3 * harm + 0.3 * danceability - 0.2 * tension + 0.2, 21))
     epicness   = nrm(smooth(0.5 * energy + 0.3 * f_std(f["rms"]) + 0.2 * bright, 25))
+    # RELEASE — the other half of tension, and not simply its inverse. Low tension is a calm
+    # passage; RELEASE is the moment tension is actively being let go, which is where the visual
+    # payoff belongs. Rectified negative slope of tension: positive only while it is falling,
+    # zero while it is merely low.
+    release = nrm(smooth(np.maximum(-np.gradient(smooth(tension, 21)), 0) * 60, 25))
+    # DYNAMICS — local loudness variation, not the whole-track scalar. dynamic_range_db already
+    # reports one number for the track; this is where the track is BEING dynamic versus where it
+    # is squashed flat, which is what separates a live-sounding passage from a limited one.
+    ld = 20 * np.log10(np.asarray(f["rms"]) + 1e-6)
+    dynamics = nrm(smooth(np.abs(ld - smooth(ld, 101)), 31))
+    # ATMOSPHERE — sustained harmonic wash against transient attack. High where the track is pads,
+    # tails and reverb; low where it is hits. Drives fog/haze rather than motion.
+    atmosphere = nrm(smooth(harm / (harm + perc + 1e-6) * (1 - flux), 31))
+    # DENSITY — a real measurement now, see onset_rate(). Was an alias of danceability.
+    density = nrm(smooth(onset_rate(f), 15))
     if moods:   # gentle whole-track bias from the ML mood tags
         g = moods.get
         vb = 0.15*(g("happy",0)+g("tender",0)+0.5*g("exciting",0)) - 0.15*(g("sad",0)+g("scary",0)+g("angry",0))
@@ -391,7 +481,8 @@ def layer3_emotion(f, moods=None):
     return dict(energy=energy, brightness=bright, arousal=arousal, valence=valence,
                 tension=tension, darkness=darkness, warmth=warmth,
                 danceability=danceability, epicness=epicness,
-                flux=flux, percussive=perc, harmonic=harm, density=danceability)
+                flux=flux, percussive=perc, harmonic=harm, density=density,
+                release=release, dynamics=dynamics, atmosphere=atmosphere)
 
 def f_std(a):
     a = np.asarray(a); m = smooth(a, 41)
@@ -440,6 +531,8 @@ def label_and_direct(bounds, f, cur, genre):
         if not np.any(m):
             continue
         se, sten, sval, sdark, swarm, sar = [float(np.mean(x[m])) for x in (e, ten, val, dark, warm, ar)]
+        srel, sdyn, satm, sden = [float(np.mean(cur[k][m])) for k in
+                                  ("release", "dynamics", "atmosphere", "density")]
         rise = float(np.mean(np.gradient(smooth(e, 15))[m])) * 100
         last = i == len(bounds) - 2
         # ---- role / section label (Layer 2 semantic labelling) ----
@@ -469,8 +562,13 @@ def label_and_direct(bounds, f, cur, genre):
             "energy": round(se, 3), "tension": round(sten, 3), "valence": round(sval, 3),
             "camera": CAMERAS.get(role, "orbit"), "composition": comp, "mood": mood,
             "palette": [round(c, 3) for c in palette],
+            "release": round(srel, 3), "dynamics": round(sdyn, 3),
+            "atmosphere": round(satm, 3), "density": round(sden, 3),
             "motion": round(float(np.clip(0.25 + sar * 0.7, 0, 1)), 3),
-            "fog": round(float(np.clip(0.2 + sdark * 0.6, 0, 1)), 3),
+            # Atmosphere earns its place here: fog was driven by darkness alone, so a bright,
+            # airy pad passage got no haze while a dark percussive one got plenty. Sustained
+            # harmonic content is what actually reads as air in a room.
+            "fog": round(float(np.clip(0.2 + sdark * 0.45 + satm * 0.30, 0, 1)), 3),
             "bloom": round(float(np.clip(0.3 + se * 0.5, 0, 1)), 3),
             "grain": round(float(np.clip(0.2 + sdark * 0.4, 0, 1)), 3),
             "intent": intent,
@@ -523,6 +621,8 @@ def build_director(path, progress=None):
     cur = layer3_emotion(f, panns.get("moods") if panns else None)
     print(f"[layer2] structure…")
     bounds = layer2_structure(f, sr)
+    print(f"[layer2c] tonality…")
+    tonality = layer2c_tonality(f)
     print(f"[layer4] genre…")
     genre = panns or layer4_genre(f, cur)
     print(f"[layer1b] per-band sounds: " +
@@ -535,7 +635,8 @@ def build_director(path, progress=None):
     td = np.arange(0, dur, 1.0 / DIRECTOR_FPS)
     curves = {"t": [round(float(x), 3) for x in td]}
     for k in ("energy","brightness","arousal","valence","tension","darkness",
-              "warmth","danceability","epicness","flux","percussive","harmonic","density"):
+              "warmth","danceability","epicness","flux","percussive","harmonic","density",
+              "release","dynamics","atmosphere"):
         curves[k] = [round(float(x), 4) for x in resample_curve(f["times"], cur[k], td)]
     # per-band sustained levels, normalised the same way as the emotion curves
     for k, lv in f["band_levels"].items():
@@ -543,10 +644,17 @@ def build_director(path, progress=None):
     out = {
         "schema": "atonal.director/1",
         "meta": {"source": os.path.basename(path), "duration": round(dur, 3),
-                 "director_fps": DIRECTOR_FPS, "analysis_sr": sr, "hop": HOP},
+                 "director_fps": DIRECTOR_FPS, "analysis_sr": sr, "hop": HOP,
+                 "analysis_version": ANALYSIS_VERSION},
         "tempo": {"bpm": round(f["tempo"], 2), "stability": round(f["tempo_stability"], 3),
                   "crest_db": round(f["crest"], 2), "dynamic_range_db": round(f["dyn_range_db"], 2),
                   "stereo_width": round(f["stereo_width"], 3)},
+        "tonality": tonality,
+        # Instrumentation and voice come from the tags the PANNs pass already produced. Absent on
+        # the heuristic fallback, which has no way to know what is playing — the key stays present
+        # either way, since it is derived from the signal rather than from the model.
+        "instruments": (panns or {}).get("instruments", {}),
+        "vocals": (panns or {}).get("vocals", {"presence": 0.0, "is_vocal": False, "types": {}}),
         "genre": genre,
         "sections": secs,
         "events": {"beats": [round(x, 3) for x in f["beat_times"]],
