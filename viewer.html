@@ -1297,11 +1297,14 @@ void main(){
     // strongest when you are looking back down the beam.
     if(u_transl>0.001 && u_sssD>0.0){
       const int SSS_N=6;                     // bounded on purpose: 6 taps is enough for a falloff
-      float step=0.16, thick=0.0;
+      // NOT named 'step': that shadows the GLSL built-in for the rest of the scope, so the next
+      // person to write a step() call in here gets a no-matching-overload error on a line that looks
+      // perfectly correct — and a shader that fails to compile takes the whole viewer down.
+      float sstep=0.16, thick=0.0;
       vec3 sp=p-n*0.02;
       for(int i=0;i<SSS_N;i++){
-        sp-=L*step;                          // walk INTO the form, along the light
-        if(mapD(sp)<0.0) thick+=step;        // still inside: this much material was crossed
+        sp-=L*sstep;                         // walk INTO the form, along the light
+        if(mapD(sp)<0.0) thick+=sstep;       // still inside: this much material was crossed
       }
       float trans=exp(-thick*u_sssD);
       float back=max(0.,dot(v,-L));                        // looking back down the beam
@@ -1469,7 +1472,12 @@ vec3 godrays(vec2 uv){
   for(int i=0;i<RAY_N;i++){
     c-=delta; illum*=0.93;                       // decay per step
     vec2 cc=clamp(c,vec2(0.),vec2(1.));
-    vec3 hc=texture(u_tex,cc).rgb;
+    // CLAMPED. u_tex is full resolution with no mip chain, so this tap samples high-frequency
+    // specular detail sparsely along the ray — the exact thing the u_brt gather avoids by reading
+    // mip 2. A single blown pixel wandering in and out of a tap position is what sparkles frame
+    // to frame, so the HDR contribution is capped: it can still carry a shaft, it cannot carry a
+    // firefly. The jittered start above spreads what remains.
+    vec3 hc=min(texture(u_tex,cc).rgb, vec3(6.0));
     float hl=smoothstep(u_rayThr,u_rayThr*2.2,dot(hc,vec3(0.2126,0.7152,0.0722)));
     sum+=(textureLod(u_brt,cc,lod).rgb + hc*hl)*illum;
   }
@@ -1503,26 +1511,41 @@ mat2 rot2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
    orbit while the form smears with its own spin. */
 uniform vec3 u_mbRo,u_mbRt,u_mbUp,u_mbFw;
 uniform vec3 u_mbRoP,u_mbRtP,u_mbUpP,u_mbFwP;
-uniform float u_mbFov,u_mbSpin,u_mbSpinP,u_mbTilt,u_shutter;
+uniform float u_mbFov,u_mbFovP,u_mbSpin,u_mbSpinP,u_mbTilt,u_shutter;
 const int MB_N=8;
 
 vec2 mbVel(vec2 uv,float depth){
   float asp=u_res.x/u_res.y;
-  float f=0.5/tan(u_mbFov*0.5);
+  // TWO focal lengths, not one. fovY is derived from CM.fov and epicness, so it moves on every
+  // section change; reconstructing this frame's ray and projecting into the previous frame with
+  // the SAME f turns any FOV change into a whole-screen radial velocity, and the entire image
+  // smears in or out for the length of the transition.
+  float f =0.5/tan(u_mbFov *0.5);
+  float fP=0.5/tan(u_mbFovP*0.5);
   vec2 sv=(uv-0.5)*vec2(asp,1.0);                  // mirrors the scene's (frag-0.5*res)/res.y
   vec3 rd=normalize(sv.x*u_mbRt+sv.y*u_mbUp+f*u_mbFw);
-  float d=min(depth,40.0);                         // a miss still reprojects, just from far away
-  vec3 wp=u_mbRo+rd*d;
-  float ds=u_mbSpin-u_mbSpinP;
-  if(depth<17.0 && abs(ds)>1e-7){                  // on the form: undo its own rotation too
-    wp.yz*=rot2(u_mbTilt);                         // same order the field applies it in
-    wp.xz*=rot2(ds);
-    wp.yz*=rot2(-u_mbTilt);
+  vec3 v;
+  if(depth<17.0){
+    // On the form: a real world point, so undo the object's own rotation as well as the camera's.
+    vec3 wp=u_mbRo+rd*depth;
+    float ds=u_mbSpin-u_mbSpinP;
+    if(abs(ds)>1e-7){
+      wp.yz*=rot2(u_mbTilt);                       // same order the field applies it in
+      wp.xz*=rot2(ds);
+      wp.yz*=rot2(-u_mbTilt);
+    }
+    v=wp-u_mbRoP;
+  } else {
+    // BACKGROUND IS A DIRECTION, NOT A PLACE. bg() is a function of the ray direction alone, so
+    // there is no world point to reproject — pinning the miss to an arbitrary 40 units and
+    // reprojecting THAT gave every backdrop pixel a large translation velocity and smeared the
+    // whole frame on any orbit. Reprojecting the DIRECTION gives the shear the backdrop actually
+    // undergoes, which is rotation only: correct, and near zero when the camera merely dollies.
+    v=rd;
   }
-  vec3 v=wp-u_mbRoP;
   float zf=dot(v,u_mbFwP);
   if(zf<1e-3) return vec2(0.);                     // behind the previous camera: no valid vector
-  vec2 sv2=vec2(dot(v,u_mbRtP),dot(v,u_mbUpP))*(f/zf);
+  vec2 sv2=vec2(dot(v,u_mbRtP),dot(v,u_mbUpP))*(fP/zf);
   return uv-(sv2/vec2(asp,1.0)+0.5);
 }
 
@@ -1723,11 +1746,24 @@ window.DX=DX; window.DXS=DXS;
      rays    the volumetric shafts, the single most expensive post term.
      bake    detail map resolution — 8192 is 683MB, which a Preview session has no use for. */
 const TIERS={
-  preview:{label:'Preview', scale:0, dpr:0.72, shaN:40,  near:1.70, far:2.05, rays:0, bake:2048, shutter:0,
+  // PREVIEW EARNS ITS SPEED BY DOING LESS, NOT BY DOING IT WORSE. The first version took back
+  // three things this renderer had already measured, diagnosed and fixed, and every one returned
+  // as a visible defect:
+  //   dpr 0.72  -> rendering below native, which 2bcd929 removed outright ("the softness was the
+  //                governor"). Sub-native resampling is what makes edges crawl frame to frame.
+  //   shaN 40   -> the self-shadow banding ea22eda fixed: 4.31 levels RMS against a converged
+  //                reference, printing nested contours parallel to the silhouette.
+  //   near 1.70 -> past the 1.45 the march was actually tested at, so it overshoots thin walls
+  //                and the form comes back faceted and punctured.
+  // A tier may spend less; it may not reintroduce a bug that was measured and closed. The saving
+  // now comes from work SKIPPED — no shafts, no motion blur, no subsurface, a smaller detail bake
+  // and a lower supersampling ceiling — none of which degrades what does get drawn. shaN 96 sits
+  // at 1.90 RMS, still inside the clean band.
+  preview:{label:'Preview', scale:0, dpr:1.00, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, bake:2048, shutter:0, sss:0,
            note:'Preview — fast'},
-  high:   {label:'High',    scale:0, dpr:1.00, shaN:128, near:1.45, far:1.75, rays:1, bake:8192, shutter:0.5,
+  high:   {label:'High',    scale:0, dpr:1.00, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:1, bake:8192, shutter:0.5,
            note:'High — shadows, shafts, adaptive scale'},
-  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, shaN:200, near:1.25, far:1.55, rays:1, bake:8192, shutter:0.8,
+  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:1, bake:8192, shutter:0.8,
            note:'Ultra — supersampled, no adaptation'},
 };
 let TIER='high';
@@ -2260,7 +2296,7 @@ function frame(){
     // regime, so it can always climb back out, with a band between to stop it oscillating.
     // Ultra pins its own render scale, so the governor must not claw it back — that is the
     // difference between a tier and a suggestion.
-    const DCAP=TIERS[TIER].dpr;
+    const DCAP=TIERS[TIER].dpr, SCAP=TIERS[TIER].ss||1.45;
     if(QLOCK||TIERS[TIER].scale>0){}
     // The tier sets the CEILING the governor may climb to. Without this, Preview's dpr was
     // handed straight back: the governor sees the headroom Preview just bought, spends it on
@@ -2269,7 +2305,7 @@ function frame(){
     else if(frameAvg>55 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
     else if(frameAvg<48 && dprScale<DCAP){ dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
     else if(frameAvg>29 && rscale>1.00){ rscale=Math.max(1.00,rscale-0.08); applyScale(); }
-    else if(frameAvg<23 && rscale<1.45){ rscale=Math.min(1.45,rscale+0.06); applyScale(); }
+    else if(frameAvg<23 && rscale<SCAP){ rscale=Math.min(SCAP,rscale+0.06); applyScale(); }
   }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
@@ -2457,9 +2493,13 @@ function frame(){
   // voice is in a mix: the thing sitting in front. Whole-track and constant, so it separates one
   // track's look from another's rather than flickering within one. Speech is excluded upstream —
   // an MC over an instrumental is not a lead vocal, and is_vocal already reflects that.
+  // ADDED, not multiplied. Scaling the whole expression pushed the resting value to 1.6 on a
+  // vocal track, leaving the beat/air term only 1.0 of headroom under the 2.60 clamp — so the
+  // rim pinned and stopped articulating the beat on exactly the tracks it was meant to flatter.
+  // As an offset it lifts the floor and leaves the dynamic range intact.
   const voxRim = (director && director.vocals && director.vocals.is_vocal)
-                 ? 1 + Math.min(0.60, (director.vocals.presence||0)*0.75) : 1;
-  const rimPulse=Math.min(2.60, (1 + (pulseS*0.20+HITS.air*0.40)*(0.50+epic*1.10))*voxRim);
+                 ? Math.min(0.45, (director.vocals.presence||0)*0.55) : 0;
+  const rimPulse=Math.min(2.60, 1 + voxRim + (pulseS*0.20+HITS.air*0.40)*(0.50+epic*1.10));
   gl.uniform1f(US('u_keyPulse'),keyPulse); gl.uniform1f(US('u_rimPulse'),rimPulse);
   gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
   gl.uniform1f(US('u_hSub'),HITS.sub); gl.uniform1f(US('u_hLow'),HITS.low);
@@ -2480,7 +2520,18 @@ function frame(){
   // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
   // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
   // at max positive directional derivative 1.00). Below that is pure margin.
-  gl.uniform1f(US('u_stepK'),STEP.near); gl.uniform1f(US('u_stepFar'),STEP.far);
+  // TIGHTEN THE MARCH WHILE MORPHING. The step multipliers are tuned against the forms as
+  // authored, and the STEP comment says outright that the morph blend was never measured against
+  // that limit. It is the case that breaks the assumption: mix(a,b,t) of two SDFs stays
+  // Lipschitz-1, so the bound still looks safe, but it is no longer a true DISTANCE field — it
+  // OVERESTIMATES the distance to its own zero level set. Stepping 1.45x an overestimate puts the
+  // ray past the surface, and what comes back is punctured and faceted: the "low poly" look, on a
+  // renderer with no polygons. Worst on section boundaries, where the Director morphs, so it
+  // lands on the musical edit the eye is already watching. Scaled by sin(mix*PI) because the
+  // error peaks mid-blend and vanishes at both ends, so the cost is paid only where it is real.
+  const morphT=(phase===1)?Math.sin(Math.min(1,Math.max(0,mix))*Math.PI):0.0;
+  const stepSafe=1.0-0.34*morphT;
+  gl.uniform1f(US('u_stepK'),STEP.near*stepSafe); gl.uniform1f(US('u_stepFar'),STEP.far*stepSafe);
   gl.uniform1i(US('u_shaN'),STEP.shaN);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
@@ -2520,8 +2571,14 @@ function frame(){
   // term is energy, and letting it past 1 adds light the environment never contained.
   gl.uniform1f(US('u_reflect'),Math.min(1.0,MAT.reflect*FIN.refl));
   gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_iridFreq'),MAT.iridf); gl.uniform1f(US('u_tintAmt'),MAT.tintw); gl.uniform1f(US('u_transl'),MAT.transl);
-  gl.uniform1f(US('u_cc'),MAT.cc*FIN.refl); gl.uniform1f(US('u_ccRough'),MAT.ccr);
-  gl.uniform1f(US('u_sssD'),MAT.sssd); gl.uniform1f(US('u_emis'),MAT.emis);
+  // Clamped exactly as u_reflect is two lines up, and for the same reason: gloss multiplies by
+  // 1.70, and the shader computes c *= (1.0 - Fc) with Fc reaching u_cc at grazing angles. Past
+  // 1.0 that multiplies the accumulated colour by a NEGATIVE number — inverted fringes on every
+  // silhouette edge. No preset reaches it today; one bump to cc would.
+  gl.uniform1f(US('u_cc'),Math.min(1.0,MAT.cc*FIN.refl)); gl.uniform1f(US('u_ccRough'),MAT.ccr);
+  // Subsurface costs six extra mapD() per shaded pixel and applies to pearl, clay and frosted —
+  // i.e. most of the set, unconditionally. Preview drops it; the shader early-outs on u_sssD 0.
+  gl.uniform1f(US('u_sssD'),MAT.sssd*(TIERS[TIER].sss!==undefined?TIERS[TIER].sss:1)); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans);
   gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec);
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
@@ -2582,18 +2639,18 @@ function frame(){
     // 30fps machine each frame covers twice the distance and an un-normalised shutter would
     // double the smear exactly where the frame rate can least afford it. TFREEZE sets dt to 0,
     // which correctly parks the shutter at zero and keeps A/B frames comparable.
-    if(!MBP) MBP={ro:[roX,roY,roZ],rt:[rx,ry,rz],up:[ux,uy,uz],fw:[fx,fy,fz],spin:spin};
+    if(!MBP) MBP={ro:[roX,roY,roZ],rt:[rx,ry,rz],up:[ux,uy,uz],fw:[fx,fy,fz],spin:spin,fov:fovY};
     gl.uniform3f(UP('u_mbRo'),roX,roY,roZ);  gl.uniform3f(UP('u_mbRt'),rx,ry,rz);
     gl.uniform3f(UP('u_mbUp'),ux,uy,uz);     gl.uniform3f(UP('u_mbFw'),fx,fy,fz);
     gl.uniform3f(UP('u_mbRoP'),MBP.ro[0],MBP.ro[1],MBP.ro[2]);
     gl.uniform3f(UP('u_mbRtP'),MBP.rt[0],MBP.rt[1],MBP.rt[2]);
     gl.uniform3f(UP('u_mbUpP'),MBP.up[0],MBP.up[1],MBP.up[2]);
     gl.uniform3f(UP('u_mbFwP'),MBP.fw[0],MBP.fw[1],MBP.fw[2]);
-    gl.uniform1f(UP('u_mbFov'),fovY);
+    gl.uniform1f(UP('u_mbFov'),fovY); gl.uniform1f(UP('u_mbFovP'),MBP.fov!==undefined?MBP.fov:fovY);
     gl.uniform1f(UP('u_mbSpin'),spin); gl.uniform1f(UP('u_mbSpinP'),MBP.spin);
     gl.uniform1f(UP('u_mbTilt'),VAR.tilt);
     gl.uniform1f(UP('u_shutter'),(TIERS[TIER].shutter||0)*Math.min(2.5,dt*60)*(DX.mblur!==undefined?DX.mblur:1));
-    MBP={ro:[roX,roY,roZ],rt:[rx,ry,rz],up:[ux,uy,uz],fw:[fx,fy,fz],spin:spin};
+    MBP={ro:[roX,roY,roZ],rt:[rx,ry,rz],up:[ux,uy,uz],fw:[fx,fy,fz],spin:spin,fov:fovY};
     // underground grade: darker, grittier, higher contrast
     // RELEASE -> the exhale. Bloom lifts as tension is actively let go, which is the payoff
     // frame. Deliberately on RELEASE and not on low tension: a calm passage should look calm,
@@ -3344,7 +3401,10 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
 $('selFinish').addEventListener('change',e=>{ const f=FINISHES[e.target.value]; if(f) Object.assign(FINT,f); });
 $('selDetail').addEventListener('change',e=>{ const v=e.target.value;
-  if(v==='off'){ if(detailTex) gl.deleteTexture(detailTex); detailTex=null; dbakeSize=0; return; }
+  // detailName MUST be updated here. Without it the name stayed 'micro', and applyTier's guard
+  // (detailName && detailName!=='off') then re-baked on the next quality-tier click — surface
+  // detail came back on its own while this control still read None, with no way to clear it.
+  if(v==='off'){ if(detailTex) gl.deleteTexture(detailTex); detailTex=null; dbakeSize=0; detailName='off'; return; }
   if(bakeDetail(v)) return;
   loadDetail(v).catch(err=>showStat('Detail map failed — '+err.message,true)); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
