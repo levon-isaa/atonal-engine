@@ -100,6 +100,14 @@
     <option value="micro" selected>Micro tooth</option>
     <option value="machined">Machined</option>
     <option value="off">None</option></select></div>
+  <!-- Surface belongs HERE, with the other look controls, not in the quality row it was removed
+       from. It is not a quality axis: it decides whether the object has microstructure at all,
+       which is an aesthetic decision the way Material and Finish are. It is also not the same
+       switch as Detail:None — that only drops the normal map, while this additionally gates the
+       iridescence banding and the specular sweep, so it is the one that gives a genuinely
+       featureless surface. -->
+  <div class="row grp"><label>Surface</label>
+    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Textured</button></div>
   <div class="row"><label>Finish</label><select id="selFinish">
     <option value="satin" selected>Satin</option>
     <option value="matte">Matte</option>
@@ -3376,6 +3384,12 @@ $('auto').addEventListener('click',()=>{
   autoRotate=!autoRotate;
   $('auto').classList.toggle('on',autoRotate);
   showStat(autoRotate?'Auto orbit on':'Auto orbit paused — drag to look around'); hideStat(1500);
+});
+$('surf').addEventListener('click',()=>{
+  surfTarget=surfTarget>0.5?0:1;
+  $('surf').classList.toggle('on',surfTarget>0.5);
+  $('surf').textContent=surfTarget>0.5?'Textured':'Smooth';
+  showStat(surfTarget>0.5?'Surface detail on':'Smooth — micro detail off'); hideStat(1500);
 });
 $('reset').addEventListener('click',()=>{
   userAz=0; userEl=0; userZoom=1; userAzV=0; userElV=0;
