@@ -47,6 +47,11 @@
   #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:2px}
   /* Compact buttons for the panel. The bar's 8px/14px padding is sized for a wide strip and
      wraps the panel to an unusable width. */
+.row input[type=range]{flex:1;-webkit-appearance:none;height:3px;background:rgba(255,255,255,.16);
+    border-radius:2px;outline:none;margin:0}
+  .row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;
+    border-radius:50%;background:#c8b8ff;cursor:pointer;border:0}
+  .row .val{font-size:9px;color:#cfcfd4;min-width:30px;text-align:right;font-variant-numeric:tabular-nums}
   #ctrl button.mini{padding:5px 9px;font-size:9px;letter-spacing:.10em;backdrop-filter:blur(12px);
     background:rgba(14,14,17,.85)}
   #ctrl button.mini:hover{background:rgba(255,255,255,.14)}
@@ -75,6 +80,15 @@
     <option value="4">Wave</option><option value="5">Plate</option>
     <option value="mesh">Reference mesh</option>
     <option value="svg">Custom SVG…</option></select></div>
+  <!-- SHAPE PARAMETERS. These apply to every form, because they act on the extrusion and the
+       profile rather than on any one profile's construction: Segments is the radial repeat count,
+       Edge scales the bevel, Mass the stroke weight of the profile, Depth the extrusion. The
+       audio still drives all four underneath — these are offsets on top of the Director, not
+       replacements for it, so a track still animates the form it is given. -->
+  <div class="row"><label>Segments</label><input type="range" id="pSeg" min="2" max="8" step="1" value="3"><span class="val" id="pSegV">3</span></div>
+  <div class="row"><label>Edge</label><input type="range" id="pEdge" min="30" max="220" step="1" value="100"><span class="val" id="pEdgeV">1.00</span></div>
+  <div class="row"><label>Mass</label><input type="range" id="pMass" min="-60" max="120" step="1" value="0"><span class="val" id="pMassV">0.00</span></div>
+  <div class="row"><label>Depth</label><input type="range" id="pDepth" min="30" max="260" step="1" value="100"><span class="val" id="pDepthV">1.00</span></div>
   <div class="row"><label>Material</label><select id="selMat">
     <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
     <option value="clay">Clay</option>
@@ -191,6 +205,7 @@ uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
 uniform float u_spin;
 uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform float u_edgeVar,u_thickVar,u_chamf;   // shape refinement; see extr()
+uniform float u_segN,u_pEdge,u_pDepth;        // user shape parameters
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans;
 uniform float u_cc,u_ccRough,u_sssD;   // clearcoat weight/roughness; subsurface extinction
@@ -404,16 +419,21 @@ float extr(float d2,vec3 p,float halfD,float bev){
   return d*0.88;
 }
 // depth and bevel ride the track: the slab thickens on low end, the bevel sharpens on air
-float exDepth(){ return 0.30 + u_gThick*0.05; }
-float exBevel(){ return 0.055 + u_gCut*0.012; }
+// The user parameters multiply the audio-driven value rather than replacing it, so the Director
+// keeps animating the form and the slider decides how much form there is to animate.
+float exDepth(){ return (0.30 + u_gThick*0.05)*u_pDepth; }
+float exBevel(){ return (0.055 + u_gCut*0.012)*u_pEdge; }
 
 // ---- profiles ----
 // TRISKELION — three arms, each running out from the centre then hooking a quarter turn. The
 // reference's own shape; the hook is what makes the silhouette read differently from every angle.
 float p2Tris(vec2 p){
   float d=1e9, w=0.19+u_gDense*0.03;
-  for(int i=0;i<3;i++){
-    vec2 q=rr2(float(i)*2.0943951+u_gTwist*0.25)*p;
+  // Segment count is a uniform, so the step is 2pi/N rather than a baked 2pi/3. GLSL ES 3.00
+  // allows a non-constant loop bound, which is what makes this a parameter and not a rebuild.
+  int N=int(clamp(u_segN,2.0,8.0));
+  for(int i=0;i<N;i++){
+    vec2 q=rr2(float(i)*6.2831853/float(N)+u_gTwist*0.25)*p;
     float a=s2Seg(q,vec2(0.02,0.0),vec2(0.66,0.0),w);
     float b=s2Seg(q,vec2(0.66,0.0),vec2(0.66,0.70),w);
     d=min(d, sMin2(a,b,0.16));
@@ -423,8 +443,9 @@ float p2Tris(vec2 p){
 // CLOVER — three fat lobes on a hub, the simplest bold poster form
 float p2Clover(vec2 p){
   float d=s2Disc(p,0.30+u_gDense*0.04);
-  for(int i=0;i<3;i++){
-    vec2 q=rr2(float(i)*2.0943951+1.5707963)*p;
+  int N=int(clamp(u_segN,2.0,8.0));
+  for(int i=0;i<N;i++){
+    vec2 q=rr2(float(i)*6.2831853/float(N)+1.5707963)*p;
     d=sMin2(d, s2Disc(q-vec2(0.0,0.62),0.40+u_gDense*0.04), 0.22);
   }
   return d;
@@ -1777,7 +1798,10 @@ const DX={bloom:1,chroma:1,sharpen:1,thr:1,rays:1,mblur:1};
 // SHAPE REFINEMENT, live-tunable from the console: SHP.edge=0 restores the constant fillet,
 // SHP.thick=0 the constant slab, SHP.chamf=0 the pure round. All three are no-ops at 0, so the
 // old form is one line away for comparison.
-const SHP={edge:1.0, thick:1.0, chamf:0.55};  window.SHP=SHP;   // per-term ablation switches for measuring edge artefacts
+const SHP={edge:1.0, thick:1.0, chamf:0.55};  window.SHP=SHP;
+// User shape parameters, from the sliders. Multipliers on the Director's own values, except
+// mass which is an offset because stroke weight is already an additive term in the profiles.
+const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;   // per-term ablation switches for measuring edge artefacts
 const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
@@ -2549,6 +2573,8 @@ function frame(){
   gl.uniform3f(US('u_up'),ux,uy,uz); gl.uniform3f(US('u_fw'),fx,fy,fz); gl.uniform1f(US('u_fov'),fovY);
   gl.uniform1f(US('u_spin'),spin);
   gl.uniform1f(US('u_tilt'),VAR.tilt); gl.uniform1f(US('u_iridHue'),VAR.hue);
+  gl.uniform1f(US('u_segN'),PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
+  gl.uniform1f(US('u_pDepth'),PRM.depth);
   gl.uniform1f(US('u_edgeVar'),SHP.edge); gl.uniform1f(US('u_thickVar'),SHP.thick);
   gl.uniform1f(US('u_chamf'),SHP.chamf);
   gl.uniform1f(US('u_mode'),mode); gl.uniform1f(US('u_mode2'),mode2); gl.uniform1f(US('u_mix'),(phase===1?mix:0));
@@ -2626,7 +2652,7 @@ function frame(){
   gl.uniform1f(US('u_svgBevel'),0.014+HITS.air*0.006);
   gl.uniform1f(US('u_gTwist'), tension*1.25+arousal*0.45+Math.sin(time*0.05)*0.12);
   // element count / lattice density — energy packs the structure tighter
-  gl.uniform1f(US('u_gDense'), energy*1.9+BND.high*0.5+SH.count*0.05);
+  gl.uniform1f(US('u_gDense'), energy*1.9+BND.high*0.5+SH.count*0.05+PRM.mass);
   // member thickness — tension thins the structure until it reads fragile
   gl.uniform1f(US('u_gThick'), Math.max(0.0, 0.75-tension*0.55+SH.thick*0.9));
   // aperture size — valence opens the shell up, darkness closes it in
@@ -3432,6 +3458,19 @@ $('auto').addEventListener('click',()=>{
   $('auto').classList.toggle('on',autoRotate);
   showStat(autoRotate?'Auto orbit on':'Auto orbit paused — drag to look around'); hideStat(1500);
 });
+// ---- shape parameters ----
+// 'input' not 'change': these want to update while the slider is being dragged, which is the
+// whole point of a live parameter. The colour pickers below bind the same event for the same
+// reason, and binding 'change' there once cost an afternoon of thinking the control was dead.
+function bindPrm(id,key,scale,fmt){
+  const el=$(id), out=$(id+'V');
+  const apply=()=>{ PRM[key]=(+el.value)*scale; out.textContent=fmt(PRM[key]); };
+  el.addEventListener('input',apply); apply();
+}
+bindPrm('pSeg','seg',1,v=>v.toFixed(0));
+bindPrm('pEdge','edge',0.01,v=>v.toFixed(2));
+bindPrm('pMass','mass',0.01,v=>v.toFixed(2));
+bindPrm('pDepth','depth',0.01,v=>v.toFixed(2));
 $('surf').addEventListener('click',()=>{
   surfTarget=surfTarget>0.5?0:1;
   $('surf').classList.toggle('on',surfTarget>0.5);
