@@ -206,6 +206,7 @@ uniform float u_spin;
 uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform float u_edgeVar,u_thickVar,u_chamf;   // shape refinement; see extr()
 uniform float u_segN,u_pEdge,u_pDepth;        // user shape parameters
+uniform float u_room;                         // reflected room structure, 0 = plain gradient
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans;
 uniform float u_cc,u_ccRough,u_sssD;   // clearcoat weight/roughness; subsurface extinction
@@ -887,9 +888,19 @@ vec3 env(vec3 d,float rough){
   // 2. A bank of vertical panels with gaps between them. On a curved surface these stretch into
   //    long streaks that track the curvature, which is the cue that says "polished" — a blob
   //    just says "bright". Six panels around the azimuth.
+  // SOFTENED, AND FEWER. Six hard strips repeated around the azimuth radiate from the
+  // reflection's vanishing point on any convex form — not only at the pole, which the |d.y| fade
+  // above already handles. The visible artefact is the strips themselves: a smoothstep from 0.62
+  // to 0.30 is a hard-edged bar, and a bank of hard bars seen in a curved mirror is read as
+  // spokes rather than as a room.
+  //
+  // Four wider panels with a much longer transition, so each one is a soft gradient rather than
+  // an edge. The room still has structure for a polished surface to pick up — that was the point
+  // of adding them — but it is structure you feel rather than count.
   float az=atan(d.z,d.x);
-  float cell=abs(fract(az*(6.0/6.28318530)+0.5)-0.5)*2.0;
-  float strip=smoothstep(0.62+sf*1.3, 0.30-sf*0.4, cell);
+  float cell=abs(fract(az*(4.0/6.28318530)+0.5)-0.5)*2.0;
+  float strip=smoothstep(0.95+sf*1.6, 0.12-sf*0.3, cell);
+  strip*=strip;                                  // square it: soft shoulder, no plateau to read as a bar
   // FADE THEM AWAY FROM THE HORIZON. The strips are a function of azimuth ONLY, so they have no
   // vertical extent and every one of them converges to a point at d.y = +/-1: six spokes meeting
   // at the zenith. A curved reflective surface sweeps its reflection vector straight through that
@@ -900,7 +911,7 @@ vec3 env(vec3 d,float rough){
   // both removes the artefact and matches what a studio actually looks like. The lower fade is
   // kept so they do not appear beneath the floor line.
   float wall=1.0-smoothstep(0.28,0.90,abs(d.y));
-  e+=vec3(0.96,0.97,1.00)*strip*wall*smoothstep(-0.15,0.30,d.y)*0.42;
+  e+=vec3(0.96,0.97,1.00)*strip*wall*smoothstep(-0.15,0.30,d.y)*0.42*u_room;
   return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
 }
 // Four-stop colour ramp with overlapping smoothstep bands. The overlap matters: butted-up
@@ -1811,7 +1822,11 @@ const DX={bloom:1,chroma:1,sharpen:1,thr:1,rays:1,mblur:1};
 const SHP={edge:1.0, thick:1.0, chamf:0.55};  window.SHP=SHP;
 // User shape parameters, from the sliders. Multipliers on the Director's own values, except
 // mass which is an offset because stroke weight is already an additive term in the profiles.
-const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;   // per-term ablation switches for measuring edge artefacts
+const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;
+// Strength of the reflected room structure. The panel bank exists so polished surfaces have
+// something with edges to reflect, but it is the one feature in env() that repeats angularly,
+// so it is also the one that can read as spokes. ENV.room=0 leaves a plain gradient.
+const ENV={room:0.45};  window.ENV=ENV;   // per-term ablation switches for measuring edge artefacts
 const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
@@ -2583,6 +2598,7 @@ function frame(){
   gl.uniform3f(US('u_up'),ux,uy,uz); gl.uniform3f(US('u_fw'),fx,fy,fz); gl.uniform1f(US('u_fov'),fovY);
   gl.uniform1f(US('u_spin'),spin);
   gl.uniform1f(US('u_tilt'),VAR.tilt); gl.uniform1f(US('u_iridHue'),VAR.hue);
+  gl.uniform1f(US('u_room'),ENV.room);
   gl.uniform1f(US('u_segN'),PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
   gl.uniform1f(US('u_pDepth'),PRM.depth);
   gl.uniform1f(US('u_edgeVar'),SHP.edge); gl.uniform1f(US('u_thickVar'),SHP.thick);
