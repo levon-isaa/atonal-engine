@@ -186,9 +186,190 @@ if(FILE_MODE){
 
 /* ======================= WEBGL ======================= */
 const glc=$('gl');
-const gl=glc.getContext('webgl2',{antialias:false,alpha:false,preserveDrawingBuffer:false});
+// preserveDrawingBuffer stays FALSE in normal use - it forces the driver to keep a copy of every
+// frame. ?readback turns it on for measurement only: without it the canvas reads back empty from
+// anywhere outside the render callback, so any pixel metric (the high-passed RMS the striation
+// work is built on) silently returns zero rather than failing, which is the worst way for a
+// measurement to be wrong.
+const gl=glc.getContext('webgl2',{antialias:false,alpha:false,
+  preserveDrawingBuffer:location.search.indexOf('readback')>=0});
 let floatOK=false;
 if(gl){ floatOK=!!gl.getExtension('EXT_color_buffer_float'); gl.getExtension('OES_texture_float_linear'); }
+
+const ENV_GLSL=`
+// SHARED SOURCE. Interpolated into BOTH the scene shader and the irradiance prebake below, so
+// there is exactly one definition of what this room looks like. A second copy would drift on the
+// first tweak and the diffuse term would then be lit by a different room than the reflections.
+// A rectangular SOFTBOX projected into direction space. Real studio renders read as
+// "high class" because glossy surfaces reflect structured light sources with clean edges —
+// a single analytic sun gives a chrome ball nothing to show.
+/* u_srcAmt gates the four SOFTBOXES only, and exists because they are counted twice otherwise.
+   They stand for the studio's lamps, and the shader already lights the form with an explicit key
+   and fill from those same directions. A reflection should show them (u_srcAmt = 1), but the
+   IRRADIANCE bake must not, or the ambient adds the key a second time - measured, integrating
+   them lifted the reference column from 128 to 172 mean, which is the double count, not a
+   correction. The room itself - gradient, floor bounce, horizon, panels - is what ambient means
+   here, and it is exactly the part that survives at u_srcAmt = 0. */
+uniform float u_srcAmt;
+float softbox(vec3 d, vec3 n, vec2 sz, float soft){
+  float dn=dot(d,n); if(dn<=0.001) return 0.0;
+  vec3 up=abs(n.y)<0.95?vec3(0,1,0):vec3(1,0,0);
+  vec3 u=normalize(cross(n,up)), v=cross(n,u);
+  vec2 q=vec2(dot(d,u),dot(d,v))/dn;                 // project onto the box plane
+  vec2 e=abs(q)-sz;
+  return smoothstep(soft,-soft,max(e.x,e.y));
+}
+// three-point studio: key + cool fill + hot rim, over a soft gradient with a floor bounce.
+// roughness widens every source, which is what makes rough materials read as rough.
+// (NB: never use backticks in here — this GLSL lives inside a JS template literal.)
+// Karis' analytic fit to the split-sum DFG integral (the thing a real engine bakes into a LUT).
+// x scales f0, y is the additive bias, and x+y is the single-scatter directional albedo — which
+// is what makes energy compensation possible at all. Two ALU ops instead of a texture fetch.
+vec2 envDFG(float NoV,float rgh){
+  const vec4 c0=vec4(-1.0,-0.0275,-0.572, 0.022);
+  const vec4 c1=vec4( 1.0, 0.0425,  1.040,-0.040);
+  vec4 r=rgh*c0+c1;
+  float a004=min(r.x*r.x, exp2(-9.28*NoV))*r.x+r.y;
+  return vec2(-1.04,1.04)*a004+r.zw;
+}
+vec3 env(vec3 d,float rough){
+  if(u_furnace>0.5) return vec3(1.0);          // see u_furnace
+  float sf=0.05+rough*0.45;
+  // A BRIGHT room, not a dark one with lamps in it. This is the difference between a
+  // product shot and a night render: nothing on the object ever falls to black, because
+  // every direction still returns real light.
+  vec3 e=mix(vec3(0.185,0.200,0.235), vec3(0.480,0.505,0.560), smoothstep(-0.35,0.85,d.y));
+  e=mix(e, vec3(0.230,0.220,0.210), smoothstep(0.05,-0.55,d.y));                    // floor bounce
+  e+=vec3(1.00,0.96,0.90)*softbox(d,normalize(vec3(-0.40,0.78,0.48)),vec2(0.52,0.30),sf)*6.5*u_srcAmt;
+  e+=vec3(0.55,0.68,1.00)*softbox(d,normalize(vec3( 0.88,0.12,0.30)),vec2(0.80,0.55),sf+0.12)*1.3*u_srcAmt;
+  e+=vec3(1.00,0.88,0.74)*softbox(d,normalize(vec3( 0.22,0.32,-0.92)),vec2(0.20,0.14),sf*0.7+0.03)*9.0*u_srcAmt;
+  e+=vec3(0.90,0.94,1.00)*softbox(d,normalize(vec3( 0.05,1.00,-0.10)),vec2(0.62,0.10),sf+0.05)*2.2*u_srcAmt;
+  // ---- ROOM STRUCTURE ----
+  // Four softboxes over a gradient give a mirror nothing but smooth blobs, which is why the
+  // metals still read closer to plastic than to chrome however correct the BRDF is: a polished
+  // surface shows you the room, and this room had no edges in it. These are the two features a
+  // real studio always has, and both are what the eye uses to read a surface as reflective.
+  // Everything here widens with sf (roughness), so a matte material never shows a hard edge.
+  //
+  // 1. The horizon — the wall/floor join. A near-mirror picks this up as its defining waterline,
+  //    the dark-over-light split you see across every chrome product shot.
+  float hz=smoothstep(-0.03-sf*0.9, 0.03+sf*0.9, d.y);
+  e=mix(e*0.62, e, hz);
+  // 2. A bank of vertical panels with gaps between them. On a curved surface these stretch into
+  //    long streaks that track the curvature, which is the cue that says "polished" — a blob
+  //    just says "bright". Six panels around the azimuth.
+  // SOFTENED, AND FEWER. Six hard strips repeated around the azimuth radiate from the
+  // reflection's vanishing point on any convex form — not only at the pole, which the |d.y| fade
+  // above already handles. The visible artefact is the strips themselves: a smoothstep from 0.62
+  // to 0.30 is a hard-edged bar, and a bank of hard bars seen in a curved mirror is read as
+  // spokes rather than as a room.
+  //
+  // Four wider panels with a much longer transition, so each one is a soft gradient rather than
+  // an edge. The room still has structure for a polished surface to pick up — that was the point
+  // of adding them — but it is structure you feel rather than count.
+  float az=atan(d.z,d.x);
+  float cell=abs(fract(az*(4.0/6.28318530)+0.5)-0.5)*2.0;
+  float strip=smoothstep(0.95+sf*1.6, 0.12-sf*0.3, cell);
+  strip*=strip;                                  // square it: soft shoulder, no plateau to read as a bar
+  // FADE THEM AWAY FROM THE HORIZON. The strips are a function of azimuth ONLY, so they have no
+  // vertical extent and every one of them converges to a point at d.y = +/-1: six spokes meeting
+  // at the zenith. A curved reflective surface sweeps its reflection vector straight through that
+  // convergence, and what it shows is a radial starburst rather than a room. The previous fade
+  // made it worse by ramping the panels UP toward the pole, which is where the degeneracy is.
+  //
+  // Wall panels belong around the horizon and are simply not there overhead, so fading on |d.y|
+  // both removes the artefact and matches what a studio actually looks like. The lower fade is
+  // kept so they do not appear beneath the floor line.
+  float wall=1.0-smoothstep(0.28,0.90,abs(d.y));
+  e+=vec3(0.96,0.97,1.00)*strip*wall*smoothstep(-0.15,0.30,d.y)*0.42*u_room;
+  return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
+}
+`;
+
+/* ---- IRRADIANCE PREBAKE ----
+   THE DIFFUSE TERM WAS POINT-SAMPLING RADIANCE. env() is the room's radiance: four softboxes at
+   gains up to 9x, a horizon step and a panel bank, all of which vary fast with direction. What a
+   diffuse surface receives is IRRADIANCE - the cosine-weighted integral of that over the
+   hemisphere - which is band-limited to about two SH bands and physically cannot carry structure
+   that fine. Reading radiance in its place hands the diffuse term the light sources' own edges,
+   and a smooth face sweeping its normal slowly across those edges prints them as broad tonal
+   arcs across the surface. Those are the "radial lines".
+
+   cb5d4a0 diagnosed exactly this error and fixed only which NORMAL fed the lookup (detail-
+   perturbed -> geometric). That removed the detail map's contribution; it left the lookup itself
+   sampling radiance, so the geometry's own curvature kept driving it. Measured on a frozen frame,
+   ripple RMS along a column down the Plate's face:
+       as shipped, detail micro          2.545
+       detail off                        2.079    not the detail map (-18%)
+       detail off, ENV.room = 0          2.264    not the panel bank (no change)
+       detail off, furnace (env == 1)    0.259    <- floor. It is the environment.
+
+   So this integrates it properly, once per frame, into a 64x32 lat-long map: 2048 texels x 64
+   cosine-distributed samples. That is ~131k env() evaluations per frame against the ~4.6M the
+   per-pixel diffuse lookup was already making, so it REPLACES a per-pixel env() call with a
+   texture fetch and is cheaper than what it replaces, not an addition to it. */
+const IRR_W=64, IRR_H=32, IRR_N=64;
+const IRR_FS=`#version 300 es
+precision highp float;
+out vec4 o;
+uniform float u_env,u_room,u_warmth,u_furnace;
+uniform vec2 u_res;
+${ENV_GLSL}
+// Hammersley, radical inverse base 2 — a low-discrepancy set beats random at this sample count
+// and is deterministic, so the map does not shimmer frame to frame.
+float ri2(uint b){ b=(b<<16u)|(b>>16u);
+  b=((b&0x55555555u)<<1u)|((b&0xAAAAAAAAu)>>1u);
+  b=((b&0x33333333u)<<2u)|((b&0xCCCCCCCCu)>>2u);
+  b=((b&0x0F0F0F0Fu)<<4u)|((b&0xF0F0F0F0u)>>4u);
+  b=((b&0x00FF00FFu)<<8u)|((b&0xFF00FF00u)>>8u);
+  return float(b)*2.3283064365386963e-10; }
+void main(){
+  vec2 uv=gl_FragCoord.xy/u_res;
+  // lat-long: x = azimuth, y = elevation. Matches irrDir() in the scene shader.
+  float phi=(uv.x*2.0-1.0)*3.14159265, ct=uv.y*2.0-1.0, st=sqrt(max(0.0,1.0-ct*ct));
+  vec3 n=normalize(vec3(st*cos(phi), ct, st*sin(phi)));
+  vec3 t=normalize(abs(n.y)<0.99?cross(vec3(0,1,0),n):vec3(1,0,0));
+  vec3 b=cross(n,t);
+  vec3 sum=vec3(0.0);
+  for(int i=0;i<${IRR_N};i++){
+    // cosine-weighted hemisphere: the pdf cancels the cosine, so the estimator is a plain mean
+    float u1=(float(i)+0.5)/float(${IRR_N}), u2=ri2(uint(i));
+    float r=sqrt(u1), a=6.28318530718*u2;
+    vec3 d=normalize(t*(r*cos(a)) + b*(r*sin(a)) + n*sqrt(max(0.0,1.0-u1)));
+    sum+=env(d,1.0);
+  }
+  o=vec4(sum/float(${IRR_N}),1.0);
+}`;
+let irrT=null, irrF=null, irrP=null, irrA=0;
+function bakeIrradiance(envI,warmth){
+  if(!floatOK) return false;
+  if(!irrP){ irrP=prog(VERT,IRR_FS); irrA=gl.getAttribLocation(irrP,'p'); }
+  if(!irrT){
+    irrT=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,irrT);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,IRR_W,IRR_H,0,gl.RGBA,gl.HALF_FLOAT,null);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    // REPEAT across azimuth so the seam at +/-pi interpolates instead of clamping; CLAMP up the
+    // pole, where there is no wrap to make.
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    irrF=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,irrF);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,irrT,0);
+    const ok=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+    if(!ok){ irrT=null; return false; }   // caller falls back to the direct lookup
+  }
+  gl.useProgram(irrP);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,irrF); gl.viewport(0,0,IRR_W,IRR_H);
+  const U=n=>gl.getUniformLocation(irrP,n);
+  gl.uniform2f(U('u_res'),IRR_W,IRR_H);
+  gl.uniform1f(U('u_env'),envI); gl.uniform1f(U('u_room'),ENV.room);
+  gl.uniform1f(U('u_warmth'),warmth); gl.uniform1f(U('u_furnace'),DXS.furnace?1:0);
+  gl.uniform1f(U('u_srcAmt'),0.0);   // room only - the lamps are the key, see u_srcAmt
+  drawFS(irrA);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  return true;
+}
 
 const VERT=`#version 300 es
 in vec2 p; void main(){ gl_Position=vec4(p,0.,1.); }`;
@@ -889,81 +1070,20 @@ float calcSha(vec3 p,vec3 l,int N){
   // returns exactly the unoccluded 1.0 that the outside branch returns, so the two agree.
   float w=smoothstep(0.0,0.8,t1-t0);
   return mix(1.0, clamp(smoothstep(0.,1.,r),0.,1.), w); }
-// A rectangular SOFTBOX projected into direction space. Real studio renders read as
-// "high class" because glossy surfaces reflect structured light sources with clean edges —
-// a single analytic sun gives a chrome ball nothing to show.
-float softbox(vec3 d, vec3 n, vec2 sz, float soft){
-  float dn=dot(d,n); if(dn<=0.001) return 0.0;
-  vec3 up=abs(n.y)<0.95?vec3(0,1,0):vec3(1,0,0);
-  vec3 u=normalize(cross(n,up)), v=cross(n,u);
-  vec2 q=vec2(dot(d,u),dot(d,v))/dn;                 // project onto the box plane
-  vec2 e=abs(q)-sz;
-  return smoothstep(soft,-soft,max(e.x,e.y));
-}
-// three-point studio: key + cool fill + hot rim, over a soft gradient with a floor bounce.
-// roughness widens every source, which is what makes rough materials read as rough.
-// (NB: never use backticks in here — this GLSL lives inside a JS template literal.)
-// Karis' analytic fit to the split-sum DFG integral (the thing a real engine bakes into a LUT).
-// x scales f0, y is the additive bias, and x+y is the single-scatter directional albedo — which
-// is what makes energy compensation possible at all. Two ALU ops instead of a texture fetch.
-vec2 envDFG(float NoV,float rgh){
-  const vec4 c0=vec4(-1.0,-0.0275,-0.572, 0.022);
-  const vec4 c1=vec4( 1.0, 0.0425,  1.040,-0.040);
-  vec4 r=rgh*c0+c1;
-  float a004=min(r.x*r.x, exp2(-9.28*NoV))*r.x+r.y;
-  return vec2(-1.04,1.04)*a004+r.zw;
-}
-vec3 env(vec3 d,float rough){
-  if(u_furnace>0.5) return vec3(1.0);          // see u_furnace
-  float sf=0.05+rough*0.45;
-  // A BRIGHT room, not a dark one with lamps in it. This is the difference between a
-  // product shot and a night render: nothing on the object ever falls to black, because
-  // every direction still returns real light.
-  vec3 e=mix(vec3(0.185,0.200,0.235), vec3(0.480,0.505,0.560), smoothstep(-0.35,0.85,d.y));
-  e=mix(e, vec3(0.230,0.220,0.210), smoothstep(0.05,-0.55,d.y));                    // floor bounce
-  e+=vec3(1.00,0.96,0.90)*softbox(d,normalize(vec3(-0.40,0.78,0.48)),vec2(0.52,0.30),sf)*6.5;
-  e+=vec3(0.55,0.68,1.00)*softbox(d,normalize(vec3( 0.88,0.12,0.30)),vec2(0.80,0.55),sf+0.12)*1.3;
-  e+=vec3(1.00,0.88,0.74)*softbox(d,normalize(vec3( 0.22,0.32,-0.92)),vec2(0.20,0.14),sf*0.7+0.03)*9.0;
-  e+=vec3(0.90,0.94,1.00)*softbox(d,normalize(vec3( 0.05,1.00,-0.10)),vec2(0.62,0.10),sf+0.05)*2.2;
-  // ---- ROOM STRUCTURE ----
-  // Four softboxes over a gradient give a mirror nothing but smooth blobs, which is why the
-  // metals still read closer to plastic than to chrome however correct the BRDF is: a polished
-  // surface shows you the room, and this room had no edges in it. These are the two features a
-  // real studio always has, and both are what the eye uses to read a surface as reflective.
-  // Everything here widens with sf (roughness), so a matte material never shows a hard edge.
-  //
-  // 1. The horizon — the wall/floor join. A near-mirror picks this up as its defining waterline,
-  //    the dark-over-light split you see across every chrome product shot.
-  float hz=smoothstep(-0.03-sf*0.9, 0.03+sf*0.9, d.y);
-  e=mix(e*0.62, e, hz);
-  // 2. A bank of vertical panels with gaps between them. On a curved surface these stretch into
-  //    long streaks that track the curvature, which is the cue that says "polished" — a blob
-  //    just says "bright". Six panels around the azimuth.
-  // SOFTENED, AND FEWER. Six hard strips repeated around the azimuth radiate from the
-  // reflection's vanishing point on any convex form — not only at the pole, which the |d.y| fade
-  // above already handles. The visible artefact is the strips themselves: a smoothstep from 0.62
-  // to 0.30 is a hard-edged bar, and a bank of hard bars seen in a curved mirror is read as
-  // spokes rather than as a room.
-  //
-  // Four wider panels with a much longer transition, so each one is a soft gradient rather than
-  // an edge. The room still has structure for a polished surface to pick up — that was the point
-  // of adding them — but it is structure you feel rather than count.
-  float az=atan(d.z,d.x);
-  float cell=abs(fract(az*(4.0/6.28318530)+0.5)-0.5)*2.0;
-  float strip=smoothstep(0.95+sf*1.6, 0.12-sf*0.3, cell);
-  strip*=strip;                                  // square it: soft shoulder, no plateau to read as a bar
-  // FADE THEM AWAY FROM THE HORIZON. The strips are a function of azimuth ONLY, so they have no
-  // vertical extent and every one of them converges to a point at d.y = +/-1: six spokes meeting
-  // at the zenith. A curved reflective surface sweeps its reflection vector straight through that
-  // convergence, and what it shows is a radial starburst rather than a room. The previous fade
-  // made it worse by ramping the panels UP toward the pole, which is where the degeneracy is.
-  //
-  // Wall panels belong around the horizon and are simply not there overhead, so fading on |d.y|
-  // both removes the artefact and matches what a studio actually looks like. The lower fade is
-  // kept so they do not appear beneath the floor line.
-  float wall=1.0-smoothstep(0.28,0.90,abs(d.y));
-  e+=vec3(0.96,0.97,1.00)*strip*wall*smoothstep(-0.15,0.30,d.y)*0.42*u_room;
-  return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
+${ENV_GLSL}
+uniform sampler2D u_irr;      // prebaked irradiance, lat-long; see bakeIrradiance()
+uniform float u_irrOn;        // 0 = fall back to the direct radiance lookup
+/* Irradiance for a diffuse surface. See the IRRADIANCE PREBAKE note: env() is RADIANCE and a
+   diffuse surface integrates it, so point-sampling env() here prints the light sources' own
+   edges onto any smoothly curving face. The map is 64x32 and linearly filtered, which is itself
+   a band limit - there is no way for fine angular structure to survive it. */
+vec3 envDiffuse(vec3 n){
+  if(u_irrOn<0.5) return env(n,1.0);
+  float phi=atan(n.z,n.x);
+  // 0.5/W and 0.5/H are not cosmetic: without the half-texel inset the pole rows sample outside
+  // the map and clamp, which puts a flat cap on the top and bottom of every form.
+  vec2 uv=vec2(phi*0.15915494+0.5, clamp(n.y*0.5+0.5, 0.5/32.0, 1.0-0.5/32.0));
+  return texture(u_irr,uv).rgb;
 }
 // Four-stop colour ramp with overlapping smoothstep bands. The overlap matters: butted-up
 // segments put a visible crease at each stop, and on a field this smooth a crease reads as a
@@ -1160,7 +1280,7 @@ void main(){
     vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
     float sha=calcSha(p,L,min(u_shaN,40));           // cast shadow: the floor never needed more
     float occ=calcAO(p,gn);                          // contact darkening
-    vec3 amb=env(gn,1.0)*0.95;
+    vec3 amb=envDiffuse(gn)*0.95;
     // Contact shadow has to be DARK right under the form or it reads as a grey smudge. Both
     // terms are driven near zero in full occlusion, and AO is sharpened so the darkest part sits
     // tight against the silhouette instead of spreading.
@@ -1307,7 +1427,7 @@ void main(){
     // so it has no business moving a hemispherical integral at all: micro detail belongs in the
     // specular lobe, where the narrow BRDF is what makes it visible, and in AO. n still drives
     // NoL, the specular and the reflection; the irradiance reads gn, which is what it means.
-    vec3 amb=env(gn,1.0);         // irradiance, not irradiance times a fudge — see ENERGY above
+    vec3 amb=envDiffuse(gn);         // irradiance, not irradiance times a fudge — see ENERGY above
     // The KEY BREATHES. u_pulse already drove the geometry and the backdrop but never the
     // lighting, so the form was scaled by the beat while being lit by a lamp that ignored it.
     // Pulsing the light instead of the shape is the stronger cue: it moves the highlight and the
@@ -1931,7 +2051,10 @@ const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;
 // something with edges to reflect, but it is the one feature in env() that repeats angularly,
 // so it is also the one that can read as spokes. ENV.room=0 leaves a plain gradient.
 const ENV={room:0.45};  window.ENV=ENV;   // per-term ablation switches for measuring edge artefacts
-const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
+const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};
+// The irradiance map as a LIVE switch, not a rebuild: 7ab6d30's method note is that a
+// cross-load A/B here is invalid, so the only comparison that holds is one frame, one load.
+const IRRON={on:1}; window.IRRON=IRRON;  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
    The governor trades quality for frame rate, which is right for playback and wrong when the
@@ -2785,6 +2908,11 @@ function frame(){
   const fovY=2*Math.atan(0.5/Math.max(0.4,CM.fov*(1-epic*0.12)));
   const W=glc.width,H=glc.height;
 
+  // Before the scene pass, and cheap: 2048 texels against the frame's millions. It has to be
+  // rebuilt each frame because the room tracks the track - u_env rides darkness and u_warmth is
+  // an emotion curve - so a cached map would lag the lighting it is supposed to describe.
+  const irrOK = bakeIrradiance(1.0-darkness*0.5, warmth);
+
   const target = floatOK?hdrF:null;
   const sw = floatOK?RW:W, sh = floatOK?RH:H;                 // raymarch at reduced res
   gl.useProgram(sceneP); gl.bindFramebuffer(gl.FRAMEBUFFER,target); gl.viewport(0,0,sw,sh);
@@ -2922,6 +3050,9 @@ function frame(){
   gl.uniform1f(US('u_surf'),surfT);
   gl.uniform4f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.disp,DXS.twoTone);
   gl.uniform1f(US('u_furnace'),DXS.furnace?1:0);
+  gl.uniform1f(US('u_irrOn'),(irrOK&&IRRON.on)?1:0); gl.uniform1f(US('u_srcAmt'),1.0);
+  if(irrOK){ gl.activeTexture(gl.TEXTURE0+8); gl.bindTexture(gl.TEXTURE_2D,irrT);
+             gl.uniform1i(US('u_irr'),8); }
   // DYNAMICS DRIVES THE KEY:FILL RATIO. A dynamic passage gets less fill, so the form is modelled
   // harder and the shadow side falls away; a squashed, limited passage gets more, which flattens
   // it. That is the same thing a lighting cameraman does with a bounce card, and it is a far
@@ -3830,6 +3961,61 @@ $('tl').addEventListener('click',e=>{ if(!audioBuffer)return; const r=$('tl').ge
 addEventListener('dragover',e=>e.preventDefault());
 addEventListener('drop',e=>{ e.preventDefault(); const a=[...e.dataTransfer.files].find(f=>f.type.startsWith('audio')); if(a)loadFile(a); });
 addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();$('play').click();} });
+
+/* ---- URL OVERRIDES FOR EVERY MEASUREMENT SWITCH ----
+   VARPIN already read the query string and nothing else did, so an ablation could only be driven
+   from a console with access to this script's own scope. Every browser automation tool evaluates
+   in an ISOLATED WORLD with a different window object, which means in practice they could not be
+   driven from outside at all - and the one lesson this file keeps relearning is that reasoning
+   about a render defect instead of ablating it costs a wrong fix every time.
+     ?dxs=ao:0,disp:0     scene-pass ablations (ao, shadow, disp, twoTone, furnace, fill)
+     ?dx=bloom:0          post-pass ablations
+     ?env=room:0          environment structure
+     ?tier=ultra  ?shape=5  ?mat=pearl  ?detail=micro  ?finish=satin  ?qlock  ?readback
+     ?pose=0.6,0.15,1.0   az,el,zoom - stops the orbit so two loads frame the same thing
+     ?tfreeze=12          pins the clock AND every dt-integrated value; use with ?pose and
+                          ?varpin for a frame that is bit-identical across loads.
+   Note the standing warning from 7ab6d30: even with all three pinned, a cross-LOAD A/B is only
+   valid for things that do not depend on load order. Anything else wants a live uniform. */
+(function(){
+  const qs=new URLSearchParams(location.search);
+  const pairs=(k,into)=>{ const v=qs.get(k); if(v==null) return;
+    for(const kv of v.split(',')){ const [a,b]=kv.split(':');
+      if(a && b!==undefined && a in into) into[a.trim()]=parseFloat(b); } };
+  pairs('dxs',DXS); pairs('dx',DX); pairs('env',ENV); pairs('irr',IRRON); pairs('shp',SHP);
+  // ?matp=reflect:0,spec:0 overrides individual material fields. Both MAT and MATT, because MAT
+  // is eased toward MATT every frame and writing only one of them is undone before it is drawn.
+  const mp=qs.get('matp');
+  if(mp) for(const kv of mp.split(',')){ const [k,v]=kv.split(':');
+    if(k && v!==undefined && k in MAT){ MAT[k]=parseFloat(v); MATT[k]=parseFloat(v); } }
+  const sel=(k,id)=>{ const v=qs.get(k); if(v==null) return;
+    const e=$(id); if(!e) return; e.value=v; e.dispatchEvent(new Event('change')); };
+  sel('shape','selShape'); sel('mat','selMat'); sel('detail','selDetail');
+  // Numeric ?shape lands INSTANTLY rather than through setMode's 3.4s morph. The morph is driven
+  // by dt, and ?tfreeze pins dt to zero, so the two together would otherwise leave the form
+  // frozen partway between the default mode and the requested one - which looks like the
+  // parameter being ignored and is worse, because it is a shape that no menu can produce.
+  const sh=qs.get('shape');
+  if(sh!=null && sh!=='' && !isNaN(+sh)){ mode=mode2=+sh; mix=0; phase=0; autoShape=false; }
+  sel('finish','selFinish'); sel('look','selLook'); sel('scene','selScene'); sel('pal','selPal');
+  if(qs.get('tier')) applyTier(qs.get('tier'));
+  // QLOCK freezes the governor. Needed for any visual A/B: a heavy pinned pose trips the
+  // canvas-degrade branch, and comparing a soft 0.66 frame against a sharp one measures the
+  // governor rather than the thing under test.
+  // Assigns the LEXICAL binding, not window.QLOCK. TFREEZE and VARPIN are read off window and so
+  // can be set from anywhere; QLOCK is a top-level let, which never becomes a window property, so
+  // window.QLOCK=true is a different variable that nothing reads.
+  if(qs.has('qlock')) QLOCK=true;
+  const pose=qs.get('pose');
+  if(pose){ const [a,e,z]=pose.split(',').map(parseFloat);
+    // Reasserted per frame, not set once: the Director writes the camera every frame, so a
+    // one-shot assignment is overwritten before the first frame is even drawn.
+    const pin=()=>{ autoRotate=false;
+      if(!isNaN(a)) userAz=a; if(!isNaN(e)) userEl=e; if(!isNaN(z)) userZoom=z;
+      userAzV=0; userElV=0; requestAnimationFrame(pin); };
+    pin(); }
+  const tf=qs.get('tfreeze'); if(tf!=null) window.TFREEZE=parseFloat(tf)||0;
+})();
 
 if(!bakeDetail('micro')) loadDetail('micro').catch(e=>__showErr('detail map: '+e.message));
 frame();
