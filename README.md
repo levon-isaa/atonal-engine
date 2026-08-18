@@ -300,6 +300,41 @@ the code was asking for half of it.
   Solar / Mono, or set the two colours by hand. The palette also feeds the duotone inks,
   so the whole frame stays on one colourway.
 
+## Clearcoat and subsurface
+
+**Clearcoat** is a second GGX lobe over everything else, at its own roughness, with F0 fixed at
+0.04 — a clear coat *is* a dielectric at IOR ~1.5 and its reflectance is not the artist's to pick.
+It is what separates a glazed surface from a painted one: a tight highlight sitting on top of a
+broad, rougher body highlight, instead of the single lobe both were previously sharing. The base
+is attenuated by the coat's Fresnel, because light the coat reflects never reaches the material
+underneath — skipping that is how a clearcoat ends up returning more light than it was given. The
+coat reflects the environment as well as the key.
+
+**Subsurface** replaces a flat back-lambert. What was there was `dot(n,-L)*0.18`, with no notion
+of how much material the light had crossed, so a thin lip and the thickest part of the body glowed
+identically — it read as a rim someone had drawn on rather than as light coming through something.
+An SDF makes the honest version cheap: the field is negative inside the form, so marching from
+just under the surface along -L and counting how much of that path stays interior **is** the
+thickness. Beer-Lambert on that, exactly as glass already does with its absorption, plus a
+forward-scatter lobe, because light leaving a translucent body is strongest looking back down the
+beam. Six taps, bounded on purpose.
+
+| material | clearcoat | coat roughness | subsurface extinction |
+|---|---|---|---|
+| pearl | 0.35 | 0.15 | 2.4 |
+| clay (the ceramic entry) | 0.10 | 0.34 | 3.6 |
+| frosted | 0.18 | 0.26 | 1.3 |
+| holo | 0.45 | 0.08 | — (metal, no subsurface) |
+| glass | — | — | — (transmission already carries it) |
+
+Ablated on a pinned frame: clearcoat moves 0.33% of pixels and subsurface 0.73%, against a drift
+floor of 0.04%. Both are real and both are meant to be quiet — a coat that announces itself is a
+coat you have overdone.
+
+**Measuring either requires setting the target as well as the value.** `MAT` is lerped toward
+`MATT` every frame, so `MAT.cc = 0` had already decayed back to 0.244 within 500ms and the first
+ablation measured pure drift for both terms. Set both, or measure nothing.
+
 ## Motion blur
 
 **Reprojection, not accumulation.** Temporal accumulation was implemented here once, measured and
