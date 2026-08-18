@@ -3135,11 +3135,32 @@ float dh(vec2 i,vec2 P){
 // this field, so the field needs a continuous SECOND derivative or the normal is only C0 and
 // every lattice cell boundary shows up as a crease. 3t^2-2t^3 has a discontinuous second
 // derivative; 6t^5-15t^4+10t^3 does not. This one line is most of "smooth".
+// GRADIENT noise, not value noise — and this is where the residual anisotropy lived.
+//
+// Value noise interpolates a SCALAR per lattice point, so between two cells the field can only
+// ramp along the grid axes: the interpolant itself is separable, and separable means axis-biased
+// no matter how good the hash or how strong the warp. Measured over the map, the tilt-orientation
+// histogram kept peaks at exactly 0 and 90 degrees at 1.44:1.
+//
+// An integer SHEAR was tried first, on the reasoning that it maps the lattice onto itself and so
+// preserves tiling where the period is square. It does tile — and it measured 9.83:1, far worse,
+// because a shear is not a rotation: it stretches as it turns, and the stretch is itself a
+// direction. Rotation proper is unavailable here, since the only integer orthogonal matrices are
+// the eight signed permutations.
+//
+// Gradient noise removes the cause instead of fighting it. Each lattice point carries a random
+// DIRECTION and contributes dot(gradient, offset), so the field's variation at a cell is oriented
+// by the hash rather than by the grid. Same periodic hash, so the map tiles exactly as before.
+vec2 dg(vec2 i,vec2 P){ float a=dh(i,P)*6.28318530718; return vec2(cos(a),sin(a)); }
 float dvn(vec2 x,vec2 P){
   vec2 i=floor(x),f=fract(x);
   vec2 u=f*f*f*(f*(f*6.0-15.0)+10.0);
-  return mix(mix(dh(i,P),dh(i+vec2(1,0),P),u.x),
-             mix(dh(i+vec2(0,1),P),dh(i+vec2(1,1),P),u.x),u.y);
+  float n00=dot(dg(i,P),            f);
+  float n10=dot(dg(i+vec2(1,0),P),  f-vec2(1,0));
+  float n01=dot(dg(i+vec2(0,1),P),  f-vec2(0,1));
+  float n11=dot(dg(i+vec2(1,1),P),  f-vec2(1,1));
+  // to 0..1 to keep dvn's contract with the warp and the calibration pass unchanged
+  return mix(mix(n00,n10,u.x), mix(n01,n11,u.x), u.y)*0.70710678+0.5;
 }
 float dheight(vec2 uv){
   float h=0.0,a=1.0,w=0.0;
@@ -3158,7 +3179,8 @@ float dheight(vec2 uv){
     // integer lattice shift, which the mod() wrap likewise preserves.
     vec2 Pw=max(floor(P*0.5+0.5),vec2(2.0));
     vec2 wq=vec2(dvn(uv*Pw,Pw), dvn(uv*Pw+vec2(19.0,7.0),Pw))-0.5;
-    h+=a*dvn((uv+wq*(0.7/P.x))*P, P);
+    // The warp bends ridges off the axes but cannot remove the lattice itself; see dvn().
+    h+=a*dvn((uv+wq*(0.95/P.x))*P, P);
     w+=a; a*=u_gain; P=floor(P*2.0+0.5);   // integer periods keep every octave tileable
   }
   return h/max(w,1e-6);
