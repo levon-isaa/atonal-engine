@@ -1593,7 +1593,7 @@ addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
-const DX={bloom:1,chroma:1,sharpen:1,thr:1};   // per-term ablation switches for measuring edge artefacts
+const DX={bloom:1,chroma:1,sharpen:1,thr:1,rays:1};   // per-term ablation switches for measuring edge artefacts
 const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
@@ -2393,7 +2393,13 @@ function frame(){
       // leaves view — it preserves the DIRECTION the shafts run, which is the whole read, while
       // putting them back inside the reach of the falloff. Strength eases down with how far the
       // true light is from where it is being drawn, so nothing pops as it swings away.
-      const MG=0.55;
+      // MARGIN IS NOT FREE. At 0.55 the emitter sits at uv.y 1.55, and the falloff (zero past
+      // 1.15) then excludes every pixel below uv.y ~0.45 — which is exactly the set whose march
+      // upward would cross the form. What survived was the top strip, marching into empty
+      // backdrop. Measured HDR luma at the peak frame: p50 0.67, p99 1.40, max 3.36, so the
+      // light to gather IS there; the geometry was simply keeping the two apart. 0.15 puts the
+      // emitter within reach of the pixels that can actually see the form.
+      const MG=0.15;
       const cx=Math.max(-MG,Math.min(1+MG,rayX)), cy=Math.max(-MG,Math.min(1+MG,rayY));
       const off=Math.hypot(rayX-cx,rayY-cy);
       rayVis*=1/(1+off*off*0.6);
@@ -2407,7 +2413,18 @@ function frame(){
     // reads as light in the air. Kept low — this sits on top of a bloom that already lifts the
     // same pixels, and doubling up there is how a render turns milky.
     gl.uniform1f(UP('u_rays'), raysOn
-      ? rayVis*(0.05+energy*0.16+epic*0.20+HITS.air*0.20+HITS.high*0.10) : 0);
+      // GAIN, MEASURED. These coefficients were tuned against the old bright pass, before its
+      // threshold was raised to 2.59 to kill a bloom ring — which left the shafts gathering from
+      // a buffer with 0.082% of its pixels above 0.01. They have been stale by roughly two orders
+      // of magnitude ever since. Swept on a frozen peak-energy frame (position pinned via
+      // startedAt so the curves keep feeding while the clock is stopped, noise floor 0):
+      //   gain    20     40     80    160    320
+      //   moved  1.22%  3.39%  7.10%  9.66%  11.38%
+      //   lift    0.5    0.88   1.49   2.37   3.49   (mean display levels)
+      // Past 160 the coverage saturates while the lift keeps climbing, which is the wash. 80 is
+      // the knee: shafts that read, 1.5 levels of lift. Every term is scaled by the same 80, so
+      // the relative weighting between energy, epicness and the air/high bands is untouched.
+      ? rayVis*(4.0+energy*12.8+epic*16.0+HITS.air*16.0+HITS.high*8.0)*DX.rays : 0);
     // press grade
     gl.uniform1f(UP('u_sharpen'),LK.sharp*DX.sharpen); gl.uniform1f(UP('u_chroma'),LK.chroma*DX.chroma);
     gl.uniform1f(UP('u_ink'),LK.ink); gl.uniform1f(UP('u_poster'),LK.poster);
