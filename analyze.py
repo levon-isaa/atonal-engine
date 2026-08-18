@@ -33,11 +33,22 @@ def load_audio(path):
     """Decode anything to mono+stereo float via the bundled ffmpeg, load with soundfile."""
     import soundfile as sf, imageio_ffmpeg
     ff = imageio_ffmpeg.get_ffmpeg_exe()
-    tmp = tempfile.mktemp(suffix=".wav")
-    subprocess.run([ff, "-y", "-i", path, "-ac", "2", "-ar", str(SR), "-f", "wav", tmp],
-                   check=True, capture_output=True)
-    data, sr = sf.read(tmp, dtype="float32", always_2d=True)   # (n, ch)
-    os.remove(tmp)
+    # mkstemp, not mktemp: mktemp returns a name and leaves the race between that and the write
+    # wide open, and server.py already says exactly this about its own upload file. The fd is
+    # closed immediately because ffmpeg opens the path itself; what we want from mkstemp is the
+    # atomic, exclusive creation, not the handle.
+    fd, tmp = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        subprocess.run([ff, "-y", "-i", path, "-ac", "2", "-ar", str(SR), "-f", "wav", tmp],
+                       check=True, capture_output=True)
+        data, sr = sf.read(tmp, dtype="float32", always_2d=True)   # (n, ch)
+    finally:
+        # ran only on success before, so every failed decode left a full-length wav behind —
+        # the decoded file is larger than the upload that produced it.
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
     stereo = data.T                                            # (ch, n)
     mono = stereo.mean(axis=0)
     return mono, stereo, sr
@@ -88,6 +99,17 @@ def nrm(a, lo=5, hi=95):
     return np.clip((a - p1) / (p2 - p1), 0, 1)
 
 def smooth(a, win):
+    """Box smooth that always returns the SAME length it was given.
+
+    np.convolve(..., mode="same") returns max(len(a), len(k)) — so a window wider than the signal
+    silently returns a LONGER array than it was handed. Every curve here is smoothed with a
+    different window (9, 15, 21, 25, 41), so on a short track they came back at different lengths
+    and the first arithmetic between two of them raised a broadcast error: a 0.4s upload failed
+    with a bare "analysis failed" 500. Clamping the window is the whole fix; the alternative,
+    padding, would still misreport the ends as smoothed when there is nothing to smooth with.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    win = int(min(max(1, win), len(a)))
     if win < 2:
         return a
     k = np.ones(win) / win

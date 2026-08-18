@@ -219,6 +219,45 @@ def test_new_signals():
         check(True, "every section carries the new signals")
 
 
+def test_short_and_degenerate_audio():
+    print("\ninputs the service will actually meet")
+    # A track shorter than the widest smoothing window (41 frames, ~0.95s). smooth() used
+    # np.convolve(mode="same"), which returns max(len(signal), len(kernel)) — so each curve came
+    # back at a different length and the first arithmetic between two of them raised a broadcast
+    # error, surfacing as a bare "analysis failed" 500. Half a second is not a musical input, but
+    # a service that 500s on one is a service that 500s on a truncated upload.
+    for name, secs in (("0.4s", 0.4), ("1.0s", 1.0)):
+        path = make_track(128.0, seconds=secs)
+        try:
+            d = analyze.build_director(path)
+        except Exception as e:
+            check(False, f"{name} track raised {type(e).__name__}: {e}")
+            continue
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+        n = len(d["curves"]["t"])
+        lens = {k: len(v) for k, v in d["curves"].items()}
+        check(len(set(lens.values())) == 1, f"{name}: all curves one length (got {sorted(set(lens.values()))})")
+        check(len(d["sections"]) >= 1, f"{name}: at least one section")
+
+    # Digital silence. Every normalisation here divides by a percentile spread, and a constant
+    # signal makes that spread zero.
+    n = int(SR * 3)
+    path = tempfile.mktemp(suffix=".wav")
+    sf.write(path, np.zeros((n, 2), dtype="float32"), SR)
+    try:
+        d = analyze.build_director(path)
+    finally:
+        os.remove(path)
+    check(len(d["sections"]) >= 1, "silence still yields a section")
+    finite = all(v == v and abs(v) != float("inf")
+                 for k, arr in d["curves"].items() for v in arr)
+    check(finite, "silence produces no NaN or inf in any curve")
+    check(analyze.TEMPO_LO <= d["tempo"]["bpm"] <= analyze.TEMPO_HI,
+          f"silence still folds to a usable bpm (got {d['tempo']['bpm']})")
+
+
 def test_tempo_across_range():
     print("\ntempo across the usable range")
     for bpm in (100.0, 140.0):
@@ -236,6 +275,7 @@ if __name__ == "__main__":
     test_tempo_across_range()
     test_tonality()
     test_new_signals()
+    test_short_and_degenerate_audio()
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED")

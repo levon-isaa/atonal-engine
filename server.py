@@ -132,8 +132,14 @@ class H(BaseHTTPRequestHandler):
         served = self._serve_static(rel)
         if served:
             return
-        self._json(200, {"service": "atonal-director", "post": "/analyze",
-                         "pages": ["/", "/studio"]})
+        # The service banner belongs on the ROOT only. Returning it with a 200 for every unknown
+        # path told any client that a missing file had been fetched successfully: a request for
+        # /assets/track.wav came back as 200 with a JSON body, which the viewer then handed to
+        # decodeAudioData to fail on for reasons that pointed nowhere near the real cause.
+        if path in ("/", ""):
+            return self._json(200, {"service": "atonal-director", "post": "/analyze",
+                                    "pages": ["/", "/studio"]})
+        self._json(404, {"error": "not found", "path": path})
 
     # Only these roots are reachable. The studio needs to load ES modules and the vendored
     # three.js, which means real static serving — so the surface is restricted by prefix rather
