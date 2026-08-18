@@ -1987,12 +1987,22 @@ const TIERS={
   // now comes from work SKIPPED — no shafts, no motion blur, no subsurface, a smaller detail bake
   // and a lower supersampling ceiling — none of which degrades what does get drawn. shaN 96 sits
   // at 1.90 RMS, still inside the clean band.
-  preview:{label:'Preview', scale:0, dpr:1.00, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, bake:2048, shutter:0, sss:0,
+  preview:{label:'Preview', scale:0, dpr:1.00, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, bake:2048, shutter:0, sss:0, mHi:29, mLo:23,
            note:'Preview — fast'},
-  high:   {label:'High',    scale:0, dpr:1.00, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0,
+  high:   {label:'High',    scale:0, dpr:1.00, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0, mHi:29, mLo:23,
            note:'High — shadows, shafts, adaptive scale'},
-  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, bake:8192, shutter:0,
-           note:'Ultra — supersampled, no adaptation'},
+  // ULTRA SPENDS ONLY WHERE IT SHOWS. It used to also tighten the march step to 1.25/1.55, and
+  // that was the single most expensive thing in the tier: measured interleaved A/B against
+  // 1.45/1.75 on an otherwise identical frame, it cost 22ms of an 82ms frame - 27% - while the
+  // image it bought differed by a MEAN OF 0.074 levels out of 765, over 4.5% of pixels, with the
+  // clock frozen so the comparison had a noise floor of exactly zero. That is not a quality
+  // setting, it is 27% of the frame for a difference nobody can see. The step is what High and
+  // Preview already use, and what the march was actually tested at.
+  // shaN 200 stays: interleaved against 128 it measured 85.8 vs 87.8ms, i.e. free, because only
+  // pixels that hit the form run the shadow ray at all. Free quality is exactly what a top tier
+  // should be made of.
+  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0, mHi:52, mLo:44,
+           note:'Ultra - supersampled to whatever the machine holds'},
 };
 const KVAR_CAP=0.030;   // see the GEOMETRIC SPECULAR AA note in the shader
 let TIER='high';
@@ -2019,6 +2029,15 @@ function applyTier(name){
     if(b) b.classList.toggle('on', k===name);
   }
 }
+// MEASUREMENT HOOKS, companion to QLOCK / TFREEZE / DX. The governor's state is exactly what you
+// need to read when a tier is misbehaving, and top-level let bindings are not reachable from a
+// console running in an isolated world - which is how every browser automation tool evaluates.
+// Without these, checking whether a tier settled where it claimed to means reading it off a
+// screenshot.
+window.QSTATE=()=>({tier:TIER, rscale:+rscale.toFixed(3), dprScale:+dprScale.toFixed(3),
+                    frameAvg:+frameAvg.toFixed(1), march:[RW,RH], mpx:+(RW*RH/1e6).toFixed(2),
+                    shaN:STEP.shaN, near:STEP.near, far:STEP.far});
+window.QTIER=applyTier;
 // Sphere-tracing step, as a multiple of the HALF-scaled field, so 2.0 is exactly the true
 // distance — the theoretical ceiling for a 1-Lipschitz field, which every form here measures as
 // (max positive directional derivative 1.00). 0.62 was stepping 0.31x the true distance: three
@@ -2500,11 +2519,22 @@ function frame(){
   // TFREEZE pins the clock so the camera stops, which is the only way to A/B two builds on the
   // same frame. Companion to QLOCK; both exist because reasoning about render defects instead of
   // measuring them has cost several wrong fixes here.
-  const now=performance.now(); let dt=Math.min(.05,(now-last)/1000); last=now;
+  const now=performance.now(); const rawMs=now-last;
+  let dt=Math.min(.05,rawMs/1000); last=now;
   let time=(now-t0)/1000;
   if(window.TFREEZE!=null){ time=window.TFREEZE; dt=0; }   // pins clock AND every dt-integrated
   // value (camera angle, spin, springs) — pinning the clock alone leaves the orbit still moving.
-  frameAvg += (Math.min(80,dt*1000)-frameAvg)*0.1;   // adaptive quality: scale render res to hold fps
+  // MEASURE THE TRUE FRAME TIME, NOT THE INTEGRATION STEP. dt is deliberately clamped to 50ms so a
+  // stall cannot teleport the animation, and frameAvg used to be fed from it — which capped the
+  // governor's own signal at 50, made its inner Math.min(80,..) dead code, and meant the
+  // canvas-degrade branch at 55ms could NEVER FIRE under any load at all. Everything slower than
+  // 20fps looked identical to 20fps, so the one control that exists for a frame in trouble had
+  // never run once. Measured: Ultra at a real median of 82.4ms reported frameAvg 50.0.
+  // The 200ms clamp here is a different thing from the dt clamp - it stops ONE stall (a tab
+  // switch, the analyse pass) from dominating the average, rather than hiding the steady state.
+  // Frozen frames still measure: TFREEZE zeroes dt, which used to drag frameAvg toward 0 and hand
+  // the governor a free pass exactly while someone was holding a heavy frame still to look at it.
+  frameAvg += (Math.min(200,rawMs)-frameAvg)*0.1;
   if(now-lastQ>500){ lastQ=now;
     // ceiling is 1.45: above 1.0 the march genuinely supersamples, which the post pass
     // resolves with a real 4-tap tent — the cleanest edges available for the cost
@@ -2549,18 +2579,48 @@ function frame(){
     // only path back was the march's restore gate at <23ms, which never fires once the canvas
     // is already costing frames. Degrade at 55ms (18fps) and restore at 48 — both in the slow
     // regime, so it can always climb back out, with a band between to stop it oscillating.
-    // Ultra pins its own render scale, so the governor must not claw it back — that is the
-    // difference between a tier and a suggestion.
-    const DCAP=TIERS[TIER].dpr, SCAP=TIERS[TIER].ss||1.45;
-    if(QLOCK||TIERS[TIER].scale>0){}
+    // A TIER SETS THE CEILING, NOT A FIXED COST. Ultra used to pin rscale and switch the governor
+    // off entirely, on the reasoning that a tier which can be clawed back is only a suggestion.
+    // Measured, that made it a stall rather than a tier: 82ms a frame at a fixed 1.35, with no
+    // path back, on a machine that holds 1.35 only when the form is small in frame. What Ultra
+    // should mean is AS MUCH SUPERSAMPLING AS THIS MACHINE CAN HOLD, so it now declares 1.35 as a
+    // ceiling with a floor at native and lets the governor sit anywhere between. A fast GPU holds
+    // 1.35 and sees no change; this one settles lower instead of dropping to 12fps.
+    // The floor is native in every tier, so nothing here can reintroduce sub-native rendering.
     // The tier sets the CEILING the governor may climb to. Without this, Preview's dpr was
     // handed straight back: the governor sees the headroom Preview just bought, spends it on
     // resolution, and the tier's declared 0.72 becomes decorative — measured as an identical
     // 8.0 Mpx grid in Preview and High. A tier has to bind the governor, not suggest to it.
-    else if(frameAvg>55 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
-    else if(frameAvg<48 && dprScale<DCAP){ dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
-    else if(frameAvg>29 && rscale>1.00){ rscale=Math.max(1.00,rscale-0.08); applyScale(); }
-    else if(frameAvg<23 && rscale<SCAP){ rscale=Math.min(SCAP,rscale+0.06); applyScale(); }
+    // GATES ARE PER-TIER, because the tiers want opposite things from the same number.
+    // Preview and High are trying to HOLD a frame rate, so they give up march samples early
+    // (degrade over 29ms, buy more under 23). Ultra is trying to SPEND frame rate on edges, and
+    // judging it by High's gates is why it ends up indistinguishable from High: 23ms is 43fps,
+    // which this machine does not reach at native in any tier, so the raise branch can never
+    // fire and rscale can never leave 1.0. Ultra therefore tolerates a much slower frame before
+    // it stops supersampling - which is the entire point of asking for Ultra.
+    const DCAP=TIERS[TIER].dpr, SCAP=TIERS[TIER].scale>0?TIERS[TIER].scale:(TIERS[TIER].ss||1.45);
+    const MHI=TIERS[TIER].mHi||29, MLO=TIERS[TIER].mLo||23;
+    // Published to the DOM, not just to window: browser automation evaluates in an ISOLATED
+    // WORLD with its own window object, so window.QSTATE below is invisible to it and reading
+    // whether a tier settled where it claimed means squinting at a screenshot. Written here
+    // rather than per frame - this block already runs at 2Hz, which is faster than anyone reads.
+    glc.dataset.q=TIER+' r'+rscale.toFixed(2)+' d'+dprScale.toFixed(2)
+                 +' '+frameAvg.toFixed(1)+'ms '+(RW*RH/1e6).toFixed(2)+'Mpx sha'+STEP.shaN;
+    // ORDER: MARCH FIRST, CANVAS LAST - which is what the note above always said and what the
+    // code did not do. The canvas branch used to sit at the head of the chain, so a slow frame
+    // shrank the canvas (taking the UI and every graded edge with it) while the march was still
+    // supersampling above native. It went unnoticed because the branch could never fire at all.
+    // Restoring runs in reverse for the same reason: get the canvas back to native BEFORE
+    // spending anything on extra march samples.
+    if(QLOCK){}
+    else if(frameAvg>MHI && rscale>1.00){ rscale=Math.max(1.00,rscale-0.08); applyScale(); }
+    else if(frameAvg>55 && rscale<=1.001 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
+    // RESTORE WIDENED 48 -> 40. A 7ms dead band is too narrow for this lever: one 0.06 step of
+    // dprScale moves the frame by roughly 12%, so from 55ms a single step lands near 49 and a
+    // second near 43, inside the old restore gate - it would climb back to 55 and oscillate on a
+    // 500ms period. 40 gives the band real width in both directions.
+    else if(frameAvg<40 && dprScale<DCAP){ dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
+    else if(frameAvg<MLO && rscale<SCAP && dprScale>=DCAP-0.001){ rscale=Math.min(SCAP,rscale+0.06); applyScale(); }
   }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
