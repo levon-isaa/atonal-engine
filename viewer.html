@@ -1745,6 +1745,28 @@ window.DX=DX; window.DXS=DXS;
              measured 1.45 -> 20fps, 1.70 -> 24fps at native, so Preview buys real speed here.
      rays    the volumetric shafts, the single most expensive post term.
      bake    detail map resolution — 8192 is 683MB, which a Preview session has no use for. */
+/* SHAFTS AND MOTION BLUR ARE OFF IN EVERY TIER, and the reason is worth keeping.
+   Both were built on approximations that do not hold for this renderer.
+
+   SHAFTS are a screen-space radial blur from the light's projected position. That technique needs
+   the light ON screen, with occluders in front of it so the gaps between beams are what read as
+   shafts. Measured here, the directional key projects 1.79 to 2.32 away from the nearest on-screen
+   pixel at all 24 azimuths of a full orbit — never in frame — and a single form floating in a
+   gradient casts no gaps. Clamping the emitter to the frame edge made something appear, but it
+   radiates from a point that is not where the light is, so its direction disagrees with the
+   shading and the shadows it is supposed to belong to. A correct version is world-space: march
+   the camera ray and accumulate in-scattering against the shadow function, which needs no
+   on-screen light at all and which an SDF makes tractable.
+
+   MOTION BLUR reconstructs velocity from the camera basis and a rigid rotation of the form. But
+   the form also morphs between two SDFs (u_mix, u_reform), wobbles (u_wob) and is punched by
+   every band (u_hSub..u_hAir) — none of which the velocity model knows about. So on every beat
+   and every morph the pixels move while the predicted velocity says otherwise, and the blur runs
+   along the wrong vector. The tap loop also has no depth weighting, so trails bleed across the
+   silhouette in both directions. A correct version needs a velocity buffer written by the scene
+   pass, which is the only thing that knows about the deformation, plus depth-aware taps.
+
+   Set rays:1 or shutter:0.5 on a tier to bring either back for experimentation. */
 const TIERS={
   // PREVIEW EARNS ITS SPEED BY DOING LESS, NOT BY DOING IT WORSE. The first version took back
   // three things this renderer had already measured, diagnosed and fixed, and every one returned
@@ -1761,9 +1783,9 @@ const TIERS={
   // at 1.90 RMS, still inside the clean band.
   preview:{label:'Preview', scale:0, dpr:1.00, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, bake:2048, shutter:0, sss:0,
            note:'Preview — fast'},
-  high:   {label:'High',    scale:0, dpr:1.00, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:1, bake:8192, shutter:0.5,
+  high:   {label:'High',    scale:0, dpr:1.00, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0,
            note:'High — shadows, shafts, adaptive scale'},
-  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:1, bake:8192, shutter:0.8,
+  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, bake:8192, shutter:0,
            note:'Ultra — supersampled, no adaptation'},
 };
 let TIER='high';
