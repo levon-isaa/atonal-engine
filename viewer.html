@@ -145,7 +145,7 @@
   <div class="row grp"><label>Quality</label>
     <button id="qPreview" class="mini" title="Fast — half shadow samples, no shafts, coarser march. For scrubbing and setup.">Preview</button>
     <button id="qHigh" class="mini on" title="Full shadows, shafts, surface detail, render scale adapting to hold frame rate">High</button>
-    <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — no adaptation, will drop frames">Ultra</button></div>
+    <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.15x and 1.60x to stay usable">Ultra</button></div>
   <div class="row grp"><label>Capture</label>
     <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
     <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
@@ -2121,8 +2121,31 @@ const TIERS={
            note:'Preview — fast'},
   high:   {label:'High',    scale:0, dpr:1.00, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0,
            note:'High — shadows, shafts, adaptive scale'},
-  ultra:  {label:'Ultra',   scale:1.35, dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, bake:8192, shutter:0,
-           note:'Ultra — supersampled, no adaptation'},
+  /* ULTRA IS A BAND, NOT A PIN. It used to fix rscale at 1.35 and switch the governor off
+     entirely -- its own tooltip promised "no adaptation, will drop frames", and it delivered:
+     measured with GPU timer queries on a frozen frame, 55-65 ms, i.e. 16-18 fps. That is the
+     lag. The cost is not a bug and it is not in any one term: at 1.35 on a 2006x1976 canvas the
+     march is 7.2 Mpx against a 4.0 Mpx display, and pixel count is what a raymarcher spends.
+     Fitting frame = fixed + k*rscale^2 to the measurements gives fixed 11.6 ms (the full-canvas
+     post chain, which matches the ~12 ms this file already documents) and 23.3 ms per unit of
+     rscale^2.
+
+     What rscale buys, measured against a 2.0x render as ground truth, RMSE over the silhouette
+     band where supersampling actually acts:
+
+       rscale   edge RMSE   max err   modelled frame
+        1.00      6.38        52        34.9 ms
+        1.15      4.31        30        42.4 ms
+        1.35      3.60        28        54.1 ms
+        1.60      3.06        24        71.3 ms
+
+     So there is no free lunch in this term -- it is a straight quality/cost dial. What was wrong
+     was pinning it to one point on that dial for every machine. A floor of 1.15 keeps Ultra
+     unambiguously the best tier (it never drops to where High's governor lives) while letting it
+     climb to 1.60, which is BETTER than it ever reached before, on hardware that can hold it. */
+  ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.15, scaleMax:1.60,
+           dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, bake:8192, shutter:0,
+           note:'Ultra — supersampled, adapts between 1.15x and 1.60x'},
 };
 const KVAR_CAP=0.030;   // see the GEOMETRIC SPECULAR AA note in the shader
 let TIER='high';
@@ -2637,6 +2660,35 @@ function springTo(target,dt,f){                                 // f = natural f
   }
 }
 let last=performance.now(), t0=last;
+/* ---- GPU TIMER QUERIES ---- see the note at the scene pass. Zero cost when GPUPROF is unset:
+   the extension is not even fetched. One query in flight at a time per pass, results collected a
+   frame or two later, which is how the API works -- asking for a result immediately stalls the
+   pipeline and measures the stall. */
+let _gq=null, _gqExt=null, _gqCur=null, _gqPend=[];
+window.GPU=null;
+function gpuBegin(tag){
+  if(!window.GPUPROF) return;
+  if(!_gqExt){ _gqExt=gl.getExtension('EXT_disjoint_timer_query_webgl2'); if(!_gqExt){ window.GPUPROF=false; return; }
+               window.GPU={}; _gq={}; }
+  if(_gqCur) return;                       // never nest
+  const q=gl.createQuery(); gl.beginQuery(_gqExt.TIME_ELAPSED_EXT,q); _gqCur={q,tag};
+}
+function gpuEnd(){
+  if(!window.GPUPROF||!_gqCur) return;
+  gl.endQuery(_gqExt.TIME_ELAPSED_EXT); _gqPend.push(_gqCur); _gqCur=null;
+  // drain whatever is ready; a query is available a frame or two after it was issued
+  for(let i=_gqPend.length-1;i>=0;i--){
+    const e=_gqPend[i];
+    if(!gl.getQueryParameter(e.q,gl.QUERY_RESULT_AVAILABLE)) continue;
+    if(!gl.getParameter(_gqExt.GPU_DISJOINT_EXT)){
+      const ms=gl.getQueryParameter(e.q,gl.QUERY_RESULT)/1e6;
+      const a=(_gq[e.tag]=_gq[e.tag]||[]); a.push(ms); if(a.length>30) a.shift();
+      const srt=[...a].sort((x,y)=>x-y);
+      window.GPU[e.tag]=+srt[srt.length>>1].toFixed(3);   // median, not mean: one hitch skews a mean
+    }
+    gl.deleteQuery(e.q); _gqPend.splice(i,1);
+  }
+}
 function frame(){
   requestAnimationFrame(frame);
   /* ---- MEASUREMENT HOOKS, all console-only, all no-cost when unset ----
@@ -2713,7 +2765,18 @@ function frame(){
     // Ultra pins its own render scale, so the governor must not claw it back — that is the
     // difference between a tier and a suggestion.
     const DCAP=TIERS[TIER].dpr, SCAP=TIERS[TIER].ss||1.45;
-    if(QLOCK||TIERS[TIER].scale>0){}
+    const SMIN=TIERS[TIER].scaleMin||0, SMAX=TIERS[TIER].scaleMax||0;
+    if(QLOCK){}
+    // A BANDED tier adapts like any other, but between its own floor and ceiling rather than
+    // between 1.0 and SCAP. Same thresholds, so it behaves the way the rest of the governor does;
+    // the tier only decides where the band sits. The dpr rule is deliberately not applied here:
+    // Ultra's canvas stays native, and if the band's own floor cannot hold the frame the answer
+    // is to pick a lower tier, not to blur the panel the UI is drawn on.
+    else if(SMIN>0){
+      if(frameAvg>29 && rscale>SMIN){ rscale=Math.max(SMIN,rscale-0.08); applyScale(); }
+      else if(frameAvg<23 && rscale<SMAX){ rscale=Math.min(SMAX,rscale+0.06); applyScale(); }
+    }
+    else if(TIERS[TIER].scale>0){}
     // The tier sets the CEILING the governor may climb to. Without this, Preview's dpr was
     // handed straight back: the governor sees the headroom Preview just bought, spends it on
     // resolution, and the tier's declared 0.72 becomes decorative — measured as an identical
@@ -2888,6 +2951,13 @@ function frame(){
 
   const target = floatOK?hdrF:null;
   const sw = floatOK?RW:W, sh = floatOK?RH:H;                 // raymarch at reduced res
+  /* GPU PROFILER, window.GPUPROF = true. Frame-to-frame wall time is not a usable instrument in
+     this environment -- three consecutive samples of one unchanged build read 14.5, 15.2 and 79.2
+     ms, because rAF is throttled by whatever else is touching the page. A timer query measures
+     the GPU's own elapsed time for the commands between begin and end and does not care what the
+     scheduler is doing. Results land in window.GPU = {scene, bright, post} in milliseconds,
+     averaged over the last 30 frames. */
+  gpuBegin('scene');
   gl.useProgram(sceneP); gl.bindFramebuffer(gl.FRAMEBUFFER,target); gl.viewport(0,0,sw,sh);
   gl.uniform2f(US('u_res'),sw,sh); gl.uniform1f(US('u_time'),time);
   gl.uniform3f(US('u_ro'),roX,roY,roZ); gl.uniform3f(US('u_rt'),rx,ry,rz);
@@ -3057,11 +3127,13 @@ function frame(){
   // where the ratio changes how the OBJECT is lit.
   gl.uniform1f(US('u_fill'),DXS.fill*(1.28-dynamics*0.56));
   drawFS(aScene);
+  gpuEnd();
 
   if(floatOK){
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
     if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);          // hdr mips feed depth of field
     // BRIGHT PASS -> half res, thresholded, then mipped. Bloom gathers from this.
+    gpuBegin('bright');
     gl.useProgram(brightP); gl.bindFramebuffer(gl.FRAMEBUFFER,brtF); gl.viewport(0,0,BW,BH);
     gl.uniform1i(UB('u_tex'),0); gl.uniform2f(UB('u_res'),BW,BH); gl.uniform2f(UB('u_src'),1/RW,1/RH);
     // threshold tracks exposure, so bloom picks up what will actually blow out after tonemapping
@@ -3074,9 +3146,11 @@ function frame(){
     // leaves genuine speculars, which sit far above the knee, still blooming.
     gl.uniform1f(UB('u_thr'), DX.thr*2.6*0.95/Math.max(0.35, 0.82+energy*0.45+pulseS*0.12+HITS.low*0.10));
     drawFS(aBright);
+    gpuEnd();
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,brtT);
     if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
+    gpuBegin('post');
     gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
     gl.uniform1i(UP('u_tex'),0); gl.uniform1i(UP('u_brt'),1);
     gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
@@ -3188,6 +3262,7 @@ function frame(){
     const iA=inkA(), iB=inkB();
     gl.uniform3f(UP('u_inkA'),iA[0],iA[1],iA[2]); gl.uniform3f(UP('u_inkB'),iB[0],iB[1],iB[2]);
     drawFS(aPost);
+    gpuEnd();
     // Grab MUST happen here, still inside the frame that drew. The context has no
     // preserveDrawingBuffer (it costs a full-size copy every frame), so the drawing buffer is
     // cleared as soon as the browser composites — calling toBlob() from a click handler returns
