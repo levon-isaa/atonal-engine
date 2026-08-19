@@ -96,11 +96,11 @@
   <div class="row"><label>Scene</label><select id="selScene">
     <option value="field" selected>Colour field</option><option value="studio">Studio</option></select></div>
   <div class="row"><label>Look</label><select id="selLook">
-    <option value="studio" selected>Studio</option>
+    <option value="studio">Studio</option>
     <option value="label">Label</option><option value="riso">Riso</option>
     <option value="xerox">Xerox</option><option value="halftone">Halftone</option>
     <option value="chrome">Chrome</option><option value="clean">Clean</option>
-    <option value="hard">Hard surface</option></select></div>
+    <option value="hard" selected>Hard surface</option></select></div>
   <div class="row"><label>Palette</label><select id="selPal">
     <option value="auto" selected>Auto · Director</option>
     <option value="blood">Blood</option><option value="acid">Acid</option>
@@ -2457,7 +2457,11 @@ const LOOKS={
   hard:    {...LOOK_DEF, grain:0.00,contrast:0.10,sat:0.06,sharp:0.30,
             bevK:0.07,hardAmb:1.00,hardWrap:1.00,flatTex:1.00},
 };
-const LK =Object.assign({},LOOKS.studio), LKT=Object.assign({},LOOKS.studio);
+// DEFAULT LOOK. Hard surface, not Studio. It shipped as an opt-in first and the report back was
+// that nothing had changed -- which was true of what was on screen, because the dropdown still
+// opened on Studio and nothing in the engine ever selects a look on its own. A look nobody
+// selects is a look nobody has. Studio is one click away and byte-for-byte what it always was.
+const LK =Object.assign({},LOOKS.hard), LKT=Object.assign({},LOOKS.hard);
 
 let director=null, audioBuffer=null, ctx=null, source=null, isPlaying=false, startedAt=0, pausedAt=0;
 
