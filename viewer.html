@@ -2446,8 +2446,15 @@ const LOOKS={
   chrome:  {...LOOK_DEF, ink:0.22,dither:0.15,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38},
   /* HARD SURFACE. The flat-shaded product-render read: faces meeting at a line, each holding one
      tone. Four levers, and all four are needed -- dropping any one of them puts the gradient back.
-       bevK     0.07  the fillet becomes a line. The reference has no fillet at all; this is the
-                      floor before the silhouette starts to alias at High.
+       bevK     0.30  the fillet becomes a line, but a line the renderer can still resolve. 0.07
+                      was tried and it RIPPED: a raymarched silhouette has no MSAA, its only
+                      antialiasing is the supersample (1.45 at High, about two samples a pixel),
+                      and a knife edge is a step function that two samples cannot reconstruct.
+                      Confirmed by rendering the same frozen frame at Ultra, where the extra
+                      samples cleaned it up completely -- so it was sample rate, not a march
+                      failure at the corner. The reference gets away with a true hard edge because
+                      it rasterises polygons with 4x MSAA, which resolves a step exactly; this
+                      renderer has no such mechanism and the bevel has to do that job instead.
        hardAmb  1.00  one ambient tone for the whole object, so a face's value comes only from its
                       own angle to the key. This is the lever that creates the clusters.
        hardWrap 1.00  fill wrap 0.55 -> 0.06: a crisp terminator instead of a soft rolloff.
@@ -2455,7 +2462,7 @@ const LOOKS={
                       has no gradient left for it to hide in.
      grain and sharp stay near studio: this is a clean render, not a print treatment. */
   hard:    {...LOOK_DEF, grain:0.00,contrast:0.10,sat:0.06,sharp:0.30,
-            bevK:0.07,hardAmb:1.00,hardWrap:1.00,flatTex:1.00},
+            bevK:0.30,hardAmb:1.00,hardWrap:1.00,flatTex:1.00},
 };
 // DEFAULT LOOK. Hard surface, not Studio. It shipped as an opt-in first and the report back was
 // that nothing had changed -- which was true of what was on screen, because the dropdown still
@@ -2890,7 +2897,7 @@ function frame(){
   gl.uniform1f(US('u_room'),ENV.room);
   gl.uniform1f(US('u_segN'),PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
   gl.uniform1f(US('u_pDepth'),PRM.depth);
-  gl.uniform1f(US('u_bevK'),LK.bevK); gl.uniform1f(US('u_hardAmb'),LK.hardAmb);
+  gl.uniform1f(US('u_bevK'),(window.BEVK!==undefined)?window.BEVK:LK.bevK); gl.uniform1f(US('u_hardAmb'),LK.hardAmb);
   gl.uniform1f(US('u_hardWrap'),LK.hardWrap);
   gl.uniform1f(US('u_hardAmbK'),(window.HAMB!==undefined)?window.HAMB:HARD_AMB_K);
   gl.uniform1f(US('u_hardKeyK'),(window.HKEY!==undefined)?window.HKEY:HARD_KEY_K);
