@@ -1466,7 +1466,8 @@ void main(){
     // emotional rim: swells with epicness/arousal, colour from valence
     // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
     // not to zero, because it is how the section's valence reaches the form at all.
-    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec)*(1.0-u_furnace);
+    // ...and the rim, which is pure pow(1-NoV): the single strongest gradient across a flat face.
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec)*(1.0-u_furnace)*(1.0-u_hardAmb);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
@@ -1708,6 +1709,7 @@ out vec4 o;
 uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
 uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
+uniform float u_flat;     // 1 = flat-shaded look: no dither, no grain (see the dither line)
 uniform float u_rays; uniform vec2 u_rayPos;   // volumetric shafts: strength, light in screen uv
 uniform float u_rayThr;                        // the shafts' own knee — see godrays()
 uniform float u_dbg;
@@ -1957,7 +1959,20 @@ void main(){
   // TRIANGULAR dither (difference of two hashes), ~1.5 LSB. A flat 1-LSB rectangular dither
   // does not fully break banding on very gradual gradients — the floor-to-backdrop blend was
   // contouring into concentric rings around the camera's nadir.
-  col+=(r2(gl_FragCoord.xy+fract(u_time)*17.)-r2(gl_FragCoord.xy*1.31+fract(u_time)*53.))*(1.5/255.);
+  /* The dither goes with the look too, and this is the last thing between the two renders.
+     Measured as the fraction of the object whose 11x11 patch holds one tone, at four tolerances,
+     against the reference doing the same subject:
+
+              <1 level   <2      <4      <8
+       here      0.0     6.4    84.1    89.8
+       ref      52.5    66.0    78.9    85.2
+
+     At 4 levels this is already FLATTER than the reference. At 1 it is zero. A gradient does not
+     do that -- a gradient fails every tolerance progressively. What fails only the tight ones is
+     additive noise of about +/-1.5 levels, which is exactly what this line is. It exists to break
+     banding on very gradual gradients, and a flat-shaded look has no gradual gradients to band;
+     here it is just noise laid over a flat tone. */
+  col+=(r2(gl_FragCoord.xy+fract(u_time)*17.)-r2(gl_FragCoord.xy*1.31+fract(u_time)*53.))*(1.5/255.)*(1.0-u_flat);
   col+=(r2(gl_FragCoord.xy*1.7+fract(u_time)*91.)-.5)*.032*u_grain;
   col*=mix(1.,smoothstep(1.5,.3,length(c2)*.95),u_vig);
   o=vec4(max(col,0.),1.);
@@ -2431,15 +2446,16 @@ const LOOKS={
   chrome:  {...LOOK_DEF, ink:0.22,dither:0.15,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38},
   /* HARD SURFACE. The flat-shaded product-render read: faces meeting at a line, each holding one
      tone. Four levers, and all four are needed -- dropping any one of them puts the gradient back.
-       bevK     0.20  the fillet becomes an edge. Anything smaller aliases on the silhouette.
+       bevK     0.07  the fillet becomes a line. The reference has no fillet at all; this is the
+                      floor before the silhouette starts to alias at High.
        hardAmb  1.00  one ambient tone for the whole object, so a face's value comes only from its
                       own angle to the key. This is the lever that creates the clusters.
        hardWrap 1.00  fill wrap 0.55 -> 0.06: a crisp terminator instead of a soft rolloff.
        flatTex  1.00  micro detail off. Surface noise is the opposite of a flat tone, and this look
                       has no gradient left for it to hide in.
      grain and sharp stay near studio: this is a clean render, not a print treatment. */
-  hard:    {...LOOK_DEF, grain:0.04,contrast:0.10,sat:0.06,sharp:0.30,
-            bevK:0.20,hardAmb:1.00,hardWrap:1.00,flatTex:1.00},
+  hard:    {...LOOK_DEF, grain:0.00,contrast:0.10,sat:0.06,sharp:0.30,
+            bevK:0.07,hardAmb:1.00,hardWrap:1.00,flatTex:1.00},
 };
 const LK =Object.assign({},LOOKS.studio), LKT=Object.assign({},LOOKS.studio);
 
@@ -2874,8 +2890,18 @@ function frame(){
   gl.uniform1f(US('u_hardWrap'),LK.hardWrap);
   gl.uniform1f(US('u_hardAmbK'),(window.HAMB!==undefined)?window.HAMB:HARD_AMB_K);
   gl.uniform1f(US('u_hardKeyK'),(window.HKEY!==undefined)?window.HKEY:HARD_KEY_K);
-  gl.uniform1f(US('u_edgeVar'),SHP.edge); gl.uniform1f(US('u_thickVar'),SHP.thick);
-  gl.uniform1f(US('u_chamf'),SHP.chamf);
+  /* FLAT SHADING. LK.flatTex was only switching the micro detail off, which left the whole
+     view-dependent half of the BRDF running -- and that is what still put a gradient across a
+     flat face. A face has ONE normal, so anything driven by the normal alone is already constant
+     on it; what varies across it is everything driven by the VIEW vector, because NoV sweeps
+     with perspective from one edge of the face to the other. Reflection, Fresnel, iridescence,
+     clearcoat, the rim and the specular lobe are all NoV terms. Flat shading is not "no texture",
+     it is Lambert and nothing else. */
+  const flatK=1.0-LK.flatTex;
+  // The chamfer is a 45-degree cut ACROSS the corner -- a third face where the reference has a
+  // line. It goes with the fillet, not with the surface language.
+  gl.uniform1f(US('u_edgeVar'),SHP.edge*flatK); gl.uniform1f(US('u_thickVar'),SHP.thick*flatK);
+  gl.uniform1f(US('u_chamf'),SHP.chamf*flatK);
   gl.uniform1f(US('u_mode'),mode); gl.uniform1f(US('u_mode2'),mode2); gl.uniform1f(US('u_mix'),(phase===1?mix:0));
   gl.uniform1f(US('u_reform'),reform);
   // Key-rotated: this uniform is where the shader builds the Auto colourway from, so it is the
@@ -2976,18 +3002,18 @@ function frame(){
   gl.uniform1f(US('u_metal'),MAT.metal); gl.uniform1f(US('u_rough'),finRgh);
   // Clamped at 1: gloss multiplies by 1.7 so it can lift a satin material, but the reflection
   // term is energy, and letting it past 1 adds light the environment never contained.
-  gl.uniform1f(US('u_reflect'),Math.min(1.0,MAT.reflect*FIN.refl));
-  gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)); gl.uniform1f(US('u_iridFreq'),MAT.iridf); gl.uniform1f(US('u_tintAmt'),MAT.tintw); gl.uniform1f(US('u_transl'),MAT.transl);
+  gl.uniform1f(US('u_reflect'),Math.min(1.0,MAT.reflect*FIN.refl)*flatK);
+  gl.uniform1f(US('u_iridAmt'),MAT.irid*FIN.irid*(0.7+0.3*bright)*flatK); gl.uniform1f(US('u_iridFreq'),MAT.iridf); gl.uniform1f(US('u_tintAmt'),MAT.tintw); gl.uniform1f(US('u_transl'),MAT.transl*flatK);
   // Clamped exactly as u_reflect is two lines up, and for the same reason: gloss multiplies by
   // 1.70, and the shader computes c *= (1.0 - Fc) with Fc reaching u_cc at grazing angles. Past
   // 1.0 that multiplies the accumulated colour by a NEGATIVE number — inverted fringes on every
   // silhouette edge. No preset reaches it today; one bump to cc would.
-  gl.uniform1f(US('u_cc'),Math.min(1.0,MAT.cc*FIN.refl)); gl.uniform1f(US('u_ccRough'),MAT.ccr);
+  gl.uniform1f(US('u_cc'),Math.min(1.0,MAT.cc*FIN.refl)*flatK); gl.uniform1f(US('u_ccRough'),MAT.ccr);
   // Subsurface costs six extra mapD() per shaded pixel and applies to pearl, clay and frosted —
   // i.e. most of the set, unconditionally. Preview drops it; the shader early-outs on u_sssD 0.
   gl.uniform1f(US('u_sssD'),MAT.sssd*(TIERS[TIER].sss!==undefined?TIERS[TIER].sss:1)); gl.uniform1f(US('u_emis'),MAT.emis);
   gl.uniform1f(US('u_trans'),MAT.trans);
-  gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec);
+  gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec*flatK);
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
   gl.uniform1f(US('u_txScale'),MAT.tscale);
   // DENSITY -> surface micro-activity. A busy passage puts more tooth on the form, a sparse one
@@ -2997,13 +3023,21 @@ function frame(){
   // detail map is mip-filtered down to almost nothing (Detail off vs on is itself only 1.26%),
   // so a sixth of that is genuinely invisible. Widened, and given a second lever in the grain
   // below, because a mapping that moves nothing is not restraint, it is absence.
-  // LK.flatTex fades the micro detail out with the look rather than switching it, so moving to
+  // LK.flatTex fades everything out with the look rather than switching it, so moving to
   // Hard surface and back is the same 3.0/s ease as every other look parameter.
-  const texK=1.0-LK.flatTex;
+  const texK=flatK;
   gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT*(0.70+density*0.65)*texK);
   gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT*texK);
   gl.uniform1f(US('u_surf'),surfT);
-  gl.uniform4f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.disp,DXS.twoTone);
+  // TWO-TONE goes with the rest of it. It paints a colour ramp ACROSS the form -- deliberately,
+  // it is what stops a frame reading as one hue -- and a ramp across the form is a ramp across
+  // every face on it. Measured as the luminance spread over four points inside one flat face:
+  // 36.0 with it, 23.7 without, the largest single contributor left after the NoV terms went.
+  // The DISPLACEMENT goes too, and it is the one that shows on the silhouette rather than on a
+  // face: it is a noise field added to the SDF, so it undulates the outline. The reference's edges
+  // are dead straight because its geometry is boxes. A living surface is the right call for the
+  // cinematic look and the wrong one for this.
+  gl.uniform4f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.disp*flatK,DXS.twoTone*flatK);
   gl.uniform1f(US('u_furnace'),DXS.furnace?1:0);
   // DYNAMICS DRIVES THE KEY:FILL RATIO. A dynamic passage gets less fill, so the form is modelled
   // harder and the shadow side falls away; a squashed, limited passage gets more, which flattens
@@ -3139,6 +3173,7 @@ function frame(){
     gl.uniform1f(UP('u_sharpen'),LK.sharp*DX.sharpen); gl.uniform1f(UP('u_chroma'),LK.chroma*DX.chroma);
     gl.uniform1f(UP('u_ink'),LK.ink); gl.uniform1f(UP('u_poster'),LK.poster);
     gl.uniform1f(UP('u_dither'),LK.dither); gl.uniform1f(UP('u_half'),LK.half);
+    gl.uniform1f(UP('u_flat'),LK.flatTex);
     const iA=inkA(), iB=inkB();
     gl.uniform3f(UP('u_inkA'),iA[0],iA[1],iA[2]); gl.uniform3f(UP('u_inkB'),iB[0],iB[1],iB[2]);
     drawFS(aPost);
