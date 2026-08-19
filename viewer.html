@@ -99,7 +99,8 @@
     <option value="studio" selected>Studio</option>
     <option value="label">Label</option><option value="riso">Riso</option>
     <option value="xerox">Xerox</option><option value="halftone">Halftone</option>
-    <option value="chrome">Chrome</option><option value="clean">Clean</option></select></div>
+    <option value="chrome">Chrome</option><option value="clean">Clean</option>
+    <option value="hard">Hard surface</option></select></div>
   <div class="row"><label>Palette</label><select id="selPal">
     <option value="auto" selected>Auto · Director</option>
     <option value="blood">Blood</option><option value="acid">Acid</option>
@@ -205,6 +206,18 @@ uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
 uniform float u_spin;
 uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform float u_edgeVar,u_thickVar,u_chamf;   // shape refinement; see extr()
+/* HARD-SURFACE LOOK. Three levers, all zero in every other look, so this costs nothing when off.
+   The target is what makes a flat-shaded product render legible: each face holds ONE tone, and
+   the faces meet at a line rather than a fillet. Measured against a reference doing exactly that,
+   the difference was not subtle -- a luminance histogram of face interiors there falls into three
+   tight clusters, one per face family, where this engine's was a continuous smear across 33 bins
+   with no clusters at all. A gradient over every surface is precisely what stops planes reading
+   as planes. */
+uniform float u_bevK;      // multiplies the extrusion bevel: 1 = the sculpted fillet, ~0.2 = an edge
+uniform float u_hardAmb;   // 0 = irradiance follows the normal, 1 = one ambient tone for every face
+uniform float u_hardWrap;  // 0 = wide wrapped fill (soft terminator), 1 = tight fill (hard one)
+uniform float u_hardAmbK;  // flat-ambient gain, and u_hardKeyK the key gain: together the ratio
+uniform float u_hardKeyK;
 uniform float u_segN,u_pEdge,u_pDepth;        // user shape parameters
 uniform float u_room;                         // reflected room structure, 0 = plain gradient
 uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
@@ -442,7 +455,7 @@ float extr(float d2,vec3 p,float halfD,float bev){
 // The user parameters multiply the audio-driven value rather than replacing it, so the Director
 // keeps animating the form and the slider decides how much form there is to animate.
 float exDepth(){ return (0.30 + u_gThick*0.05)*u_pDepth; }
-float exBevel(){ return (0.055 + u_gCut*0.012)*u_pEdge; }
+float exBevel(){ return (0.055 + u_gCut*0.012)*u_pEdge*u_bevK; }
 
 // ---- profiles ----
 // TRISKELION — three arms, each running out from the centre then hooking a quarter turn. The
@@ -1350,6 +1363,18 @@ void main(){
     // specular lobe, where the narrow BRDF is what makes it visible, and in AO. n still drives
     // NoL, the specular and the reflection; the irradiance reads gn, which is what it means.
     vec3 amb=env(gn,1.0);         // irradiance, not irradiance times a fudge — see ENERGY above
+    // FLAT AMBIENT for the hard-surface look. env(gn) is the physically right thing and it is why
+    // a face carries a gradient: the irradiance genuinely changes as the normal turns. Flat-shaded
+    // renders get their legibility by giving that up -- one ambient value for the whole object, so
+    // a face's tone is decided ONLY by its own orientation to the key. Two taps of the environment
+    // (up and down) stand in for the hemisphere average, which keeps the look responding to u_env
+    // and u_warmth instead of hard-coding a grey. Both taps are constant across the object, so the
+    // branch is uniform and the whole term folds away when the look is off.
+    if(u_hardAmb>0.001){
+      // NOT named 'flat': that is an interpolation qualifier in GLSL ES 3.00 and a reserved word.
+      vec3 ambF=env(vec3(0.,1.,0.),1.0)*0.55 + env(vec3(0.,-1.,0.),1.0)*0.45;
+      amb=mix(amb, ambF*u_hardAmbK, u_hardAmb);   // see KEY-TO-AMBIENT below: this number IS the shadow side
+    }
     // The KEY BREATHES. u_pulse already drove the geometry and the backdrop but never the
     // lighting, so the form was scaled by the beat while being lit by a lamp that ignored it.
     // Pulsing the light instead of the shape is the stronger cue: it moves the highlight and the
@@ -1373,7 +1398,7 @@ void main(){
     // fills nothing, and the ray would cost as much as the key's while doing far less.
     vec3  F=normalize(vec3(-L.x, max(0.12, L.y*0.30), -L.z));
     vec3  fillC=mix(vec3(1.00,0.86,0.66), vec3(0.72,0.82,1.00), u_warmth);  // opposite the key
-    float wrap=0.55;
+    float wrap=mix(0.55,0.06,u_hardWrap);   // wide bounce card, or a second hard edge
     float NoF=max(0.,(dot(n,F)+wrap)/(1.0+wrap))*(1.0-u_furnace);
     // Ambient is trimmed by what the fill now supplies, so the rig redistributes light rather
     // than adding a fourth source on top and lifting the whole frame.
@@ -1386,10 +1411,58 @@ void main(){
     // turned-away side without touching a single highlight, which is the test for a fill. This
     // is the 5.4% point. DXS.fill scales it, so the sweep is reproducible from the console.
     float ambK=mix(1.0,0.90,u_fill);
-    vec3 c=kD*( keyC*(0.95*u_keyPulse*NoL*mix(0.35,1.0,sha))*mix(0.35,1.0,occ)
-              + fillC*(0.68*u_fill*NoF)*mix(0.30,1.0,occ)
-              + amb*ambK*mix(0.22,1.0,occ) )
-          + Fms*Ems*amb*ambK*mix(0.22,1.0,occ);
+    /* HARD-SURFACE RIG. Flattening the ambient alone is not enough and the first attempt proved
+       it: with one ambient tone and the key still at 0.95, the ambient simply WON and the form
+       came out a single flat silhouette -- the opposite failure to the one being fixed. Flat
+       tones need a flat ambient AND a key big enough to separate them, which is the whole content
+       of "key-to-ambient ratio". So the key roughly doubles, the ambient drops to 0.42 of its
+       studio value, and the fill -- already narrowed by u_hardWrap -- drops with it, because a
+       second broad source is exactly what stops three tones being three tones. */
+    // Tuned against the reference's own numbers rather than by feel: there the darkest face family
+    // sits at luminance ~45 against ~100 for the lightest, so the shadow side keeps roughly 45% of
+    // the light side. The first pass at 2.05 / 0.42 / 0.40 crushed it to near black instead --
+    // separation without a shadow side is just a silhouette, which is the same failure as no
+    // separation at all, arrived at from the other direction.
+    /* KEY-TO-AMBIENT. On a face turned fully from the key the only light left is the ambient, so
+       the shadow-to-light ratio IS ambient/(ambient+key). Two earlier attempts moved the wrong
+       term: raising the key alone crushed the shadow side to black, and raising the AO and cast
+       shadow floors (0.22 -> 0.72 and 0.35 -> 0.74) changed it by nothing at all, because what
+       darkens those faces is not occlusion, it is having no light on them.
+
+       Swept properly, on ONE frozen frame, with the form isolated by DBGMASK so the backdrop
+       cannot enter the statistic, and with both gains as live uniforms so nothing else moves:
+
+           ambient   key    shadow side as % of lit side
+             0.96    1.55            44          <- shipped
+             1.40    1.45            62
+             1.80    1.35            71
+             2.30    1.25            79
+
+       A first attempt to solve it in closed form said ambient x4.1, key x0.71 -- and that came
+       out at 90%, a blown flat white. The algebra assumed the response was linear and it is not:
+       everything here goes through the tonemap, which compresses the top hard. The sweep is the
+       measurement; the arithmetic was only a starting point.
+
+       One caution on the number itself. p05 depends on how much of the form is turned away and
+       how deep its cavities are, so it moves with the pose -- the same gains read 12% on a
+       different frame. Within one frame the ORDER is reliable, which is what a sweep needs; the
+       absolute value is not a spec to hit. 44 is where it was chosen by eye. */
+    float hk=mix(1.0,u_hardKeyK,u_hardAmb);
+    ambK   *= mix(1.0,0.86,u_hardAmb);
+    float hf=mix(1.0,0.55,u_hardAmb);      // fill down, but not out
+    // AND the occlusion floors have to come up with it. Measured against an object mask on a
+    // frozen frame, lifting the ambient alone moved the shadow side from 7% of the light side to
+    // 12%, nowhere near the reference's 45% -- because what was crushing those faces was never
+    // the ambient LEVEL, it was AO and the cast shadow multiplying it by 0.22 and 0.35. A
+    // flat-shaded render characteristically carries very little of either; the tone is supposed
+    // to come from the face's angle, and contact darkening on top of that is what turns a flat
+    // tone back into a gradient. So both floors rise steeply with the look.
+    float aoF =mix(0.22,0.72,u_hardAmb);
+    float shaF=mix(0.35,0.74,u_hardAmb);
+    vec3 c=kD*( keyC*(0.95*hk*u_keyPulse*NoL*mix(shaF,1.0,sha))*mix(shaF,1.0,occ)
+              + fillC*(0.68*hf*u_fill*NoF)*mix(mix(0.30,0.72,u_hardAmb),1.0,occ)
+              + amb*ambK*mix(aoF,1.0,occ) )
+          + Fms*Ems*amb*ambK*mix(aoF,1.0,occ);
     // emotional rim: swells with epicness/arousal, colour from valence
     // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
     // not to zero, because it is how the section's valence reaches the form at all.
@@ -2339,15 +2412,34 @@ const inkA=()=>{ const[a,b]=bgPair(); return a.map((v,i)=>cl((v+(b[i]-v)*0.55)*1
 const inkB=()=>bgPair()[1];
 
 /* ---- LOOK: the press/print grade. This is what carries the label aesthetic. ---- */
+/* Every look carries EVERY key. LK is lerped per-key against LKT, and the change handler does an
+   Object.assign of the chosen preset onto LKT -- so a preset that omits a key leaves the previous
+   look's value in place, and switching away from a look would keep half of it. Spreading the
+   defaults into each entry makes that impossible rather than merely unlikely. */
+// Swept on a frozen frame with an object mask; see the KEY-TO-AMBIENT note in the shader.
+let HARD_AMB_K=0.96, HARD_KEY_K=1.55;
+const LOOK_DEF={ink:0.00,poster:0,dither:0.00,half:0.00,chroma:0.00,grain:0.10,contrast:0.00,sat:0.00,sharp:0.22,
+                bevK:1.00,hardAmb:0.00,hardWrap:0.00,flatTex:0.00};
 const LOOKS={
   // pristine product-render grade: no print texture at all, let the lighting do the work
-  studio:  {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.00,grain:0.10,contrast:-0.06,sat:0.08,sharp:0.22},
-  clean:   {ink:0.00,poster:0, dither:0.00,half:0.00,chroma:0.06,grain:0.35,contrast:0.00,sat:0.00,sharp:0.30},
-  label:   {ink:0.62,poster:0, dither:0.40,half:0.00,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42},
-  riso:    {ink:0.88,poster:7, dither:0.80,half:0.00,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50},
-  xerox:   {ink:1.00,poster:3, dither:1.10,half:0.00,chroma:0.20,grain:1.35,contrast:0.85,sat:-0.30,sharp:0.60},
-  halftone:{ink:0.92,poster:5, dither:0.25,half:0.75,chroma:0.35,grain:0.70,contrast:0.55,sat:0.00,sharp:0.55},
-  chrome:  {ink:0.22,poster:0, dither:0.15,half:0.00,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38},
+  studio:  {...LOOK_DEF, contrast:-0.06,sat:0.08},
+  clean:   {...LOOK_DEF, chroma:0.06,grain:0.35,sharp:0.30},
+  label:   {...LOOK_DEF, ink:0.62,dither:0.40,chroma:0.45,grain:0.85,contrast:0.30,sat:-0.05,sharp:0.42},
+  riso:    {...LOOK_DEF, ink:0.88,poster:7, dither:0.80,chroma:0.75,grain:1.15,contrast:0.45,sat:0.05,sharp:0.50},
+  xerox:   {...LOOK_DEF, ink:1.00,poster:3, dither:1.10,chroma:0.20,grain:1.35,contrast:0.85,sat:-0.30,sharp:0.60},
+  halftone:{...LOOK_DEF, ink:0.92,poster:5, dither:0.25,half:0.75,chroma:0.35,grain:0.70,contrast:0.55,sharp:0.55},
+  chrome:  {...LOOK_DEF, ink:0.22,dither:0.15,chroma:1.00,grain:0.50,contrast:0.20,sat:0.25,sharp:0.38},
+  /* HARD SURFACE. The flat-shaded product-render read: faces meeting at a line, each holding one
+     tone. Four levers, and all four are needed -- dropping any one of them puts the gradient back.
+       bevK     0.20  the fillet becomes an edge. Anything smaller aliases on the silhouette.
+       hardAmb  1.00  one ambient tone for the whole object, so a face's value comes only from its
+                      own angle to the key. This is the lever that creates the clusters.
+       hardWrap 1.00  fill wrap 0.55 -> 0.06: a crisp terminator instead of a soft rolloff.
+       flatTex  1.00  micro detail off. Surface noise is the opposite of a flat tone, and this look
+                      has no gradient left for it to hide in.
+     grain and sharp stay near studio: this is a clean render, not a print treatment. */
+  hard:    {...LOOK_DEF, grain:0.04,contrast:0.10,sat:0.06,sharp:0.30,
+            bevK:0.20,hardAmb:1.00,hardWrap:1.00,flatTex:1.00},
 };
 const LK =Object.assign({},LOOKS.studio), LKT=Object.assign({},LOOKS.studio);
 
@@ -2778,6 +2870,10 @@ function frame(){
   gl.uniform1f(US('u_room'),ENV.room);
   gl.uniform1f(US('u_segN'),PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
   gl.uniform1f(US('u_pDepth'),PRM.depth);
+  gl.uniform1f(US('u_bevK'),LK.bevK); gl.uniform1f(US('u_hardAmb'),LK.hardAmb);
+  gl.uniform1f(US('u_hardWrap'),LK.hardWrap);
+  gl.uniform1f(US('u_hardAmbK'),(window.HAMB!==undefined)?window.HAMB:HARD_AMB_K);
+  gl.uniform1f(US('u_hardKeyK'),(window.HKEY!==undefined)?window.HKEY:HARD_KEY_K);
   gl.uniform1f(US('u_edgeVar'),SHP.edge); gl.uniform1f(US('u_thickVar'),SHP.thick);
   gl.uniform1f(US('u_chamf'),SHP.chamf);
   gl.uniform1f(US('u_mode'),mode); gl.uniform1f(US('u_mode2'),mode2); gl.uniform1f(US('u_mix'),(phase===1?mix:0));
@@ -2901,8 +2997,11 @@ function frame(){
   // detail map is mip-filtered down to almost nothing (Detail off vs on is itself only 1.26%),
   // so a sixth of that is genuinely invisible. Widened, and given a second lever in the grain
   // below, because a mapping that moves nothing is not restraint, it is absence.
-  gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT*(0.70+density*0.65));
-  gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT);
+  // LK.flatTex fades the micro detail out with the look rather than switching it, so moving to
+  // Hard surface and back is the same 3.0/s ease as every other look parameter.
+  const texK=1.0-LK.flatTex;
+  gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT*(0.70+density*0.65)*texK);
+  gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT*texK);
   gl.uniform1f(US('u_surf'),surfT);
   gl.uniform4f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.disp,DXS.twoTone);
   gl.uniform1f(US('u_furnace'),DXS.furnace?1:0);
