@@ -13,7 +13,7 @@ The renderer NEVER sees FFT.  It only reads director.json:
 
 Usage:  python analyze.py "track.mp3" -o out/director.json
 """
-import sys, os, json, argparse, tempfile, subprocess, math, time
+import sys, os, json, argparse, tempfile, subprocess, math, time, threading
 import numpy as np
 import tagger   # Layer 4 ML tagging (PANNs), optional
 
@@ -167,6 +167,28 @@ def layer1_signal(mono, stereo, sr, prog=None):
     import librosa
     def step(k):
         if prog: prog(k)
+    # HPSS STARTS FIRST AND RUNS ALONGSIDE EVERYTHING ELSE IN THIS FUNCTION. It needs only `mono`,
+    # nothing here needs its result until the end, and it is the single longest call in the
+    # pipeline -- 6.6s of a 14.9s run, against ~3s for all the other features together. Started
+    # here it finishes under cover of the spectral features and the beat tracker.
+    #
+    # It has to be effects.hpss on the time-domain signal, not the cheaper decompose.hpss on the
+    # spectrogram already in hand. That substitution was measured across five kinds of material
+    # and it is NOT equivalent: the envelopes agree on the bench signal (perc r=0.988) and come
+    # apart everywhere else -- percussive r=0.84, harmonic r=0.57, mixed harm r=0.87. Truncating
+    # the spectrogram is worse again (sparse perc 0.95 -> 0.28 at 128 bins) and a mel-scaled
+    # version worst of all, going ANTI-correlated on harmonic material at r=-0.32. The one-signal
+    # result that said "equivalent" was luck.
+    _hp = {}
+    def _hpss_worker():
+        try:
+            H, P = librosa.effects.hpss(mono)
+            _hp["h"] = librosa.feature.rms(y=H, hop_length=HOP)[0]
+            _hp["p"] = librosa.feature.rms(y=P, hop_length=HOP)[0]
+        except Exception as e:
+            _hp["e"] = e
+    _hp_th = threading.Thread(target=_hpss_worker, name="hpss", daemon=True)
+    _hp_th.start()
     step("spectrum")
     S = np.abs(librosa.stft(mono, n_fft=2048, hop_length=HOP))
     f = {}
@@ -181,11 +203,6 @@ def layer1_signal(mono, stereo, sr, prog=None):
     f["contrast"]  = librosa.feature.spectral_contrast(S=S, sr=sr).mean(axis=0)
     f["mfcc"]      = librosa.feature.mfcc(y=mono, sr=sr, n_mfcc=20, hop_length=HOP)
     f["chroma"]    = librosa.feature.chroma_cqt(y=mono, sr=sr, hop_length=HOP)
-    # harmonic / percussive separation -> their energies. Half the total analysis time.
-    step("separate")
-    H, P = librosa.effects.hpss(mono)
-    f["harm"] = librosa.feature.rms(y=H, hop_length=HOP)[0]
-    f["perc"] = librosa.feature.rms(y=P, hop_length=HOP)[0]
     # tempo / beats / downbeats
     step("beats")
     onset = f["flux"]
@@ -235,6 +252,13 @@ def layer1_signal(mono, stereo, sr, prog=None):
     f["n"] = len(f["rms"])
     f["times"] = librosa.frames_to_time(np.arange(f["n"]), sr=sr, hop_length=HOP)
     f["duration"] = float(len(mono) / sr)
+    # Collect the separation started at the top. By here it has usually finished already; on a
+    # short track or a busy machine this is where the remaining wait lands.
+    step("separate")
+    _hp_th.join()
+    if _hp.get("e") is not None:
+        raise _hp["e"]
+    f["harm"], f["perc"] = _hp["h"], _hp["p"]
     # per-band levels + the individual hits in each band (done here, while S is in hand)
     step("bands")
     f["band_levels"], f["band_onsets"] = layer1b_bands(S, sr, f["times"])
@@ -242,15 +266,29 @@ def layer1_signal(mono, stereo, sr, prog=None):
 
 
 # ============================================== PROGRESS REPORTING
-# Stage weights are MEASURED, not guessed — timed end to end on a 5.5-minute track:
-#   load 0.40s | stft 1.18s | spectral+flux+mfcc+chroma 1.62s | HPSS 12.16s | beats 0.82s
-#   per-band onsets 0.09s | PANNs 6.09s | everything else under 0.05s      (23.26s total)
-# Harmonic/percussive separation alone is 52% of the run and PANNs another 26%, so a bar built
-# on "one tick per layer" would spend almost all its time on two ticks and look frozen. These
-# weights are ratios of one another, and every stage scales with track length, so they hold for
-# any duration even though the absolute times do not.
-STAGE_W = {"load":0.02, "spectrum":0.05, "features":0.07, "separate":0.52,
-           "beats":0.04, "bands":0.01, "tagging":0.26, "finalise":0.03}
+# Stage weights are MEASURED, not guessed. Re-measured after the two long stages were moved onto
+# their own threads, on the same 3-minute track:
+#
+#   sequential (before)                        overlapped (now)
+#     load        0.00                           load        0.00
+#     stft        1.10                           stft        0.09
+#     features    0.93                           features    2.34   <- now sharing cores
+#     HPSS        6.61                           beats       1.08
+#     beats       0.87                           HPSS wait   4.13   <- residual only
+#     bands       0.05                           bands       0.05
+#     PANNs       5.14                           PANNs wait  0.00   <- finished under cover
+#     finalise    0.07                           finalise    0.05
+#     TOTAL      14.89                           TOTAL       9.01
+#
+# What is charged to "separate" and "tagging" is now only the part that did NOT fit under the
+# other work, so both shrink and the stages they hid behind grow. HPSS is the critical path and
+# everything else runs inside it. The weights are ratios, and every stage scales with track
+# length, so they hold for any duration even though the absolute times do not.
+#
+# tagging keeps a small weight rather than zero: on a short track, or a machine where the model
+# load dominates, there is still a real wait there.
+STAGE_W = {"load":0.01, "spectrum":0.01, "features":0.26, "beats":0.12,
+           "separate":0.46, "bands":0.01, "tagging":0.02, "finalise":0.01}
 STAGE_LABEL = {"load":"decoding audio", "spectrum":"spectrum",
                "features":"spectral features", "separate":"harmonic / percussive",
                "beats":"tempo & beats", "bands":"per-band onsets",
@@ -630,14 +668,33 @@ def build_director(path, progress=None):
     print(f"[load] {os.path.basename(path)}")
     mono, stereo, sr = load_audio(path)
     if prog: prog.dur = len(mono) / float(sr)
+    # PANNS RUNS ALONGSIDE LAYER 1, not after it. The two are genuinely independent -- tag() takes
+    # only (mono, sr) and layer1_signal never sees the tags -- and between them they were 79% of
+    # the wall clock (HPSS 6.6s, PANNs 5.1s of a 14.9s run on a 3-minute track). Running them in
+    # sequence was costing the whole of the shorter one for nothing.
+    #
+    # A thread, not a process: both sides spend nearly all their time inside numpy/scipy and
+    # torch, which release the GIL, so they overlap properly. A process would have to ship the
+    # audio across a pipe and load a second copy of the model.
+    #
+    # The result is identical to the sequential version, not approximately identical: the same
+    # calls run on the same inputs, only overlapped.
+    panns, _panns_err, _panns_th = None, None, None
+    if tagger.available():
+        _box = {}
+        def _tag_worker():
+            try: _box["r"] = tagger.tag(mono, sr)
+            except Exception as e: _box["e"] = e
+        _panns_th = threading.Thread(target=_tag_worker, name="panns", daemon=True)
+        print(f"[layer4] PANNs tagging (ML), in parallel with layer 1…")
+        _panns_th.start()
     print(f"[layer1] signal features…")
     f = layer1_signal(mono, stereo, sr, prog)
-    panns = None
-    if tagger.available():
-        if prog: prog("tagging")
-        print(f"[layer4] PANNs tagging (ML)…")
-        try: panns = tagger.tag(mono, sr)
-        except Exception as e: print("  panns failed -> heuristic:", e); panns = None
+    if _panns_th is not None:
+        if prog: prog("tagging")          # only the RESIDUAL wait is charged to this stage now
+        _panns_th.join()
+        panns = _box.get("r")
+        if _box.get("e"): print("  panns failed -> heuristic:", _box["e"])
     if prog: prog("finalise")
     print(f"[layer3] emotion curves…")
     cur = layer3_emotion(f, panns.get("moods") if panns else None)

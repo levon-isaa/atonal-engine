@@ -4,6 +4,7 @@ Maps relevant tags -> genre buckets + a coarse mood vector.
 Falls back cleanly if the model/checkpoint isn't available (analyze.py handles that).
 """
 import os, numpy as np
+import threading
 
 _model = None
 _labels = None
@@ -28,14 +29,21 @@ def available():
     import importlib.util
     return importlib.util.find_spec("panns_inference") is not None
 
+_load_lock = threading.Lock()
+
 def _load():
+    # The server is a ThreadingHTTPServer and the tagger now also runs on its own thread inside a
+    # single analysis, so two callers can reach here at once. Without the lock both would build an
+    # AudioTagging -- two checkpoint loads, two copies of the weights in memory, and whichever
+    # finished last would win the global.
     global _model, _labels
-    if _model is None:
-        ensure_model()                       # make sure labels CSV + checkpoint exist first
-        from panns_inference import AudioTagging
-        from panns_inference.config import labels
-        _model = AudioTagging(checkpoint_path=None, device="cpu")
-        _labels = list(labels)
+    with _load_lock:
+        if _model is None:
+            ensure_model()                   # make sure labels CSV + checkpoint exist first
+            from panns_inference import AudioTagging
+            from panns_inference.config import labels
+            _model = AudioTagging(checkpoint_path=None, device="cpu")
+            _labels = list(labels)
     return _model, _labels
 
 GENRE_TAGS = {
