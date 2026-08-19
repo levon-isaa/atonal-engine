@@ -258,6 +258,8 @@ uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see th
 uniform float u_fill;                  // directional fill leg of the rig; 0 ablates it (DXS.fill)
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
 uniform float u_hwlod;                 // 1 = hardware mip selection instead of the analytic one (A/B)
+uniform float u_mipflat;               // 1 = let mip averaging flatten the normal; 0 = the old re-inflate (A/B)
+uniform float u_trivar;                // 1 = variance-normalise the triplanar blend (A/B)
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
@@ -680,7 +682,7 @@ vec3 objP(vec3 p){
 // the SAME coordinates and each discarding the other's channels -- six fetches and two
 // pow(abs(n),6) triplanar blends where three and one do. The roughness rides in alpha and
 // arrives with the RGB for free. Returns the shading normal; writes the roughness modulation.
-vec3 DIAGW=vec3(0.0); float DIAGD=0.0;      // diagnostic taps, written by texDetail
+vec3 DIAGW=vec3(0.0); float DIAGD=0.0, DIAGF=1.0, DIAGL=0.0;   // diagnostic taps, written by texDetail
 /* ANALYTIC RAY DIFFERENTIALS, not the hardware's derivatives. The mip level texture() picks comes
    from dFdx/dFdy of the coordinate across the pixel quad, and in a raymarcher that derivative is
    not trustworthy: the quad straddling a silhouette has one lane on the near face and its
@@ -731,8 +733,38 @@ vec3 texDetail(vec3 op,vec3 n,vec3 dox,vec3 doy,out float rghOut){
   vec3 by=vec3(ty.xy+n.xz, abs(ty.z)*n.y);
   vec3 bz=vec3(tz.xy+n.xy, abs(tz.z)*n.z);
   vec3 pn=normalize(bx.zyx*w.x + by.xzy*w.y + bz.xyz*w.z);
+  // MIP FLATTENING, put back. A mip level is the AVERAGE of the normals under it, and averaging
+  // unit vectors that point different ways gives a vector SHORTER than one. That shortening is
+  // the whole signal: it is how much of the map's tilt has been averaged out at this footprint,
+  // and the correct limit for a surface whose detail no longer resolves is the flat geometric
+  // normal. Every normalize() on the path above throws that signal away and re-inflates the
+  // averaged normal back to full tilt -- so the map stayed at full strength no matter how far
+  // the mip chain had already flattened it.
+  //
+  // That is what the long streaks on a face seen edge-on were. At grazing the footprint stretches
+  // by 1/NoV, the fetch lands several mips up, and the hardware duly returns a nearly-flat normal
+  // -- which this function then renormalised back to a full-tilt one and smeared along the axis
+  // the projection had compressed. Filtering was working; the shader was undoing it.
+  //
+  // Recovering it costs three lengths. The bake writes unit normals, so length is 1 at level 0
+  // and falls from there; using it as the blend weight is Toksvig's argument applied to the
+  // amplitude instead of to roughness, and it composes with the Toksvig term already in the
+  // caller rather than replacing it.
+  float mipFlat=mix(1.0, length(tx)*w.x + length(ty)*w.y + length(tz)*w.z, u_mipflat);
+  DIAGF=length(tx)*w.x + length(ty)*w.y + length(tz)*w.z;
+  DIAGL=0.5*log2(max(dot(dox.xy*s,dox.xy*s), dot(doy.xy*s,doy.xy*s))*float(textureSize(u_detail,0).x)*float(textureSize(u_detail,0).x));
   // u_txAmp stays the material's tilt in radians, so every preset keeps its relative weighting.
-  vec3 outN=normalize(mix(n, pn, clamp(u_txAmp*26.0,0.0,1.0)));
+  // VARIANCE OF THE TRIPLANAR BLEND. The three projections read DECORRELATED parts of the map, so
+  // combining them with weights w gives a perturbation whose standard deviation is sqrt(dot(w,w))
+  // -- 1.0 where one projection owns the pixel, 0.577 where all three share it. The detail
+  // therefore fades in and out purely as a function of the NORMAL, and on an extruded form the
+  // normal is constant along the extrusion: the fade runs as a stripe down the whole side wall.
+  // That is the streaking, and it is why it survived the map being isotropic (verified at one
+  // texel per pixel), the mip chain being irrelevant here (mipFlat is a flat 0.87 across the
+  // form) and every lighting term being ablated one at a time.
+  // Dividing by sqrt(dot(w,w)) restores constant amplitude across the blend.
+  float vnorm=mix(1.0, inversesqrt(max(dot(w,w),1e-4)), u_trivar);
+  vec3 outN=normalize(mix(n, pn, clamp(u_txAmp*26.0*vnorm,0.0,1.0)*clamp(mipFlat,0.0,1.0)));
   DIAGD=length(outN-n);
   return outN;
 }
@@ -1077,10 +1109,15 @@ void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
   // DIAG 6/7: the detail map itself, screen-mapped, with no triplanar and no lighting in the way.
   // The only honest way to ask whether a structure is IN the map or is being made by the read.
-  if(u_diag>5.5){
-    vec2 t6=gl_FragCoord.xy/u_res.y*(u_diag>6.5?4.0:1.0);
+  if(u_diag>5.5 && u_diag<7.5){
+    // DIAG 6 shows the map ONE TEXEL PER PIXEL, which is the only view that can answer whether a
+    // structure is in the map. Fitting a whole tile on screen minifies an 8192 map 10x and the
+    // mip chain then shows a blurred average of exactly the detail in question.
+    vec2 t6=u_diag>6.5 ? gl_FragCoord.xy/u_res.y
+                       : gl_FragCoord.xy/float(textureSize(u_detail,0).x);
     vec4 s6=texture(u_detail,t6);
-    o=vec4(u_diag>6.5? vec3(s6.a) : s6.xyz, 99.0); return;
+    vec4 sm6=textureLod(u_detail,t6,0.0);
+    o=vec4(u_diag>6.5? vec3(s6.a) : sm6.xyz, 99.0); return;
   }
   float f=0.5/tan(u_fov*0.5);        // uv.y spans +/-0.5, so the 0.5 is required or the FOV halves
   vec3 rd=normalize(uv.x*u_rt+uv.y*u_up+f*u_fw), ro=u_ro;
@@ -1188,6 +1225,11 @@ void main(){
       if(dm==3) dc=vec3(DIAGD*8.0);                    // how far detail bent the normal
       if(dm==4) dc=vec3(sqrt(dot(DIAGW,DIAGW)));       // amplitude the blend actually passes
       if(dm==5) dc=vec3(fract(dRgh*16.0));             // roughness field, contoured
+      if(dm==8) dc=vec3(calcAO(p,gn));                 // ambient occlusion, alone
+      if(dm==9) dc=vec3(fract(calcAO(p,gn)*24.0));     // ...contoured, so terracing is unmissable
+      if(dm==10) dc=vec3(DIAGF);                       // 1 = normal at full tilt, <1 = mip has flattened it
+      if(dm==11) dc=vec3(clamp(DIAGL/8.0,0.0,1.0));    // selected mip level / 8
+      if(dm==12) dc=vec3(sqrt(dot(DIAGW,DIAGW)));      // amplitude the triplanar blend passes
       o=vec4(dc,t); return;
     }
     float rgh=texRough(dRgh,u_rough);                 // spatially varying roughness
@@ -2783,6 +2825,8 @@ function frame(){
   gl.uniform1f(US('u_diag'),window.DIAG||0);
   gl.uniform1f(US('u_kvar'),(window.KVAR!==undefined)?window.KVAR:KVAR_CAP);
   gl.uniform1f(US('u_hwlod'),window.HWLOD?1:0);
+  gl.uniform1f(US('u_mipflat'),(window.MIPFLAT!==undefined)?window.MIPFLAT:1);
+  gl.uniform1f(US('u_trivar'),(window.TRIVAR!==undefined)?window.TRIVAR:1);
   gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
   // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
   // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
@@ -3354,28 +3398,29 @@ void main(){
 const DPRESET={
   // Isotropic — the fine speckle a smooth material actually has.
   //
-  // TILT: 4.0 -> 2.4 -> 4.0 again. The cut to 2.4 was made to suppress the striations, on the
-  // reading that they were this map's residual anisotropy. They were not: they were the diffuse
-  // irradiance term sampling env() along the perturbed normal, which is fixed at its own site.
-  // Lowering the tilt worked at the time only because it shrank the input to that amplifier.
+  // TILT: 4.0 -> 2.4 -> 4.0 -> 2.4. Back where it started, and the round trip is the point.
   //
-  // With the amplifier gone the tilt is free to be chosen on its own merits again, and 4.0 is
-  // where it was before. Measured at the same pinned pose, high-passed RMS over a 300x650 patch
-  // of the large extruded face, floor (Detail = None) 1.68:
-  //     2.4    2.43     the artefact-era value: barely above the floor, no material read
-  //     3.2    2.82
-  //     4.0    3.32     restored
-  //     6.0    4.52     overshoots -- long streaks across the face, clearly visible
-  //     13.0   ~8       the PNGs' own level; the notes below already call that gravel
-  // The streaking at 6 is not a bug to chase: an isotropic perturbation entering diffuse through
-  // dot(dn, L) is projected onto ONE direction, so it elongates perpendicular to the key. That is
-  // what every normal map does. It just should not be loud enough to see on a satin surface.
+  // The cut to 2.4 was originally made to suppress striations. I raised it to 4.0 on finding that
+  // those striations were the diffuse irradiance lookup (fixed in cb5d4a0), reasoning that the
+  // tilt had been paying for someone else's bug. Half right: the tilt was suppressing TWO
+  // artefacts, and only one of them was that lookup. The other is the map at grazing incidence on
+  // a dark face, which is not a bug at all -- an isotropic perturbation entering diffuse through
+  // dot(dn, L) is projected onto ONE direction, so it elongates perpendicular to the key, and on
+  // an extruded form the side wall holds a near-constant normal down its whole length. Fine
+  // parallel streaks are what that looks like. Every normal map does it; it just must not be
+  // loud enough to see.
+  //
+  // Isolated on one frozen frame with the tilt as the only variable, Pearl/Matte, side wall in
+  // shadow: at 4.0 the streaks are plainly visible, at 2.4 they are at the edge of detection.
+  // Ruled out first, each on that same frame, each alone: the fill leg, the reflection trace,
+  // the clearcoat, the iridescence, the roughness channel of the map, and the map's own content
+  // (inspected at ONE TEXEL PER PIXEL via DIAG 6 -- isotropic, no streaks in it).
   //
   // Raising the bake to 8192 made it worse rather than better, which is the part worth recording:
   // the finer octaves that 2048 was mip-filtering away are now resolved, so the streaking that was
   // always in the map became visible. More resolution faithfully reproduces a flaw that lower
   // resolution was hiding.
-  micro:    {base:[14,14], oct:4, gain:0.55, tilt:4.0, rvar:0.42},
+  micro:    {base:[14,14], oct:4, gain:0.55, tilt:2.4, rvar:0.42},
   // brushed, but 1.6:1 rather than the PNG's 2.27:1 — enough to read as a direction, not enough
   // to read as corduroy across a flat face
   machined: {base:[9,14],  oct:4, gain:0.60, tilt:3.2, rvar:0.35},
