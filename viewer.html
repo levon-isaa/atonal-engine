@@ -171,12 +171,6 @@
   <details id="gScene"><summary>Scene</summary>
     <div class="row"><label>Scene</label><select id="selScene">
       <option value="field" selected>Colour field</option><option value="studio">Studio</option></select></div>
-    <div class="row"><label>Look</label><select id="selLook">
-      <option value="studio">Studio</option>
-      <option value="label">Label</option><option value="riso">Riso</option>
-      <option value="xerox">Xerox</option><option value="halftone">Halftone</option>
-      <option value="chrome">Chrome</option><option value="clean">Clean</option>
-      <option value="hard" selected>Hard surface</option></select></div>
     <div class="row"><label>Palette</label><select id="selPal">
       <option value="auto" selected>Auto &middot; Director</option>
       <option value="blood">Blood</option><option value="acid">Acid</option>
@@ -2894,6 +2888,11 @@ function modUpdate(dt,bpm){
   }
 }
 const MV=k=>(MODMODE==='off')?0:(MODV[k]||0);
+/* The largest MV(t) can ever be, from the routes as they stand. Every source is bounded to
+   0..1, so the peak is just the sum of the amounts -- and unlike MV() this does not change
+   from frame to frame, which is what makes it usable for anything that has to be placed ONCE
+   and stay put (the studio floor). */
+const modPeak=t=>(MODMODE==='off')?0:MODB.reduce((a,r)=>a+(r.t===t?Math.abs(r.a):0),0);
 function modSave(){ try{ localStorage.setItem('atonal.mod',JSON.stringify(MODB));
   localStorage.setItem('atonal.modmode',MODMODE); }catch(e){} }
 function modLoad(){ try{ const m=localStorage.getItem('atonal.modmode');
@@ -3227,6 +3226,7 @@ const LOOKS={
 // that nothing had changed -- which was true of what was on screen, because the dropdown still
 // opened on Studio and nothing in the engine ever selects a look on its own. A look nobody
 // selects is a look nobody has. Studio is one click away and byte-for-byte what it always was.
+let lookName='hard';
 const LK =Object.assign({},LOOKS.hard), LKT=Object.assign({},LOOKS.hard);
 
 let director=null, audioBuffer=null, ctx=null, source=null, isPlaying=false, startedAt=0, pausedAt=0;
@@ -3820,14 +3820,42 @@ function frame(){
   const sBase=Math.max(reform,0.2)*(1.0+energy*0.10)*0.95;
   const framed=2.0*fEff*reach*sBase/fill;
   // tilt swings the form's depth toward its radius, so blend between the two by the tilt
-  /* THE FLOOR TAKES THE WORST CASE. This used to blend the form's Y extent toward its radial
-     reach by the tilt, which was exactly right while the tilt was a HELD lean: one angle, one
-     answer. The tumble sweeps that angle continuously, so the same expression would slide the
-     studio floor up and down through every revolution -- a moving floor under a turning object,
-     which reads as the ground breathing. The deepest the form can ever reach is the larger of the
-     two, and putting the floor there makes it stationary and still never intersected. */
-  const yExt=Math.max(frameReachY(), reach);
-  groundY=-(yExt*sBase+0.05);     // below the form's underside at any orientation
+  /* THE FLOOR, AND WHY THE FORM WAS GOING THROUGH IT. Two independent leaks, and it took both to
+     explain "sometimes":
+
+     1. THE EXTENT WAS PLANAR. max(reachY, reach) measures the profile's own bounding box -- and
+        the profile is a 2D shape that then gets EXTRUDED along z. With one fixed rotation axis
+        that was fine, because the extrusion never pointed down. Three axes tumble it: when the
+        depth axis swings toward the floor the lowest point of the body is governed by the
+        extrusion, which neither of those two numbers knows about.
+
+     2. THE SCALE WAS THE BASE ONE. sBase deliberately leaves out the beat terms, because the
+        camera must not cancel the punch it is framing (see the dolly below). But formScale() in
+        the shader DOES include them -- u_pulse, u_hLow, u_hSub, up to +16% together -- so on a
+        kick the body grew by up to a sixth past the height the floor had been placed for. Which
+        is exactly why it dipped through on beats and looked fine between them.
+
+     Both are fixed by asking a different question. The FIELD already guarantees a bound: map()
+     early-outs on length(p) - 1.45, so no form, at any orientation, extends past 1.45 object
+     units -- that is a 3D radius and it costs nothing to trust, where reconstructing the
+     extrusion depth in JS would be a copy of shader arithmetic drifting out of date. And the
+     scale used is the beat's PEAK rather than its current value, so the floor is a stationary
+     plane the body can approach but never reach, instead of one that moves with the music.
+     max() with the framing reaches keeps imported meshes and SVGs, which replace the field
+     entirely and have their own extents, inside the same guarantee. */
+  /* THE SCALE HAS TO BE THE ONE ACTUALLY SENT. First attempt at this used sPeak built from
+     `reform`, and measured, still penetrated by 0.09 units at idle -- because u_reform is not
+     reform: the routing matrix multiplies it on the way to the uniform (see u_reform below), so a
+     route on Form scale grows the body past a floor placed from the unmodulated number. It is the
+     same class of mistake as the beat terms, one layer further out.
+     Every term here is a CEILING rather than a current value, so the plane is placed once and
+     stays: the beat terms at their maximum, energy at its maximum, and the matrix at modPeak()
+     rather than MV(). The only thing left that moves it is `reform` itself, which changes on a
+     shape morph -- and the framing changes then anyway. */
+  const rG = Math.max(1.45, frameReach(), frameReachY());
+  const sCeil = Math.max(reform,0.2)*(1.0+0.10+0.16)*0.95
+              * Math.max(0.25, 1+modPeak('scale')*0.45);
+  groundY = -(rG*sCeil + 0.05);
   // userZoom multiplies the DERIVED framing distance rather than replacing it, so the framing
   // logic still normalises across shapes and the zoom stays a relative adjustment on top.
   // The push-in on the kick is halved with the form's own swell in formScale() -- the two are
@@ -4971,7 +4999,19 @@ $('selDetail').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='off'){ if(detailTex) gl.deleteTexture(detailTex); detailTex=null; dbakeSize=0; detailName='off'; return; }
   if(bakeDetail(v)) return;
   loadDetail(v).catch(err=>showStat('Detail map failed — '+err.message,true)); });
-$('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
+/* LOOK IS NO LONGER A CONTROL. It was a menu of eight print-and-finish presets from before the
+   Filter pass existed, and the Filter pass does that job better and on the finished frame: Riso,
+   Xerox and Halftone were all approximations of a screen, and there is a real one now. Everything
+   is authored against Hard surface, which is what the flat-shading work and every measurement in
+   this file assume, so the renderer pins there and the dropdown that could take it somewhere
+   untested is gone.
+
+   THE PRESETS THEMSELVES STAY, reachable from the console as window.LOOK('riso'). They are a data
+   table, they cost nothing, and deleting them would throw away the one thing the menu was good
+   for -- the LK fields they set are load-bearing throughout the shader (flatK, u_hardAmb,
+   u_bevK), so this is a removal of a CHOICE, not of the machinery behind it. */
+window.LOOK=n=>{ const l=LOOKS[n]; if(!l){ showStat('No look "'+n+'"',true); hideStat(1600); return Object.keys(LOOKS); }
+  Object.assign(LKT,l); lookName=n; showStat('Look · '+n); hideStat(1400); return n; };
 /* The second slider means something different per mode, and it says so. Facets is the only mode
    with nothing to put there -- the fold count is re-cut per section, not held, so a slider would
    be overwritten on the next section boundary. */
@@ -5103,7 +5143,6 @@ const ROLL_RECIPES=[
   {name:'Sculpture', w:3, f(r){
     setCtl('selFilt','0');
     setCtl('selScene', r()<0.35?'studio':'field');
-    setCtl('selLook',  pick(r,['hard','hard','clean','studio','chrome']));
     setCtl('selMat',   pick(r,['pearl','pearl','clay','frosted']));
     setCtl('selFinish',pick(r,['satin','gloss','matte']));
     setCtl('selDetail',pick(r,['micro','micro','machined']));
@@ -5113,7 +5152,6 @@ const ROLL_RECIPES=[
   {name:'Print', w:3, f(r){
     setCtl('selFilt', pick(r,['1','1','2','6']));
     setCtl('selScene','field');
-    setCtl('selLook', pick(r,['hard','riso','xerox','label']));
     setCtl('selMat',  pick(r,['clay','pearl']));
     setCtl('selFinish',pick(r,['matte','satin']));
     setCtl('filtCell', Math.round(6+r()*16));
@@ -5123,7 +5161,6 @@ const ROLL_RECIPES=[
   {name:'Sensor', w:2, f(r){
     setCtl('selFilt','4');
     setCtl('selScene','field');
-    setCtl('selLook', pick(r,['hard','clean']));
     setCtl('selMat',  pick(r,['pearl','clay']));
     setCtl('selFinish','satin');
     setCtl('filtCell', Math.round(5+r()*7));       // Bands, in this mode
@@ -5132,7 +5169,6 @@ const ROLL_RECIPES=[
   {name:'Poster', w:2, f(r){
     setCtl('selFilt', pick(r,['3','3','5']));
     setCtl('selScene','field');
-    setCtl('selLook', pick(r,['hard','label','riso']));
     setCtl('selPal',  pick(r,['acid','cyber','ultra','solar','blood']));
     setCtl('selMat',  pick(r,['clay','pearl','holo']));
     setCtl('filtCell', Math.round(8+r()*22));
@@ -5142,7 +5178,6 @@ const ROLL_RECIPES=[
   {name:'Glass', w:1, f(r){
     setCtl('selFilt','0');
     setCtl('selScene', r()<0.5?'studio':'field');
-    setCtl('selLook', pick(r,['clean','studio','chrome']));
     setCtl('selMat',  pick(r,['glass','frosted','holo']));
     setCtl('selFinish','gloss');
     setCtl('selDetail', r()<0.6?'off':'micro');
@@ -5241,7 +5276,7 @@ setInterval(()=>{
     'march '+RW+'x'+RH+'  ('+mpxMarch.toFixed(1)+' Mpx)<br>'+
     'canvas '+glc.width+'x'+glc.height+'  ('+mpxCanvas.toFixed(1)+' Mpx)<br>'+
     'shadow N '+STEP.shaN+'   detail '+(bake.size||'-')+'  ('+(bake.mb||0)+' MB)<br>'+
-    'look '+$('selLook').value+'   governor avg '+frameAvg.toFixed(1)+' ms';
+    'look '+lookName+'   governor avg '+frameAvg.toFixed(1)+' ms';
 },500);
 
 if(!bakeDetail('micro')) loadDetail('micro').catch(e=>__showErr('detail map: '+e.message));
