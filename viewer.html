@@ -40,29 +40,69 @@
   #statPct{display:none;min-width:34px;text-align:right;opacity:.65;font-variant-numeric:tabular-nums}
   #stat.busy #statBar,#stat.busy #statPct{display:block}
   .err{color:#ffb4b4!important}
-  #ctrl{position:fixed;top:16px;right:18px;z-index:11;display:flex;flex-direction:column;gap:7px;align-items:flex-end}
-  #ctrl .row{display:flex;align-items:center;gap:8px}
-  #ctrl label{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#8a8b91}
-  #ctrl select{background:rgba(14,14,17,.85);color:#e6e6e4;border:1px solid rgba(255,255,255,.18);border-radius:3px;
-    padding:5px 8px;font:inherit;font-size:10px;letter-spacing:.06em;backdrop-filter:blur(12px)}
-  #ctrl input[type=color]{width:26px;height:22px;padding:0;border:1px solid rgba(255,255,255,.22);border-radius:3px;
-    background:transparent;cursor:pointer}
+  /* ---- CONTROL PANEL ----
+     It used to be twenty-one rows floating directly on the canvas with no container: no
+     background, so every label sat at whatever contrast the render happened to give it, and no way
+     to put it away. A panel with its own ground fixes the legibility, and native <details> groups
+     fix the length -- the whole thing collapses to a header, and each group remembers whether it
+     was open. */
+  #ctrl{position:fixed;top:14px;right:14px;z-index:11;width:266px;max-height:calc(100vh - 96px);
+    display:flex;flex-direction:column;border-radius:10px;overflow:hidden;
+    background:rgba(9,9,13,.76);backdrop-filter:blur(20px);
+    border:1px solid rgba(255,255,255,.10);box-shadow:0 14px 44px rgba(0,0,0,.5);
+    transition:width .18s ease, max-height .18s ease}
+  #ctrlHead{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 11px;cursor:pointer;
+    border-bottom:1px solid rgba(255,255,255,.08);user-select:none}
+  #ctrlHead span.t{flex:1;font-size:9px;letter-spacing:.20em;text-transform:uppercase;color:#9b9ca4}
+  #ctrlHead span.c{font-size:9px;color:#6f7078;transition:transform .18s ease}
+  #ctrlBody{overflow-y:auto;overscroll-behavior:contain;padding:0 11px 10px}
+  #ctrlBody::-webkit-scrollbar{width:6px}
+  #ctrlBody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:3px}
+  /* Collapsed: the panel shrinks to its own header rather than vanishing, so there is always
+     something to click and nothing to discover. */
+  #ctrl.min{width:112px;max-height:36px}
+  #ctrl.min #ctrlBody{display:none}
+  #ctrl.min #ctrlHead span.c{transform:rotate(-90deg)}
+  #ctrl details{border-bottom:1px solid rgba(255,255,255,.06)}
+  #ctrl details:last-of-type{border-bottom:0}
+  #ctrl summary{list-style:none;cursor:pointer;padding:9px 0 8px;display:flex;align-items:center;gap:7px;
+    font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#7d7e86;user-select:none}
+  #ctrl summary::-webkit-details-marker{display:none}
+  #ctrl summary::before{content:'\25B8';font-size:8px;color:#5c5d65;transition:transform .15s ease}
+  #ctrl details[open] summary::before{transform:rotate(90deg)}
+  #ctrl details[open] summary{color:#c3c4cc}
+  #ctrl .row{display:flex;align-items:center;gap:7px;padding:3px 0 4px}
+  #ctrl .row>label{flex:0 0 56px;font-size:9px;letter-spacing:.10em;text-transform:uppercase;color:#8a8b91}
+  #ctrl select{flex:1;min-width:0;background:rgba(255,255,255,.05);color:#e6e6e4;
+    border:1px solid rgba(255,255,255,.14);border-radius:4px;
+    padding:5px 6px;font:inherit;font-size:10px;letter-spacing:.04em}
+  #ctrl select:hover{background:rgba(255,255,255,.10)}
+  #ctrl input[type=color]{width:26px;height:22px;flex:0 0 auto;padding:0;
+    border:1px solid rgba(255,255,255,.22);border-radius:3px;background:transparent;cursor:pointer}
   #ctrl input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
   #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:2px}
-  /* Compact buttons for the panel. The bar's 8px/14px padding is sized for a wide strip and
-     wraps the panel to an unusable width. */
-.row input[type=range]{flex:1;-webkit-appearance:none;height:3px;background:rgba(255,255,255,.16);
+.row input[type=range]{flex:1;min-width:0;-webkit-appearance:none;height:3px;background:rgba(255,255,255,.16);
     border-radius:2px;outline:none;margin:0}
   .row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;
     border-radius:50%;background:#c8b8ff;cursor:pointer;border:0}
-  .row .val{font-size:9px;color:#cfcfd4;min-width:30px;text-align:right;font-variant-numeric:tabular-nums}
-  #ctrl button.mini{padding:5px 9px;font-size:9px;letter-spacing:.10em;backdrop-filter:blur(12px);
-    background:rgba(14,14,17,.85)}
-  #ctrl button.mini:hover{background:rgba(255,255,255,.14)}
+  .row .val{font-size:9px;color:#cfcfd4;flex:0 0 30px;text-align:right;font-variant-numeric:tabular-nums}
+  #ctrl button.mini{flex:0 0 auto;padding:5px 9px;font-size:9px;letter-spacing:.10em;
+    background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.14)}
+  #ctrl button.mini:hover{background:rgba(255,255,255,.13)}
   #ctrl button.mini.on{background:rgba(200,184,255,.20);border-color:rgba(200,184,255,.48);color:#e8e0ff}
-  /* Groups sit slightly apart from the selects so the panel reads as two zones, not one list. */
-  #ctrl .row.grp{margin-top:2px}
-  #ctrl .row.grp label{align-self:center}
+  /* ---- ROUTING MATRIX ---- one route per card: what it drives, what drives it, how hard. */
+  .mrow{border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:6px 7px;margin:5px 0;
+    background:rgba(255,255,255,.028)}
+  .mrow .r1{display:flex;align-items:center;gap:6px}
+  .mrow .r2{display:flex;align-items:center;gap:7px;margin-top:5px}
+  .mrow .arw{flex:0 0 auto;font-size:9px;color:#6f7078}
+  .mrow select{font-size:9px;padding:4px 5px}
+  .mrow .mdel{flex:0 0 auto;padding:3px 6px;font-size:9px;line-height:1;
+    background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.14);border-radius:4px;
+    color:#9a9aa2;cursor:pointer}
+  .mrow .mdel:hover{color:#ffb4b4;border-color:rgba(255,120,120,.5)}
+  .mrow .mv{font-size:9px;color:#c8b8ff;flex:0 0 34px;text-align:right;font-variant-numeric:tabular-nums}
+  #modEmpty{font-size:9px;line-height:1.6;color:#6f7078;padding:4px 0 6px;letter-spacing:.04em}
 </style>
 
 <canvas id="gl"></canvas>
@@ -77,100 +117,126 @@
 </div>
 
 <div id="ctrl">
-  <div class="row"><label>Shape</label><select id="selShape">
-    <option value="auto">Auto · Director</option>
-    <option value="0">Triskelion</option><option value="1">Clover</option>
-    <option value="2">Arc</option><option value="3">Chevron</option>
-    <option value="4" selected>Wave</option><option value="5">Plate</option>
-    <option value="mesh">Reference mesh</option>
-    <option value="svg">Custom SVG…</option></select></div>
-  <!-- SHAPE PARAMETERS. These apply to every form, because they act on the extrusion and the
-       profile rather than on any one profile's construction: Segments is the radial repeat count,
-       Edge scales the bevel, Mass the stroke weight of the profile, Depth the extrusion. The
-       audio still drives all four underneath — these are offsets on top of the Director, not
-       replacements for it, so a track still animates the form it is given. -->
-  <div class="row"><label>Segments</label><input type="range" id="pSeg" min="2" max="8" step="1" value="3"><span class="val" id="pSegV">3</span></div>
-  <div class="row"><label>Edge</label><input type="range" id="pEdge" min="30" max="220" step="1" value="100"><span class="val" id="pEdgeV">1.00</span></div>
-  <div class="row"><label>Mass</label><input type="range" id="pMass" min="-60" max="120" step="1" value="0"><span class="val" id="pMassV">0.00</span></div>
-  <div class="row"><label>Depth</label><input type="range" id="pDepth" min="30" max="260" step="1" value="100"><span class="val" id="pDepthV">1.00</span></div>
-  <div class="row"><label>Material</label><select id="selMat">
-    <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
-    <option value="clay">Clay</option>
-    <option value="frosted">Frosted</option><option value="holo">Holographic</option></select></div>
-  <div class="row"><label>Scene</label><select id="selScene">
-    <option value="field" selected>Colour field</option><option value="studio">Studio</option></select></div>
-  <div class="row"><label>Look</label><select id="selLook">
-    <option value="studio">Studio</option>
-    <option value="label">Label</option><option value="riso">Riso</option>
-    <option value="xerox">Xerox</option><option value="halftone">Halftone</option>
-    <option value="chrome">Chrome</option><option value="clean">Clean</option>
-    <option value="hard" selected>Hard surface</option></select></div>
+  <div id="ctrlHead" title="Collapse the panel  (H)"><span class="t">Controls</span><span class="c">&#9662;</span></div>
+  <div id="ctrlBody">
+
+  <details id="gForm" open><summary>Form</summary>
+    <div class="row"><label>Shape</label><select id="selShape">
+      <option value="auto">Auto &middot; Director</option>
+      <option value="0">Triskelion</option><option value="1">Clover</option>
+      <option value="2">Arc</option><option value="3">Chevron</option>
+      <option value="4" selected>Wave</option><option value="5">Plate</option>
+      <option value="mesh">Reference mesh</option>
+      <option value="svg">Custom SVG&hellip;</option></select></div>
+    <!-- SHAPE PARAMETERS. These apply to every form, because they act on the extrusion and the
+         profile rather than on any one profile's construction: Segments is the radial repeat count,
+         Edge scales the bevel, Mass the stroke weight of the profile, Depth the extrusion. The
+         audio still drives all four underneath — these are offsets on top of the Director, not
+         replacements for it, so a track still animates the form it is given. -->
+    <div class="row"><label>Segments</label><input type="range" id="pSeg" min="2" max="8" step="1" value="3"><span class="val" id="pSegV">3</span></div>
+    <div class="row"><label>Edge</label><input type="range" id="pEdge" min="30" max="220" step="1" value="100"><span class="val" id="pEdgeV">1.00</span></div>
+    <div class="row"><label>Mass</label><input type="range" id="pMass" min="-60" max="120" step="1" value="0"><span class="val" id="pMassV">0.00</span></div>
+    <div class="row"><label>Depth</label><input type="range" id="pDepth" min="30" max="260" step="1" value="100"><span class="val" id="pDepthV">1.00</span></div>
+    <div class="row"><label>Kaleido</label><select id="selKal">
+      <option value="auto" selected>Auto &middot; Director</option>
+      <option value="on">Always on</option>
+      <option value="off">Off</option></select></div>
+  </details>
+
+  <details id="gMat"><summary>Material</summary>
+    <div class="row"><label>Material</label><select id="selMat">
+      <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
+      <option value="clay">Clay</option>
+      <option value="frosted">Frosted</option><option value="holo">Holographic</option></select></div>
+    <div class="row"><label>Finish</label><select id="selFinish">
+      <option value="satin" selected>Satin</option>
+      <option value="matte">Matte</option>
+      <option value="gloss">Gloss</option></select></div>
+    <!-- Default is the ISOTROPIC map. Machined is still here, and it is now a mild 1.6:1 brush
+         rather than the 2.27:1 the PNG had, but any directional map reads as streaking on the
+         large flat faces of an extruded profile — which is not what these forms want by default. -->
+    <div class="row"><label>Detail</label><select id="selDetail">
+      <option value="micro" selected>Micro tooth</option>
+      <option value="machined">Machined</option>
+      <option value="off">None</option></select></div>
+    <!-- Surface is not a quality axis: it decides whether the object has microstructure at all,
+         which is an aesthetic decision the way Material and Finish are. It is also not the same
+         switch as Detail:None — that only drops the normal map, while this additionally gates the
+         iridescence banding and the specular sweep, so it is the one that gives a genuinely
+         featureless surface. -->
+    <div class="row"><label>Surface</label>
+      <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Textured</button></div>
+  </details>
+
+  <details id="gScene"><summary>Scene</summary>
+    <div class="row"><label>Scene</label><select id="selScene">
+      <option value="field" selected>Colour field</option><option value="studio">Studio</option></select></div>
+    <div class="row"><label>Look</label><select id="selLook">
+      <option value="studio">Studio</option>
+      <option value="label">Label</option><option value="riso">Riso</option>
+      <option value="xerox">Xerox</option><option value="halftone">Halftone</option>
+      <option value="chrome">Chrome</option><option value="clean">Clean</option>
+      <option value="hard" selected>Hard surface</option></select></div>
+    <div class="row"><label>Palette</label><select id="selPal">
+      <option value="auto" selected>Auto &middot; Director</option>
+      <option value="blood">Blood</option><option value="acid">Acid</option>
+      <option value="ultra">Ultra</option><option value="cyber">Cyber</option>
+      <option value="solar">Solar</option><option value="mono">Mono</option>
+      <option value="studio">Studio (light)</option>
+      <option value="custom">Custom</option></select></div>
+    <div class="row"><label>Colors</label>
+      <input type="color" id="colA" value="#2a0410" title="Background — deep tone">
+      <input type="color" id="colB" value="#ff1f4b" title="Background — accent tone"></div>
+  </details>
+
   <!-- FILTER: a look layer on the finished frame. See the FILTER shader for what each does and
        why it is a separate pass; the Director drives every parameter, which is the part the tool
        this was taken from leaves to you. -->
-  <div class="row"><label>Filter</label><select id="selFilt">
-    <option value="0" selected>None</option>
-    <option value="1">Halftone · dots</option>
-    <option value="2">Halftone · lines</option>
-    <option value="3">Pixelate</option>
-    <option value="4">Thermal</option>
-    <option value="5">Facets</option>
-    <option value="6">ASCII</option></select></div>
-  <div class="row" id="rowFilt" style="display:none"><label>Amount</label>
-    <input type="range" id="filtAmt" min="0" max="100" value="100">
-    <input type="range" id="filtCell" min="3" max="60" value="14" title="Cell size"></div>
-  <div class="row"><label>Palette</label><select id="selPal">
-    <option value="auto" selected>Auto · Director</option>
-    <option value="blood">Blood</option><option value="acid">Acid</option>
-    <option value="ultra">Ultra</option><option value="cyber">Cyber</option>
-    <option value="solar">Solar</option><option value="mono">Mono</option>
-    <option value="studio">Studio (light)</option>
-    <option value="custom">Custom</option></select></div>
-  <!-- Default is the ISOTROPIC map. Machined is still here, and it is now a mild 1.6:1 brush
-       rather than the 2.27:1 the PNG had, but any directional map reads as streaking on the
-       large flat faces of an extruded profile — which is not what these forms want by default. -->
-  <div class="row"><label>Detail</label><select id="selDetail">
-    <option value="micro" selected>Micro tooth</option>
-    <option value="machined">Machined</option>
-    <option value="off">None</option></select></div>
-  <!-- Surface belongs HERE, with the other look controls, not in the quality row it was removed
-       from. It is not a quality axis: it decides whether the object has microstructure at all,
-       which is an aesthetic decision the way Material and Finish are. It is also not the same
-       switch as Detail:None — that only drops the normal map, while this additionally gates the
-       iridescence banding and the specular sweep, so it is the one that gives a genuinely
-       featureless surface. -->
-  <div class="row grp"><label>Surface</label>
-    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Textured</button></div>
-  <div class="row"><label>Kaleido</label><select id="selKal">
-    <option value="auto" selected>Auto · Director</option>
-    <option value="on">Always on</option>
-    <option value="off">Off</option></select></div>
-  <div class="row"><label>Finish</label><select id="selFinish">
-    <option value="satin" selected>Satin</option>
-    <option value="matte">Matte</option>
-    <option value="gloss">Gloss</option></select></div>
-  <div class="row"><label>Colors</label>
-    <input type="color" id="colA" value="#2a0410" title="Background — deep tone">
-    <input type="color" id="colB" value="#ff1f4b" title="Background — accent tone"></div>
-  <!-- Toggles live here rather than in the transport bar. The bar had grown to nine buttons,
-       two of them both reading "Auto" (camera orbit and render scale), which is the point at
-       which a control strip stops being scannable. Transport keeps only what plays the track;
-       everything that changes how it LOOKS belongs with the other look controls. -->
-  <div class="row grp"><label>View</label>
-    <button id="auto" class="mini on" title="Director's automatic orbit — drag the canvas to take over">Orbit</button>
-    <button id="reset" class="mini" title="Return to the Director's framing (or double-click the canvas)">Reset</button></div>
-  <!-- One axis, not three. Auto / Rays / Surface asked the viewer to understand a render-scale
-       governor, a volumetric toggle and a normal-map switch in order to answer "make it look
-       better" — and two of the three were named after their implementation. Quality is now a
-       single ladder, and the individual switches remain reachable from the console (raysOn,
-       surfTarget, STEP.shaN) for measuring. -->
-  <div class="row grp"><label>Quality</label>
-    <button id="qPreview" class="mini" title="Fast — half shadow samples, no shafts, coarser march. For scrubbing and setup.">Preview</button>
-    <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
-    <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.00x and 1.60x to stay usable">Ultra</button></div>
-  <div class="row grp"><label>Capture</label>
-    <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
-    <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
+  <details id="gFilt"><summary>Filter</summary>
+    <div class="row"><label>Filter</label><select id="selFilt">
+      <option value="0" selected>None</option>
+      <option value="1">Halftone &middot; dots</option>
+      <option value="2">Halftone &middot; lines</option>
+      <option value="3">Pixelate</option>
+      <option value="4">Thermal</option>
+      <option value="5">Facets</option>
+      <option value="6">ASCII</option></select></div>
+    <div class="row" id="rowFilt" style="display:none"><label>Amount</label>
+      <input type="range" id="filtAmt" min="0" max="100" value="100"><span class="val" id="filtAmtV">100</span></div>
+    <div class="row" id="rowCell" style="display:none"><label>Cell</label>
+      <input type="range" id="filtCell" min="3" max="60" value="14"><span class="val" id="filtCellV">14</span></div>
+  </details>
+
+  <!-- ROUTING MATRIX. See MODSRC / MODTGT in the script for what each end of a route is and why
+       the Director's own signals are the sources. -->
+  <details id="gMod"><summary>Modulation</summary>
+    <div id="modEmpty">Nothing routed. The Director still drives everything on its own &mdash;
+      a route is an extra hand on top of it.</div>
+    <div id="modList"></div>
+    <div class="row" style="justify-content:flex-end;gap:6px">
+      <button id="modAdd" class="mini" title="Add a route">+ Route</button>
+      <button id="modClear" class="mini" title="Remove every route">Clear</button></div>
+  </details>
+
+  <details id="gView" open><summary>View</summary>
+    <div class="row"><label>Camera</label>
+      <button id="auto" class="mini on" title="Director's automatic orbit — drag the canvas to take over">Orbit</button>
+      <button id="reset" class="mini" title="Return to the Director's framing (or double-click the canvas)">Reset</button></div>
+    <!-- One axis, not three. Auto / Rays / Surface asked the viewer to understand a render-scale
+         governor, a volumetric toggle and a normal-map switch in order to answer "make it look
+         better" — and two of the three were named after their implementation. Quality is now a
+         single ladder, and the individual switches remain reachable from the console (raysOn,
+         surfTarget, STEP.shaN) for measuring. -->
+    <div class="row"><label>Quality</label>
+      <button id="qPreview" class="mini" title="Fast — half shadow samples, no shafts, coarser march. For scrubbing and setup.">Preview</button>
+      <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
+      <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.00x and 1.60x to stay usable">Ultra</button></div>
+    <div class="row"><label>Capture</label>
+      <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
+      <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
+  </details>
+
+  </div>
 </div>
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
@@ -2647,6 +2713,65 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
    FILT.cell is in DEVICE pixels, so the screen stays the same physical size whatever dpr is; a
    cell in CSS pixels would halve on a retina panel and the halftone would vanish into the grid. */
 const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
+/* ======================= ROUTING MATRIX =======================
+   Taken from the audio-reactivity panel in Sketch Tools, where every animated parameter is a row
+   of  target <- source x amount  that you wire by hand.
+
+   THE DIFFERENCE IS WHAT IS ON THE LEFT OF THE ARROW. There, the sources are what a browser can
+   measure live: a dB envelope, three drum stems, a BPM number. Here they are what the Director
+   already worked out offline -- the emotion curves, the section's own energy, per-band onsets, a
+   phase locked to the beat grid. So a route can say "roughness follows tension" or "bloom follows
+   epicness", which is a musical statement rather than a signal-processing one, and neither of
+   those exists as a signal in the tool this comes from.
+
+   IT IS ADDITIVE, ON TOP. Every route contributes to a target that already has a value the
+   Director is driving; nothing here replaces the automatic behaviour, it bends it. An empty matrix
+   is exactly the renderer as it was, which is also the default -- the alternative, seeding it with
+   a starter patch, changes what the user sees before they have asked for anything.
+
+   RANGE. Amounts are -1..+1 and each target scales that by its own sensible span (see APPLY at
+   each use site), so a route at 100% is a strong but not absurd move rather than a number whose
+   meaning depends on which target it landed on. */
+const SIG={energy:0,tension:0,arousal:0,epic:0,valence:0,darkness:0,flux:0,
+           pulse:0,kick:0,snare:0,hat:0,air:0,sub:0,beat:0,bar:0,snap:0,sect:0,steady:1};
+const MODSRC={
+  energy:'Energy', arousal:'Arousal', tension:'Tension', epic:'Epicness',
+  valence:'Valence', darkness:'Darkness', flux:'Flux',
+  pulse:'Beat pulse', kick:'Kick', snare:'Snare', hat:'Hi-hat', air:'Air', sub:'Sub',
+  bar:'LFO 1 bar', beat:'LFO 1 beat', snap:'Snap & hold', sect:'Section step', steady:'Constant'
+};
+const MODTGT={
+  spin:'Spin rate', tumble:'Tumble rate', swirl:'Swirl rate',
+  scale:'Form scale', kal:'Kaleidoscope',
+  cell:'Filter cell', famt:'Filter amount',
+  bloom:'Bloom', sat:'Saturation', grain:'Grain',
+  dolly:'Camera distance', fov:'Field of view', hue:'Hue'
+};
+let MODB=[];                                   // the routes themselves: {t, s, a}
+const MODV={};                                 // this frame's summed value per target
+/* Two clocks the sources need that nothing else in the file keeps: a phase in BEATS, and a
+   sample-and-hold that re-rolls on it. Both are derived from the Director's tempo, so an LFO here
+   is locked to the grid the same way the form's rotation is -- an LFO on wall-clock time would
+   drift against the track within a few bars, which is the whole reason Sketch offers 1/1..1/8
+   rather than a frequency in hertz. */
+let beatPhase=0, snapV=0.5, snapAt=-1, sectRand=0.5;
+function modUpdate(dt,bpm){
+  beatPhase += dt*Math.max(20,bpm)/60;
+  const b=Math.floor(beatPhase);
+  if(b!==snapAt){ snapAt=b; snapV=Math.random(); }
+  SIG.beat = 0.5+0.5*Math.sin(beatPhase*6.2831853);
+  SIG.bar  = 0.5+0.5*Math.sin(beatPhase*6.2831853/4);
+  SIG.snap = snapV; SIG.sect = sectRand; SIG.steady = 1;
+  for(const k in MODTGT) MODV[k]=0;
+  for(const r of MODB){
+    const v=SIG[r.s]; if(v===undefined) continue;
+    MODV[r.t]=(MODV[r.t]||0)+r.a*v;
+  }
+}
+const MV=k=>MODV[k]||0;
+function modSave(){ try{ localStorage.setItem('atonal.mod',JSON.stringify(MODB)); }catch(e){} }
+function modLoad(){ try{ const v=JSON.parse(localStorage.getItem('atonal.mod')||'[]');
+  if(Array.isArray(v)) MODB=v.filter(r=>MODTGT[r.t]&&MODSRC[r.s]).map(r=>({t:r.t,s:r.s,a:+r.a||0})); }catch(e){} }
 let filtBase=14;
 let kalMode='auto';                                   // 'auto' | 'on' | 'off'
 let kalAmt=0, kalDrive=0, kalBoost=0;
@@ -3363,6 +3488,7 @@ function frame(){
     moodTarget=s.palette||MO;
     const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy);
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
+      sectRand=Math.random();                       // the matrix's 'Section step' source
       // only while the form is unfolded: swinging the mirror line under a folded shape throws
       // the twin across it in one frame
       if(kalAmt<0.02) kalPhase=kalPhaseFor(s.t0);
@@ -3387,12 +3513,21 @@ function frame(){
   for(const k in FIN) FIN[k]=sm(FIN[k],FINT[k],2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
+  /* PUBLISH THE FRAME'S SIGNALS, THEN EVALUATE THE ROUTES. This has to sit above every use of
+     MV(): the curves are frame-local `let`s, so a source function closing over them would read a
+     stale frame or nothing at all. Copying them into SIG once is both cheaper than a closure per
+     source and the reason the matrix has no idea where its inputs come from. */
+  SIG.energy=energy; SIG.tension=tension; SIG.arousal=arousal; SIG.epic=epic;
+  SIG.valence=valence; SIG.darkness=darkness; SIG.flux=flux;
+  SIG.pulse=pulseS; SIG.kick=HITS.low; SIG.snare=HITS.mid; SIG.hat=HITS.high;
+  SIG.air=HITS.air; SIG.sub=HITS.sub;
+  modUpdate(dt,(director&&director.tempo&&director.tempo.bpm)||120);
   /* ---- THE DIRECTOR DRIVES THE FILTER ---- see the note above FILT for the reasoning. */
   if(FILT.mode>0.5){
     // Cell in DEVICE pixels. dpr is applied here, once, so the screen keeps its physical size on
     // a retina panel instead of halving.
     const tight=1.0-energy*0.28-pulseS*0.10-HITS.low*0.08;
-    FILT.cell = Math.max(3, filtBase*dpr*dprScale*Math.max(0.45,tight));
+    FILT.cell = Math.max(3, filtBase*dpr*dprScale*Math.max(0.45,tight)*Math.max(0.25,1+MV('cell')*0.7));
     // The screen turns WITH the form. A fixed angle makes the halftone a sticker on the lens; the
     // form's own spin makes it belong to the object. Slowed 6x -- a screen turning at the speed of
     // the subject strobes against the pixel grid.
@@ -3446,13 +3581,19 @@ function frame(){
   //     rad/s = 2*PI * (bpm/60) / SPIN_BEATS
   const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
   const spinRate=2*Math.PI*(bpm/60)/SPIN_BEATS;
-  formSpin   += spinRate*dt;
-  formTumble += 2*Math.PI*(bpm/60)/TUMBLE_BEATS*dt;  // second axis, about X
-  formSwirl  += 2*Math.PI*(bpm/60)/SWIRL_BEATS *dt;  // third axis, about Z
+  /* ROUTED. Each rate takes its own route as a multiplier, floored at zero -- a route pushed deep
+     negative would run the form BACKWARDS, and a reversing rotation is the exact fault the
+     bar-locked camera sway was removed for. Ceiling at 3x so one route cannot make it a blur. */
+  const rSpin=Math.max(0,Math.min(3,1+MV('spin')*1.2));
+  const rTum =Math.max(0,Math.min(3,1+MV('tumble')*1.2));
+  const rSwi =Math.max(0,Math.min(3,1+MV('swirl')*1.2));
+  formSpin   += spinRate*dt*rSpin;
+  formTumble += 2*Math.PI*(bpm/60)/TUMBLE_BEATS*dt*rTum;  // second axis, about X
+  formSwirl  += 2*Math.PI*(bpm/60)/SWIRL_BEATS *dt*rSwi;  // third axis, about Z
   // SLEW, not a spring: at most one full scale per KAL_SECS in either direction, so the drive
   // can move as fast as it likes and the shape still takes 1.2s to travel. This is what makes a
   // live curve safe to steer with; nothing here can snap.
-  const kalT=(kalMode==='on')?1:(kalMode==='off')?0:kalDrive;
+  const kalT=Math.max(0,Math.min(1,((kalMode==='on')?1:(kalMode==='off')?0:kalDrive)+MV('kal')));
   { const st=dt/KAL_SECS; kalAmt=Math.max(0,Math.min(1, kalAmt+Math.max(-st,Math.min(st,kalT-kalAmt)))); }
   // spinKick is gone. Feeding onsets into the rotation at all — as velocity OR as a decaying
   // offset — is what read as jiggle: something in the mix hits on almost every frame, so the
@@ -3538,7 +3679,7 @@ function frame(){
   // logic still normalises across shapes and the zoom stays a relative adjustment on top.
   // The push-in on the kick is halved with the form's own swell in formScale() -- the two are
   // the same gesture seen from opposite ends, and cutting only one of them just moves the throb.
-  const dolly=framed*(1-HITS.low*0.0275-HITS.sub*0.0225)*userZoom;
+  const dolly=framed*(1-HITS.low*0.0275-HITS.sub*0.0225)*userZoom*Math.max(0.45,1+MV('dolly')*0.35);
   // The drag offsets are added to the Director's angle, not swapped in for it. That is what
   // lets you pull the camera round mid-track and have the orbit continue from where you left
   // it, instead of the two fighting over the same variable.
@@ -3556,7 +3697,7 @@ function frame(){
   const rx2=rx*cr+ux*sr, ry2=ry*cr+uy*sr, rz2=rz*cr+uz*sr;
   ux=ux*cr-rx*sr; uy=uy*cr-ry*sr; uz=uz*cr-rz*sr;
   rx=rx2; ry=ry2; rz=rz2;
-  const fovY=2*Math.atan(0.5/Math.max(0.4,CM.fov*(1-epic*0.12)));
+  const fovY=2*Math.atan(0.5/Math.max(0.4,CM.fov*(1-epic*0.12)*Math.max(0.5,1-MV('fov')*0.30)));
   const W=glc.width,H=glc.height;
 
   const target = floatOK?hdrF:null;
@@ -3575,7 +3716,8 @@ function frame(){
   gl.uniform1f(US('u_spin'),spin);
   // the section's held lean plus the tumble, as ONE angle -- see TUMBLE_BEATS for why they are
   // not two uniforms
-  gl.uniform1f(US('u_tilt'),VAR.tilt+formTumble); gl.uniform1f(US('u_iridHue'),VAR.hue);
+  gl.uniform1f(US('u_tilt'),VAR.tilt+formTumble);
+  gl.uniform1f(US('u_iridHue'),(VAR.hue+MV('hue'))%1.0);
   gl.uniform1f(US('u_swirl'),formSwirl);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
      have segments (p2Tris, p2Clover) and just a reasonable angle on the four that do not. See
@@ -3604,7 +3746,7 @@ function frame(){
   gl.uniform1f(US('u_edgeVar'),SHP.edge*flatK); gl.uniform1f(US('u_thickVar'),SHP.thick*flatK);
   gl.uniform1f(US('u_chamf'),SHP.chamf*flatK);
   gl.uniform1f(US('u_mode'),mode); gl.uniform1f(US('u_mode2'),mode2); gl.uniform1f(US('u_mix'),(phase===1?mix:0));
-  gl.uniform1f(US('u_reform'),reform);
+  gl.uniform1f(US('u_reform'),reform*Math.max(0.25,1+MV('scale')*0.45));
   // Key-rotated: this uniform is where the shader builds the Auto colourway from, so it is the
   // one place the tonality tint has to be applied for the whole frame to agree.
   const MK=moodK();
@@ -3814,13 +3956,13 @@ function frame(){
     // RELEASE -> the exhale. Bloom lifts as tension is actively let go, which is the payoff
     // frame. Deliberately on RELEASE and not on low tension: a calm passage should look calm,
     // not blown — the lift belongs to the moment of letting go, not to the quiet that follows.
-    gl.uniform1f(UP('u_bloom'),(0.34+energy*0.6+pulseS*0.24+HITS.high*0.22+HITS.air*0.14+release*0.20)*DX.bloom);
-    gl.uniform1f(UP('u_sat'),0.82+valence*0.25+LK.sat);
+    gl.uniform1f(UP('u_bloom'),Math.max(0,(0.34+energy*0.6+pulseS*0.24+HITS.high*0.22+HITS.air*0.14+release*0.20+MV('bloom')*0.9)*DX.bloom));
+    gl.uniform1f(UP('u_sat'),Math.max(0,0.82+valence*0.25+LK.sat+MV('sat')*0.8));
     gl.uniform1f(UP('u_vig'),0.75+darkness*0.35);
     gl.uniform1f(UP('u_expo'),0.82+energy*0.45+pulseS*0.12+HITS.low*0.10);
     // Contrast winds up with tension and eases back as it releases, so the grade breathes with
     // the track instead of sitting at one setting through a whole arrangement.
-    gl.uniform1f(UP('u_contrast'),0.45+tension*0.30-release*0.12+LK.contrast); gl.uniform1f(UP('u_grain'),(0.35+darkness*0.30+density*0.22)*LK.grain);   // busier passage, grittier frame
+    gl.uniform1f(UP('u_contrast'),0.45+tension*0.30-release*0.12+LK.contrast); gl.uniform1f(UP('u_grain'),Math.max(0,(0.35+darkness*0.30+density*0.22+MV('grain')*0.6)*LK.grain));   // busier passage, grittier frame
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
     // ---- volumetric shafts ----
     // The key is DIRECTIONAL, so it has no position to project — but a directional light is a
@@ -3903,7 +4045,8 @@ function frame(){
         gl.uniform1i(UF('u_glyph'),2); gl.activeTexture(gl.TEXTURE0); }
       gl.uniform1f(UF('u_glyphN'),GLYPHS.length);
       gl.uniform2f(UF('u_res'),W,H);   gl.uniform1f(UF('u_time'),time);
-      gl.uniform1f(UF('u_mode'),FILT.mode); gl.uniform1f(UF('u_amt'),FILT.amt);
+      gl.uniform1f(UF('u_mode'),FILT.mode);
+      gl.uniform1f(UF('u_amt'),Math.max(0,Math.min(1,FILT.amt+MV('famt'))));
       gl.uniform1f(UF('u_cell'),FILT.cell);  gl.uniform1f(UF('u_ang'),FILT.ang);
       gl.uniform1f(UF('u_gain'),FILT.gain);
       gl.uniform3f(UF('u_ink'),FILT.ink[0],FILT.ink[1],FILT.ink[2]);
@@ -4673,12 +4816,70 @@ $('selDetail').addEventListener('change',e=>{ const v=e.target.value;
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
 $('selFilt').addEventListener('change',e=>{
   FILT.mode=+e.target.value;
-  $('rowFilt').style.display = FILT.mode>0.5 ? 'flex' : 'none';
-  showStat(FILT.mode>0.5 ? 'Filter · '+e.target.selectedOptions[0].textContent : 'Filter off');
+  const on = FILT.mode>0.5;
+  $('rowFilt').style.display = on?'flex':'none';
+  // Facets and Thermal have no cell -- one folds the whole frame and the other bands it, so a
+  // cell-size slider on either is a control that does nothing.
+  $('rowCell').style.display = (on && FILT.mode!==4 && FILT.mode!==5)?'flex':'none';
+  showStat(on ? 'Filter · '+e.target.selectedOptions[0].textContent : 'Filter off');
   hideStat(1400);
 });
-$('filtAmt').addEventListener('input',e=>{ FILT.amt=+e.target.value/100; });
-$('filtCell').addEventListener('input',e=>{ filtBase=+e.target.value; });
+$('filtAmt').addEventListener('input',e=>{ FILT.amt=+e.target.value/100; $('filtAmtV').textContent=e.target.value; });
+$('filtCell').addEventListener('input',e=>{ filtBase=+e.target.value; $('filtCellV').textContent=e.target.value; });
+
+/* ---- PANEL ---- collapse the whole thing, and remember which groups were open.
+   Stored per group rather than as one flag: the useful state is usually "Form and View open,
+   everything else away", and a single collapsed/expanded bit cannot express that. */
+function panelSave(){
+  try{ const o={min:$('ctrl').classList.contains('min')};
+    document.querySelectorAll('#ctrlBody details').forEach(d=>o[d.id]=d.open);
+    localStorage.setItem('atonal.panel',JSON.stringify(o)); }catch(e){}
+}
+function panelLoad(){
+  try{ const o=JSON.parse(localStorage.getItem('atonal.panel')||'null'); if(!o) return;
+    $('ctrl').classList.toggle('min',!!o.min);
+    document.querySelectorAll('#ctrlBody details').forEach(d=>{ if(o[d.id]!==undefined) d.open=o[d.id]; });
+  }catch(e){}
+}
+$('ctrlHead').addEventListener('click',()=>{ $('ctrl').classList.toggle('min'); panelSave(); });
+document.querySelectorAll('#ctrlBody details').forEach(d=>d.addEventListener('toggle',panelSave));
+
+/* ---- ROUTING MATRIX UI ---- one card per route. Rebuilt wholesale on every change: the list is
+   never more than a handful of rows, and rebuilding removes a whole class of index-drift bug that
+   in-place patching invites for nothing measurable in return. */
+function optsFor(map,sel){
+  return Object.keys(map).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+map[k]+'</option>').join('');
+}
+function modRender(){
+  const L=$('modList'); L.innerHTML='';
+  $('modEmpty').style.display = MODB.length ? 'none' : 'block';
+  MODB.forEach((r,i)=>{
+    const d=document.createElement('div'); d.className='mrow';
+    d.innerHTML='<div class="r1"><select class="mtgt">'+optsFor(MODTGT,r.t)+'</select>'
+      +'<button class="mdel" title="Remove">&times;</button></div>'
+      +'<div class="r2"><span class="arw">&#8592;</span><select class="msrc">'+optsFor(MODSRC,r.s)+'</select></div>'
+      +'<div class="r2"><input type="range" class="mamt" min="-100" max="100" value="'+Math.round(r.a*100)+'">'
+      +'<span class="mv">'+(r.a>0?'+':'')+Math.round(r.a*100)+'%</span></div>';
+    d.querySelector('.mtgt').addEventListener('change',e=>{ MODB[i].t=e.target.value; modSave(); });
+    d.querySelector('.msrc').addEventListener('change',e=>{ MODB[i].s=e.target.value; modSave(); });
+    d.querySelector('.mamt').addEventListener('input',e=>{ const v=+e.target.value;
+      MODB[i].a=v/100; d.querySelector('.mv').textContent=(v>0?'+':'')+v+'%'; modSave(); });
+    d.querySelector('.mdel').addEventListener('click',()=>{ MODB.splice(i,1); modSave(); modRender(); });
+    L.appendChild(d);
+  });
+}
+$('modAdd').addEventListener('click',()=>{
+  // The first route is a WORKING one, not an empty stub. An unset row asks the user to guess what
+  // the two lists mean before anything moves; kick -> form scale is the one pairing whose effect
+  // is unmistakable on the first beat.
+  const seed = MODB.length===0 ? {t:'scale',s:'kick',a:0.45}
+             : {t:'bloom', s:'energy', a:0.35};
+  MODB.push(seed); modSave(); modRender();
+  if(MODB.length===1){ showStat('Routed: Kick → Form scale'); hideStat(1600); }
+});
+$('modClear').addEventListener('click',()=>{ MODB=[]; modSave(); modRender();
+  showStat('Routes cleared'); hideStat(1200); });
+modLoad(); modRender(); panelLoad();
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ palAuto=true; return; }
@@ -4695,7 +4896,13 @@ $('tl').addEventListener('click',e=>{ if(!audioBuffer)return; const r=$('tl').ge
   seek((e.clientX-r.left)/r.width*audioBuffer.duration); });
 addEventListener('dragover',e=>e.preventDefault());
 addEventListener('drop',e=>{ e.preventDefault(); const a=[...e.dataTransfer.files].find(f=>f.type.startsWith('audio')); if(a)loadFile(a); });
-addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();$('play').click();}
+addEventListener('keydown',e=>{
+  // Ignore keys aimed at a control. Without this, typing in the panel's own inputs toggles the
+  // panel and starts the track.
+  const tg=e.target, tag=tg&&tg.tagName;
+  if(tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA'||(tg&&tg.isContentEditable)) return;
+  if(e.code==='Space'){e.preventDefault();$('play').click();}
+  if(e.code==='KeyH'&&!e.metaKey&&!e.ctrlKey){ $('ctrl').classList.toggle('min'); panelSave(); }
   if(e.code==='KeyP'&&!e.metaKey&&!e.ctrlKey){ PERF.on=!PERF.on; $('perf').style.display=PERF.on?'block':'none';
     showStat(PERF.on?'Perf readout on — press P to hide':'Perf readout off'); hideStat(1400); } });
 /* The readout samples on a timer, not per frame: updating text every frame is itself a cost, and
