@@ -105,6 +105,20 @@
     <option value="xerox">Xerox</option><option value="halftone">Halftone</option>
     <option value="chrome">Chrome</option><option value="clean">Clean</option>
     <option value="hard" selected>Hard surface</option></select></div>
+  <!-- FILTER: a look layer on the finished frame. See the FILTER shader for what each does and
+       why it is a separate pass; the Director drives every parameter, which is the part the tool
+       this was taken from leaves to you. -->
+  <div class="row"><label>Filter</label><select id="selFilt">
+    <option value="0" selected>None</option>
+    <option value="1">Halftone · dots</option>
+    <option value="2">Halftone · lines</option>
+    <option value="3">Pixelate</option>
+    <option value="4">Thermal</option>
+    <option value="5">Facets</option>
+    <option value="6">ASCII</option></select></div>
+  <div class="row" id="rowFilt" style="display:none"><label>Amount</label>
+    <input type="range" id="filtAmt" min="0" max="100" value="100">
+    <input type="range" id="filtCell" min="3" max="60" value="14" title="Cell size"></div>
   <div class="row"><label>Palette</label><select id="selPal">
     <option value="auto" selected>Auto · Director</option>
     <option value="blood">Blood</option><option value="acid">Acid</option>
@@ -2124,22 +2138,167 @@ void main(){
   o=vec4(max(col,0.),1.);
 }`;
 
+/* ======================= FILTER PASS =======================
+   A LOOK LAYER ON THE FINISHED IMAGE, ported in spirit from the Filters tier in Sketch Tools
+   (tools.sketchdesign.club), which stacks Halftone / Pixelator / Facets / Thermal / Type Shape
+   after whatever generated the frame.
+
+   WHY IT IS ITS OWN PASS. Three of these five are SAMPLING filters -- pixelate reads the cell
+   centre, facets reads a folded coordinate, ASCII reads a block average -- so they need a finished
+   image to read FROM, and the only finished image is the post pass's own per-pixel output. Folding
+   them into POST would mean re-fetching the HDR texture and losing everything POST had already
+   done to it: bloom, tonemap, grade, the print separation. Running the remap at the TOP of POST
+   instead puts bloom, DOF, FXAA and the sharpen mask on top of the blocks, which softens the one
+   edge the effect exists for. So: POST renders to an 8-bit target, this reads it. When no filter
+   is selected POST goes straight to the screen and this pass never runs.
+
+   8-BIT IS CORRECT HERE, not a compromise. POST's last act is the sRGB transfer, so its output is
+   display-referred and already quantised to what the panel can show; an FP16 target would store
+   the same values in four times the bandwidth.
+
+   THE DIRECTOR DRIVES THEM. That is the whole difference from the tool this is taken from: there,
+   every parameter is wired to an audio source by hand, one row per binding. Here the cell size
+   tightens with energy and kicks on the beat, the screen angle turns with the form, the band and
+   fold counts come off the section, and the two inks come from the section's own palette -- so
+   the filter agrees with the colourway instead of sitting on top of it. */
+const FILTER=`#version 300 es
+precision highp float;
+out vec4 o;
+uniform sampler2D u_tex;          // the finished, display-space frame
+uniform sampler2D u_glyph;        // ASCII atlas: u_glyphN glyphs in one horizontal strip
+uniform vec2  u_res;
+uniform float u_mode;             // 1 dots  2 lines  3 pixelate  4 thermal  5 facets  6 ascii
+uniform float u_amt;              // blend back toward the untouched frame
+uniform float u_cell;             // cell size in device pixels
+uniform float u_ang;              // screen angle, radians
+uniform float u_gain;             // dot gain / quantisation / band count / fold count
+uniform float u_glyphN;
+uniform vec3  u_ink, u_paper;
+uniform float u_time;
+mat2 r2f(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+float lum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}
+/* TONE FOR SCREENING. Every mode that reduces the frame to a single channel has to answer the
+   same problem: a pale form on a pale backdrop is separated by HUE, and these throw the hue away.
+   The luminance difference that remains is a few percent, so the subject nearly vanishes into the
+   screen. Expanding contrast about the midpoint before quantising puts that difference back where
+   the eye can use it. It is a levels adjustment, not a gain -- the midpoint is fixed, so overall
+   print density does not move with it. */
+float tone(vec3 c){ return clamp((lum(c)-0.48)*1.45+0.48, 0.0, 1.0); }
+float h21(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float vn(vec2 p){                                  // value noise, for the thermal contour wobble
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y);
+}
+// The tone a cell should print. Sampling the CELL CENTRE rather than the pixel is what makes a
+// halftone read as one dot per cell: sampling per pixel puts the source's own gradient inside
+// every dot and the screen stops being a screen.
+vec3 cellColor(vec2 frag, vec2 cell){
+  return texture(u_tex, ((floor(frag/cell)+0.5)*cell)/u_res).rgb;
+}
+void main(){
+  vec2 uv=gl_FragCoord.xy/u_res;
+  vec3 src=texture(u_tex,uv).rgb;
+  vec3 col=src;
+  float m=u_mode;
+  if(m<2.5){
+    // ---- HALFTONE. Dots at m=1, lines at m=2. The grid is rotated, which is what stops the
+    // screen beating against the pixel grid into a moire -- the same reason a real press angles
+    // each separation.
+    float cs=max(2.0,u_cell);
+    vec2 g=(r2f(u_ang)*gl_FragCoord.xy)/cs;
+    vec2 ctr=r2f(-u_ang)*((floor(g)+0.5)*cs);     // the cell's centre, back in screen space
+    float li=tone(texture(u_tex, clamp(ctr/u_res,0.0,1.0)).rgb);
+    vec2 f=fract(g)-0.5;
+    // INK COVERAGE, so it goes as 1-luminance: a screen prints the DARK, and a bright cell is one
+    // the press leaves nearly bare. (Sized by luminance instead, the whole frame floods with ink
+    // and the highlights are the only solid dots -- a negative.)
+    // And AREA is proportional to tone, so RADIUS goes as its square root. Linear radius prints a
+    // midtone far too dark: the dot covers area, and area is the square of the radius.
+    float k=1.0-clamp(li,0.,1.);
+    // 0.5642 = 1/sqrt(PI): the radius at which a dot's AREA equals k exactly, so 50% tone prints
+    // 50% ink. 0.62 was picked by eye and is 21% too wide in area, which floods the midtones --
+    // at k=0.5 it covers 60% of the cell and the gaps close to thin diamonds.
+    float d = (m<1.5) ? length(f)-sqrt(k)*0.5642*u_gain
+                      : abs(f.y)      -k     *0.50  *u_gain;
+    float w=fwidth(d)*0.9+1e-5;
+    col=mix(u_ink,u_paper,smoothstep(-w,w,d));
+  } else if(m<3.5){
+    // ---- PIXELATE, with an optional colour quantisation on top. Both are the same idea applied
+    // to different axes: snap position, then snap value.
+    vec3 c=cellColor(gl_FragCoord.xy, vec2(max(2.0,u_cell)));
+    if(u_gain>1.5) c=floor(c*u_gain+0.5)/u_gain;
+    col=c;
+  } else if(m<4.5){
+    // ---- THERMAL. Quantise luminance into bands and colour them from the SECTION'S palette
+    // rather than a stock heatmap, so this reads as the piece's own colourway posterised. The
+    // noise added before quantising is what makes the band boundaries wander like contour lines
+    // on a map instead of following the image's own iso-luminance curves exactly.
+    float li=tone(src);
+    // TWO OCTAVES, and the base one is LOW. A single octave at 5 cells across the frame wanders
+    // by 0.10 over a distance where the image's own luminance barely changes, so wherever the
+    // frame is flat the band edge shreds into noise rather than wandering -- visible as hair along
+    // every boundary in the empty corners. A long wobble with a small ripple on it reads as a
+    // contour line on a map, which is the thing being imitated.
+    vec2 nq=uv*vec2(u_res.x/u_res.y,1.0);
+    li+=(vn(nq*2.2+u_time*0.03)-0.5)*0.085 + (vn(nq*5.5-u_time*0.02)-0.5)*0.030;
+    float nb=max(2.0,u_gain);
+    float q=floor(clamp(li,0.,0.999)*nb)/(nb-1.0);
+    /* FOUR STOPS, EVENLY SPACED. The first version cross-faded three overlapping smoothsteps, and
+       overlapping bands average toward each other: six quantised levels came out as three
+       distinguishable colours, which is a posterisation that has thrown half its levels away. A
+       flat three-segment lerp keeps every level its own colour.
+       The stops are the section's own ink and paper pulled toward a heat ramp, rather than a stock
+       blue-to-white, so this is the piece's colourway posterised instead of a thermal camera. */
+    vec3 c0=u_ink;
+    vec3 c1=mix(u_ink,   vec3(0.14,0.20,0.62), 0.75);
+    vec3 c2=mix(u_paper, vec3(0.86,0.34,0.42), 0.55);
+    vec3 c3=mix(u_paper, vec3(1.00,0.86,0.45), 0.45);
+    float t3=q*3.0;
+    col = t3<1.0 ? mix(c0,c1,t3) : t3<2.0 ? mix(c1,c2,t3-1.0) : mix(c2,c3,clamp(t3-2.0,0.,1.));
+  } else if(m<5.5){
+    // ---- FACETS: a mirror fold of the IMAGE about frame centre. The form already has a fold of
+    // its own in map(); this is the screen-space one, and the two are different effects -- that
+    // one rebuilds the geometry, this one repeats the picture including its lighting and its
+    // background, which is what gives the mandala.
+    vec2 p=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
+    float sect=6.28318530/max(2.0,floor(u_gain));
+    float a=atan(p.y,p.x)-u_ang;
+    a=abs(mod(a+sect*0.5,sect)-sect*0.5)+u_ang;
+    vec2 q=vec2(cos(a),sin(a))*length(p);
+    col=texture(u_tex, clamp(q*vec2(u_res.y/u_res.x,1.0)+0.5, 0.001, 0.999)).rgb;
+  } else {
+    // ---- ASCII. The atlas is ordered by ink coverage, so luminance indexes it directly. Cells
+    // are 0.6 as wide as they are tall because that is the aspect of a monospace character, and
+    // square cells make the type read as a grid of blobs rather than as text.
+    vec2 cell=vec2(max(3.0,u_cell)*0.6, max(3.0,u_cell));
+    vec2 ci=floor(gl_FragCoord.xy/cell), f=fract(gl_FragCoord.xy/cell);
+    vec3 c=texture(u_tex, ((ci+0.5)*cell)/u_res).rgb;
+    float gi=floor(clamp(tone(c),0.,0.999)*u_glyphN);
+    float g=texture(u_glyph, vec2((gi+f.x)/u_glyphN, 1.0-f.y)).r;
+    // the glyph carries the cell's own colour rather than one flat ink, so the type still reads
+    // as a picture and not as a wall of text
+    col=mix(u_paper, mix(u_ink,c,0.55), g);
+  }
+  o=vec4(mix(src,col,u_amt),1.0);
+}`;
+
 function sh(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
   if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s;}
 function prog(vs,fs){const p=gl.createProgram();gl.attachShader(p,sh(gl.VERTEX_SHADER,vs));
   gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);
   if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));return p;}
-let sceneP,postP,brightP,buf,hdrT,hdrF,brtT,brtF,BW,BH;
+let sceneP,postP,brightP,filtP,buf,hdrT,hdrF,brtT,brtF,ldrT,ldrF,BW,BH;
 try{ sceneP=prog(VERT,SCENE); postP=prog(VERT,POST); brightP=prog(VERT,BRIGHT);
+     filtP=prog(VERT,FILTER);
      }catch(e){ showStat('Shader error: '+e.message,true); throw e; }
 buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
 const aScene=gl.getAttribLocation(sceneP,'p'), aPost=gl.getAttribLocation(postP,'p'),
-      aBright=gl.getAttribLocation(brightP,'p');
+      aBright=gl.getAttribLocation(brightP,'p'), aFilt=gl.getAttribLocation(filtP,'p');
 function drawFS(a){gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.enableVertexAttribArray(a);
   gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);gl.drawArrays(gl.TRIANGLES,0,3);}
 const US=n=>gl.getUniformLocation(sceneP,n), UP=n=>gl.getUniformLocation(postP,n),
-      UB=n=>gl.getUniformLocation(brightP,n);
+      UB=n=>gl.getUniformLocation(brightP,n), UF=n=>gl.getUniformLocation(filtP,n);
 let mipOK=false;
 function initTargets(w,h){
   if(!floatOK) return;
@@ -2162,6 +2321,46 @@ function initTargets(w,h){
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   brtF=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,brtF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,brtT,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+}
+/* The filter pass reads a FINISHED frame, so this target is at CANVAS resolution and 8-bit, not at
+   the march resolution and not floating point. POST's last act is the sRGB transfer: its output is
+   display-referred and already quantised to what a panel can show, so FP16 here would carry the
+   same values at four times the bandwidth. Allocated lazily -- a session that never picks a filter
+   never pays for it -- and torn down with the rest on resize. */
+function initLdr(w,h){
+  if(ldrT) gl.deleteTexture(ldrT); if(ldrF) gl.deleteFramebuffer(ldrF);
+  ldrT=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,ldrT);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  ldrF=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,ldrF);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,ldrT,0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  ldrW=w; ldrH=h;
+}
+let ldrW=0, ldrH=0;
+/* ASCII ATLAS, built once on a 2D canvas. The glyphs are ordered by INK COVERAGE, which is what
+   lets the shader index them with luminance directly and no lookup table: the ramp is the sort.
+   Drawn white on black into one horizontal strip, one cell per glyph. */
+let glyphT=null; const GLYPHS=' .,:;i1tfLCG08@'; 
+function initGlyphs(){
+  if(glyphT) return;
+  const CW=24, CH=40, n=GLYPHS.length;
+  const c=document.createElement('canvas'); c.width=CW*n; c.height=CH;
+  const x=c.getContext('2d');
+  x.fillStyle='#000'; x.fillRect(0,0,c.width,c.height);
+  x.fillStyle='#fff'; x.textAlign='center'; x.textBaseline='middle';
+  x.font='700 '+Math.round(CH*0.82)+'px ui-monospace, Menlo, monospace';
+  for(let i=0;i<n;i++) x.fillText(GLYPHS[i], i*CW+CW*0.5, CH*0.54);
+  glyphT=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,glyphT);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,c);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
 }
 // Starts at native, which is also the floor now — see the governor below for the measurements
 // that set it.
@@ -2433,6 +2632,22 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
    still C2 at both ends.
 
    window.KAL = {phase} overrides the mirror angle and pins it. */
+/* ---- FILTER STATE ----
+   The UI sets mode, a master amount and a base cell size; everything else is the Director's. That
+   is the difference between this and the tool it comes from: there each parameter is a row in a
+   routing matrix that you wire by hand, and the default is that nothing moves. Here the default is
+   that everything moves, because the analysis to move it with is already in the file.
+
+     cell   tightens as the track gets loud, and kicks tighter on the beat -- a finer screen on a
+            loud bar is the same gesture as a press running a higher line count for detail
+     ang    turns with the form, so the screen belongs to the object rather than to the frame
+     gain   dot size on the beat; band count and fold count from the section's energy
+     inks   the section's own palette, so the filter is a colourway rather than a stamp on top
+
+   FILT.cell is in DEVICE pixels, so the screen stays the same physical size whatever dpr is; a
+   cell in CSS pixels would halve on a retina panel and the halftone would vanish into the grid. */
+const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
+let filtBase=14;
 let kalMode='auto';                                   // 'auto' | 'on' | 'off'
 let kalAmt=0, kalDrive=0, kalBoost=0;
 let kalRef=1;                                         // the track's own peak section energy
@@ -3172,6 +3387,33 @@ function frame(){
   for(const k in FIN) FIN[k]=sm(FIN[k],FINT[k],2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
+  /* ---- THE DIRECTOR DRIVES THE FILTER ---- see the note above FILT for the reasoning. */
+  if(FILT.mode>0.5){
+    // Cell in DEVICE pixels. dpr is applied here, once, so the screen keeps its physical size on
+    // a retina panel instead of halving.
+    const tight=1.0-energy*0.28-pulseS*0.10-HITS.low*0.08;
+    FILT.cell = Math.max(3, filtBase*dpr*dprScale*Math.max(0.45,tight));
+    // The screen turns WITH the form. A fixed angle makes the halftone a sticker on the lens; the
+    // form's own spin makes it belong to the object. Slowed 6x -- a screen turning at the speed of
+    // the subject strobes against the pixel grid.
+    // formSpin, not `spin`: the frame's `const spin = formSpin` is declared further down and is
+    // in the temporal dead zone here, which throws and kills the rest of the frame silently --
+    // the symptom was FILT.cell updating and nothing after it.
+    FILT.ang = 0.45 + formSpin*0.16 + VAR.tilt*0.2;
+    FILT.gain = FILT.mode<2.5 ? 1.0+pulseS*0.30+HITS.low*0.22          // dot swell on the beat
+              : FILT.mode<3.5 ? Math.round(3+energy*9)                  // colour levels
+              : FILT.mode<4.5 ? Math.round(3+energy*7+epic*3)           // thermal bands
+              : FILT.mode<5.5 ? Math.max(2,Math.round(3+Math.floor(energy*4)+Math.floor(epic*3)))
+              : 1.0;
+    // Inks from the SECTION's colourway, not from a fixed black and white: the paper takes the
+    // mood at low saturation and the ink takes its deep end, so a filter that replaces every
+    // colour in the frame still agrees with the palette the Director chose.
+    const l=Math.max(0.001,MO[0]*0.2126+MO[1]*0.7152+MO[2]*0.0722);
+    for(let i=0;i<3;i++){
+      FILT.ink[i]   = Math.min(1, (0.045+MO[i]*0.10)*(1.0-darkness*0.35));
+      FILT.paper[i] = Math.min(1, 0.86+MO[i]*0.16-l*0.10);
+    }
+  }
   // Section cuts must not snap the camera. 1.3 crossed a dist/fov change in well under a second,
   // which lands as a jump cut; 0.55 carries it over ~3s so the move is felt, not seen.
   CM.dist=sm(CM.dist,camTarget.dist,0.55,dt); CM.height=sm(CM.height,camTarget.height,0.55,dt);
@@ -3531,7 +3773,12 @@ function frame(){
     if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
     gpuBegin('post');
-    gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
+    /* When a filter is on, POST lands in the 8-bit target and the filter pass puts it on screen.
+       When it is not, POST goes straight to the screen exactly as before and neither the target
+       nor the extra pass exists. */
+    const FILT_ON = FILT.mode>0.5;
+    if(FILT_ON && (ldrW!==W || ldrH!==H)) initLdr(W,H);
+    gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER, FILT_ON?ldrF:null); gl.viewport(0,0,W,H);
     gl.uniform1i(UP('u_tex'),0); gl.uniform1i(UP('u_brt'),1);
     gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
     gl.uniform2f(UP('u_texel'),1/RW,1/RH); gl.uniform1f(UP('u_mip'),mipOK?1:0);
@@ -3646,6 +3893,24 @@ function frame(){
     gl.uniform3f(UP('u_inkA'),iA[0],iA[1],iA[2]); gl.uniform3f(UP('u_inkB'),iB[0],iB[1],iB[2]);
     drawFS(aPost);
     gpuEnd();
+    if(FILT_ON){
+      gpuBegin('filter');
+      gl.useProgram(filtP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,ldrT);
+      gl.uniform1i(UF('u_tex'),0);
+      if(FILT.mode>5.5){ initGlyphs();
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,glyphT);
+        gl.uniform1i(UF('u_glyph'),2); gl.activeTexture(gl.TEXTURE0); }
+      gl.uniform1f(UF('u_glyphN'),GLYPHS.length);
+      gl.uniform2f(UF('u_res'),W,H);   gl.uniform1f(UF('u_time'),time);
+      gl.uniform1f(UF('u_mode'),FILT.mode); gl.uniform1f(UF('u_amt'),FILT.amt);
+      gl.uniform1f(UF('u_cell'),FILT.cell);  gl.uniform1f(UF('u_ang'),FILT.ang);
+      gl.uniform1f(UF('u_gain'),FILT.gain);
+      gl.uniform3f(UF('u_ink'),FILT.ink[0],FILT.ink[1],FILT.ink[2]);
+      gl.uniform3f(UF('u_paper'),FILT.paper[0],FILT.paper[1],FILT.paper[2]);
+      drawFS(aFilt);
+      gpuEnd();
+    }
     // Grab MUST happen here, still inside the frame that drew. The context has no
     // preserveDrawingBuffer (it costs a full-size copy every frame), so the drawing buffer is
     // cleared as soon as the browser composites — calling toBlob() from a click handler returns
@@ -4406,6 +4671,14 @@ $('selDetail').addEventListener('change',e=>{ const v=e.target.value;
   if(bakeDetail(v)) return;
   loadDetail(v).catch(err=>showStat('Detail map failed — '+err.message,true)); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
+$('selFilt').addEventListener('change',e=>{
+  FILT.mode=+e.target.value;
+  $('rowFilt').style.display = FILT.mode>0.5 ? 'flex' : 'none';
+  showStat(FILT.mode>0.5 ? 'Filter · '+e.target.selectedOptions[0].textContent : 'Filter off');
+  hideStat(1400);
+});
+$('filtAmt').addEventListener('input',e=>{ FILT.amt=+e.target.value/100; });
+$('filtCell').addEventListener('input',e=>{ filtBase=+e.target.value; });
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ palAuto=true; return; }
