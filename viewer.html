@@ -238,6 +238,11 @@
     <div class="row"><label>Capture</label>
       <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
       <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
+    <!-- ROLL. See rollAll() for why this picks a recipe first rather than each control
+         independently, and why every roll prints a seed. -->
+    <div class="row"><label>Random</label>
+      <button id="roll" class="mini" title="Roll a whole new look — shape, material, scene, filter and routing at once  (R)">Roll</button>
+      <span class="val" id="rollSeed" style="flex:1;text-align:right;color:#8a8b91">—</span></div>
   </details>
 
   </div>
@@ -2258,6 +2263,7 @@ uniform float u_cell;             // cell size in device pixels
 uniform float u_ang;              // screen angle, radians
 uniform float u_gain;             // dot gain / quantisation / band count / fold count
 uniform float u_off;              // thermal: a smooth shift of the band boundaries
+uniform vec2  u_org;              // lattice origin, drifting -- see the note in main()
 uniform float u_glyphN;
 uniform vec3  u_ink, u_paper;
 uniform float u_time;
@@ -2293,12 +2299,29 @@ vec3 iron(float t){
   vec3 b = i<0.5?k1 : i<1.5?k2 : i<2.5?k3 : i<3.5?k4 : k5;
   return mix(a,b,f);
 }
+/* textureLod AT ZERO, NOT texture(). Every cell-based fetch here reads a uv that is CONSTANT
+   inside a cell and jumps at the boundary, so its screen-space derivative is zero in the middle
+   and enormous at the edge -- and texture() picks its mip level from exactly that derivative. The
+   moment ldrT gained a mip chain (added so Thermal could read the frame's mean) every cell edge
+   started sampling a near-1x1 average of the whole frame, which printed as a thin seam along every
+   boundary: a stationary grid laid over a moving picture. An explicit level 0 is also simply what
+   these modes mean -- they want the pixel that is there, not a filtered neighbourhood. */
 vec3 cellColor(vec2 frag, vec2 cell){
-  return texture(u_tex, ((floor(frag/cell)+0.5)*cell)/u_res).rgb;
+  return textureLod(u_tex, ((floor(frag/cell)+0.5)*cell)/u_res, 0.0).rgb;
 }
 void main(){
   vec2 uv=gl_FragCoord.xy/u_res;
-  vec3 src=texture(u_tex,uv).rgb;
+  /* THE LATTICE DRIFTS; uv DOES NOT. Every cell-based mode here quantises position, and nailed to
+     screen space that quantisation re-cuts the rotating form into the SAME blocks every frame:
+     the silhouette snaps to the same boundaries over and over, so the shape reads as stationary
+     and flickering rather than as turning. It was reported as the shape not moving under some
+     filters, and the form was in fact rotating at 68 deg/s underneath it -- measured under all
+     six, which is what ruled out anything actually being frozen.
+     The origin travels with the form's own rotation, by a couple of cells, so the lattice belongs
+     to the subject rather than to the screen and no boundary stays put. Only the LATTICE uses it;
+     uv still addresses true screen position, or every mode would sample the wrong pixel. */
+  vec2 fc=gl_FragCoord.xy+u_org;
+  vec3 src=textureLod(u_tex,uv,0.0).rgb;
   vec3 col=src;
   float m=u_mode;
   if(m<2.5){
@@ -2306,9 +2329,9 @@ void main(){
     // screen beating against the pixel grid into a moire -- the same reason a real press angles
     // each separation.
     float cs=max(2.0,u_cell);
-    vec2 g=(r2f(u_ang)*gl_FragCoord.xy)/cs;
+    vec2 g=(r2f(u_ang)*fc)/cs;
     vec2 ctr=r2f(-u_ang)*((floor(g)+0.5)*cs);     // the cell's centre, back in screen space
-    float li=tone(texture(u_tex, clamp(ctr/u_res,0.0,1.0)).rgb);
+    float li=tone(textureLod(u_tex, clamp(ctr/u_res,0.0,1.0), 0.0).rgb);
     vec2 f=fract(g)-0.5;
     // INK COVERAGE, so it goes as 1-luminance: a screen prints the DARK, and a bright cell is one
     // the press leaves nearly bare. (Sized by luminance instead, the whole frame floods with ink
@@ -2326,7 +2349,7 @@ void main(){
   } else if(m<3.5){
     // ---- PIXELATE, with an optional colour quantisation on top. Both are the same idea applied
     // to different axes: snap position, then snap value.
-    vec3 c=cellColor(gl_FragCoord.xy, vec2(max(2.0,u_cell)));
+    vec3 c=cellColor(fc, vec2(max(2.0,u_cell)));
     if(u_gain>1.5) c=floor(c*u_gain+0.5)/u_gain;
     col=c;
   } else if(m<4.5){
@@ -2376,14 +2399,14 @@ void main(){
     float a=atan(p.y,p.x)-u_ang;
     a=abs(mod(a+sect*0.5,sect)-sect*0.5)+u_ang;
     vec2 q=vec2(cos(a),sin(a))*length(p);
-    col=texture(u_tex, clamp(q*vec2(u_res.y/u_res.x,1.0)+0.5, 0.001, 0.999)).rgb;
+    col=textureLod(u_tex, clamp(q*vec2(u_res.y/u_res.x,1.0)+0.5, 0.001, 0.999), 0.0).rgb;
   } else {
     // ---- ASCII. The atlas is ordered by ink coverage, so luminance indexes it directly. Cells
     // are 0.6 as wide as they are tall because that is the aspect of a monospace character, and
     // square cells make the type read as a grid of blobs rather than as text.
     vec2 cell=vec2(max(3.0,u_cell)*0.6, max(3.0,u_cell));
-    vec2 ci=floor(gl_FragCoord.xy/cell), f=fract(gl_FragCoord.xy/cell);
-    vec3 c=texture(u_tex, ((ci+0.5)*cell)/u_res).rgb;
+    vec2 ci=floor(fc/cell), f=fract(fc/cell);
+    vec3 c=textureLod(u_tex, ((ci+0.5)*cell)/u_res, 0.0).rgb;
     float gi=floor(clamp(tone(c),0.,0.999)*u_glyphN);
     float g=texture(u_glyph, vec2((gi+f.x)/u_glyphN, 1.0-f.y)).r;
     // the glyph carries the cell's own colour rather than one flat ink, so the type still reads
@@ -2761,7 +2784,7 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
 
    FILT.cell is in DEVICE pixels, so the screen stays the same physical size whatever dpr is; a
    cell in CSS pixels would halve on a retina panel and the halftone would vanish into the grid. */
-const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, off:0, ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
+const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, off:0, org:[0,0], ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
 let filtBands=8, filtFolds=6, thermOff=0;   // held counts; see the drive block for why
 /* ======================= ROUTING MATRIX =======================
    Taken from the audio-reactivity panel in Sketch Tools, where every animated parameter is a row
@@ -3649,6 +3672,12 @@ function frame(){
     // in the temporal dead zone here, which throws and kills the rest of the frame silently --
     // the symptom was FILT.cell updating and nothing after it.
     FILT.ang = 0.45 + formSpin*0.16 + VAR.tilt*0.2;
+    // The lattice origin, drifting with the form's own rotation -- see the note in the FILTER
+    // shader's main() for why a screen-locked lattice makes a turning shape look stationary.
+    // Two axes at different rates so the path never closes and no cell boundary settles.
+    { const d=FILT.cell*1.6;
+      FILT.org=[Math.cos(formSpin*0.30+formTumble*0.7)*d,
+                Math.sin(formSpin*0.21+formSwirl*0.5)*d]; }
     FILT.gain = FILT.mode<2.5 ? 1.0+pulseS*0.30+HITS.low*0.22          // dot swell on the beat
               : FILT.mode<3.5 ? Math.round(3+energy*9)                  // colour levels
               : FILT.mode<4.5 ? filtBands                               // thermal: the user's, held
@@ -4177,6 +4206,7 @@ function frame(){
       gl.uniform1f(UF('u_cell'),FILT.cell);  gl.uniform1f(UF('u_ang'),FILT.ang);
       gl.uniform1f(UF('u_gain'),FILT.gain);
       gl.uniform1f(UF('u_off'),FILT.off||0);
+      gl.uniform2f(UF('u_org'),FILT.org[0],FILT.org[1]);
       gl.uniform3f(UF('u_ink'),FILT.ink[0],FILT.ink[1],FILT.ink[2]);
       gl.uniform3f(UF('u_paper'),FILT.paper[0],FILT.paper[1],FILT.paper[2]);
       drawFS(aFilt);
@@ -5040,6 +5070,136 @@ $('modAdd').addEventListener('click',()=>{
 $('modClear').addEventListener('click',()=>{ MODB=[]; modSave(); modRender();
   showStat('Routes cleared'); hideStat(1200); });
 modLoad(); $('selMod').value=MODMODE; modRender(); panelLoad();
+
+/* ======================= THE ROLL =======================
+   A global randomiser, and the whole difficulty is that a uniform random over every control does
+   NOT give interesting outcomes -- it gives mush, most of the time, because these controls are not
+   independent. A halftone over a glass material is a screen of a refraction nobody can read. A
+   dark look on a dark palette is a black rectangle. Six segments on the Arc is a shape that never
+   closes. Roll each control on its own and most rolls are a waste of a click, which trains you to
+   stop clicking.
+
+   SO IT PICKS A RECIPE FIRST. Each recipe is a family that is known to hold together -- a print
+   family, a sensor family, a product-shot family -- and the randomness lives INSIDE it, in the
+   choices that family can absorb. That is the same shape as the Director's own decision-making a
+   few hundred lines up: choose the intent, then fill in the detail consistently with it.
+
+   AND EVERY ROLL PRINTS A SEED. A randomiser without one is a machine for losing things: the good
+   roll is always two clicks behind you and cannot be got back. The seed is shown in the panel and
+   in the toast, window.ROLL('a3f9') replays it exactly, and ?roll=a3f9 in the URL opens on it.
+
+   It deliberately does NOT touch: the quality tier (a performance choice, not an aesthetic one),
+   the camera, or the loaded track. */
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0;
+  let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t;
+  return ((t^t>>>14)>>>0)/4294967296; }; }
+function seedOf(str){ let h=2166136261; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+// Set a control and let its own handler run, so the roll goes through exactly the same path a
+// click would. Nothing here reaches into state behind the UI's back.
+function setCtl(id,v,ev){ const el=$(id); if(!el) return; el.value=v;
+  el.dispatchEvent(new Event(ev||(el.tagName==='SELECT'?'change':'input'))); }
+const ROLL_RECIPES=[
+  // ---- SCULPTURE: no filter, the renderer as it is. The one that shows the material.
+  {name:'Sculpture', w:3, f(r){
+    setCtl('selFilt','0');
+    setCtl('selScene', r()<0.35?'studio':'field');
+    setCtl('selLook',  pick(r,['hard','hard','clean','studio','chrome']));
+    setCtl('selMat',   pick(r,['pearl','pearl','clay','frosted']));
+    setCtl('selFinish',pick(r,['satin','gloss','matte']));
+    setCtl('selDetail',pick(r,['micro','micro','machined']));
+  }},
+  // ---- PRINT: the two-colour families. Flat looks only -- a halftone of a glossy specular is a
+  // screen of a highlight, which reads as a blown-out hole.
+  {name:'Print', w:3, f(r){
+    setCtl('selFilt', pick(r,['1','1','2','6']));
+    setCtl('selScene','field');
+    setCtl('selLook', pick(r,['hard','riso','xerox','label']));
+    setCtl('selMat',  pick(r,['clay','pearl']));
+    setCtl('selFinish',pick(r,['matte','satin']));
+    setCtl('filtCell', Math.round(6+r()*16));
+  }},
+  // ---- SENSOR: thermal. It reads depth, so it wants a subject with real depth in frame and a
+  // scene with nothing else competing.
+  {name:'Sensor', w:2, f(r){
+    setCtl('selFilt','4');
+    setCtl('selScene','field');
+    setCtl('selLook', pick(r,['hard','clean']));
+    setCtl('selMat',  pick(r,['pearl','clay']));
+    setCtl('selFinish','satin');
+    setCtl('filtCell', Math.round(5+r()*7));       // Bands, in this mode
+  }},
+  // ---- POSTER: blocky, saturated, graphic.
+  {name:'Poster', w:2, f(r){
+    setCtl('selFilt', pick(r,['3','3','5']));
+    setCtl('selScene','field');
+    setCtl('selLook', pick(r,['hard','label','riso']));
+    setCtl('selPal',  pick(r,['acid','cyber','ultra','solar','blood']));
+    setCtl('selMat',  pick(r,['clay','pearl','holo']));
+    setCtl('filtCell', Math.round(8+r()*22));
+  }},
+  // ---- GLASS: the one family the filters are kept away from, because every one of them throws
+  // away the refraction that is the entire point of the material.
+  {name:'Glass', w:1, f(r){
+    setCtl('selFilt','0');
+    setCtl('selScene', r()<0.5?'studio':'field');
+    setCtl('selLook', pick(r,['clean','studio','chrome']));
+    setCtl('selMat',  pick(r,['glass','frosted','holo']));
+    setCtl('selFinish','gloss');
+    setCtl('selDetail', r()<0.6?'off':'micro');
+  }},
+];
+function pick(r,a){ return a[Math.min(a.length-1, Math.floor(r()*a.length))]; }
+function rollAll(seedStr){
+  const seed = seedStr || (Math.random().toString(36).slice(2,8));
+  const r = mulberry32(seedOf(seed));
+  // ---- the family
+  const tot=ROLL_RECIPES.reduce((a,x)=>a+x.w,0);
+  let k=r()*tot, rec=ROLL_RECIPES[0];
+  for(const x of ROLL_RECIPES){ if((k-=x.w)<=0){ rec=x; break; } }
+  // ---- things every family gets, rolled BEFORE the recipe so the recipe can override them
+  setCtl('selPal', pick(r,['auto','auto','auto','blood','acid','ultra','cyber','solar','mono']));
+  setCtl('selDetail', pick(r,['micro','micro','machined','off']));
+  /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count and only two of the six
+     profiles use it (p2Tris and p2Clover -- see the note above kalMirror); on the others the
+     slider is inert, so rolling a high count there is a roll that did nothing. And the Arc is a
+     broken ring: repeated eight times it stops reading as a single stroke. */
+  const shape=pick(r,['0','1','2','3','4','5']);
+  setCtl('selShape',shape);
+  const segMax = (shape==='0'||shape==='1') ? 6 : (shape==='2' ? 3 : 5);
+  setCtl('pSeg', 2+Math.floor(r()*(segMax-1)));
+  setCtl('pEdge',  Math.round(55+r()*140));
+  setCtl('pMass',  Math.round(-35+r()*95));
+  setCtl('pDepth', Math.round(55+r()*150));
+  setCtl('selKal', pick(r,['auto','auto','auto','on','off']));
+  setCtl('selFilt','0');                                  // recipes opt IN to a filter
+  setCtl('filtAmt', Math.round(72+r()*28));
+  rec.f(r);
+  filtRow();
+  // Surface is a button, not a select.
+  const wantTex = r()<0.8;
+  if((surfTarget>0.5)!==wantTex) $('surf').click();
+  /* THE ROUTING GOES WITH THE LOOK. A roll that changes everything about the picture and leaves
+     the reactivity alone is half a roll. It writes real rows and switches to Manual, because the
+     Director rewiring on the next track would silently throw the roll away -- which is the same
+     honesty the Auto/Manual split exists for. */
+  const tgts=['scale','bloom','sat','swirl','spin','cell','hue','grain','dolly','famt','kal','tumble','fov'];
+  const srcs=['kick','sub','snare','hat','energy','tension','epic','valence','pulse','bar','beat','snap','sect'];
+  const n=2+Math.floor(r()*3);
+  const used={}; MODB=[];
+  for(let i=0;i<n;i++){
+    let t=pick(r,tgts), guard=0;
+    while(used[t] && guard++<8) t=pick(r,tgts);
+    used[t]=1;
+    MODB.push({t, s:pick(r,srcs), a:+(((r()<0.22)?-1:1)*(0.18+r()*0.42)).toFixed(2)});
+  }
+  MODMODE='manual'; setCtl('selMod','manual'); modSave(); modRender();
+  $('rollSeed').textContent=seed;
+  showStat('Roll · '+rec.name+' · '+seed); hideStat(2200);
+  return seed;
+}
+window.ROLL=rollAll;
+$('roll').addEventListener('click',()=>rollAll());
+{ const q=new URLSearchParams(location.search).get('roll'); if(q) setTimeout(()=>rollAll(q),60); }
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ palAuto=true; return; }
@@ -5063,6 +5223,7 @@ addEventListener('keydown',e=>{
   if(tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA'||(tg&&tg.isContentEditable)) return;
   if(e.code==='Space'){e.preventDefault();$('play').click();}
   if(e.code==='KeyH'&&!e.metaKey&&!e.ctrlKey){ $('ctrl').classList.toggle('min'); panelSave(); }
+  if(e.code==='KeyR'&&!e.metaKey&&!e.ctrlKey){ rollAll(); }
   if(e.code==='KeyP'&&!e.metaKey&&!e.ctrlKey){ PERF.on=!PERF.on; $('perf').style.display=PERF.on?'block':'none';
     showStat(PERF.on?'Perf readout on — press P to hide':'Perf readout off'); hideStat(1400); } });
 /* The readout samples on a timer, not per frame: updating text every frame is itself a cost, and
