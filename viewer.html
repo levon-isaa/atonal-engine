@@ -2391,31 +2391,65 @@ const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
-/* KALEIDOSCOPE. kalAmt ramps LINEARLY, not as a spring, and that is deliberate: an exponential
-   approach never actually arrives, so the field would sit forever a hair off 1.0 and pay for two
-   evalForm calls for the whole time the effect is on. A linear ramp reaches both ends exactly and
-   hands the shader a clean 0 or 1, where map() has a one-eval fast path for each. The easing is
-   applied on the shader side, as smootherstep, so the motion is still C2 at both ends.
+/* ---- KALEIDOSCOPE, DRIVEN BY THE TRACK ----
 
-   AUTO IS DECIDED PER SECTION, not per frame. A threshold on a live curve flutters wherever the
-   curve sits near it, and a shape morph that flickers is far worse than one that never fires. The
-   Director already cuts the track into labelled sections, so the decision is made once when the
-   section changes and then held for its whole length -- which also means the effect arrives with
-   the structure a listener is already hearing rather than with a number crossing a line.
+   THE FIRST RULE FIRED ON SECTIONS LABELLED "drop" AND NOTHING ELSE, and on most real tracks that
+   is never. analyze.py only calls a section a drop when its energy clears 78% of the track's peak
+   AND jumps 0.08 above the section before it AND follows a build, breakdown or intro; a track that
+   rises into its chorus gradually, or that never has a quiet bar to jump out of, gets none. The
+   synthetic bench track this was tested on has hard section cuts and produced two, which is
+   exactly the kind of test that hides the bug it was meant to catch. On a real track the effect
+   simply never appeared.
 
-   DROPS ONLY. The first rule also took any groove carrying the track's own weight, and on the
-   test track that left the kaleidoscope on for 53 seconds out of 120 -- an effect that is on half
-   the time is not an event, it is the look. Restricting it to drops gives two blooms in two
-   minutes, each one arriving on the biggest moment the Director found, and it halves how long the
-   expensive path is running. The 1.2s ramp starts EARLY off the Director's drop prediction so the
-   bloom arrives WITH the drop rather than after it: measured on the second drop, the ramp began
-   0.7s before the boundary and completed 0.5s after it, against 1.2s late with no pre-roll.
+   SO IT IS A CONTINUOUS DRIVE OFF THE ENERGY CURVE NOW, and it is measured against THE TRACK'S OWN
+   PEAK rather than an absolute number. kalRef is the loudest section the Director found, so 0.66
+   of it means "this track's upper-middle" whether the track is a wall of noise or a piano piece.
+   An absolute threshold cannot do that: pick it high and quiet tracks never bloom, pick it low and
+   loud ones never come back down.
 
-   window.KAL = {fold, phase} overrides the fold multiple and the mirror phase. */
+   WHY A CURVE IS SAFE HERE when a threshold was not. The original worry was flutter -- a live
+   value crossing a line repeatedly, snapping the shape in and out. What prevents it is not the
+   per-section decision, it is the SLEW LIMIT below: kalAmt may move at most one full scale per
+   KAL_SECS, so however fast the drive moves, the shape takes 1.2s to travel and a brief excursion
+   barely registers. That is a rate limit rather than a state machine, and it also gives the thing
+   the user actually asked for -- a fold that keeps CHANGING with the music instead of being on or
+   off. Sections still matter: a drop pins the drive to full regardless of the curve, and the
+   Director's drop prediction starts the ramp early so the bloom arrives WITH the drop (measured:
+   0.7s before the boundary, complete 0.5s after, against 1.2s late with no pre-roll).
+
+   THE DEADZONE IS NOT COSMETIC. map() takes the two-evaluation path for any u_kal above 0.002, so
+   a drive that idles at 0.05 costs exactly what a full bloom costs and shows nothing for it.
+   Below 12% the drive is forced to zero and the rest is rescaled to fill 0..1, which keeps the
+   cheap path genuinely cheap through the quiet two thirds of a track.
+
+   THE MIRROR ANGLE CHANGES PER SECTION, so consecutive blooms are not the same rosette. It is a
+   hash of the section's start time, so it is different across a track and identical every time you
+   replay it. It is latched only while kalAmt is under 0.02 -- moving the mirror line under a form
+   that is already folded would swing the twin across the shape in one frame.
+
+   kalAmt is slewed LINEARLY, not sprung: an exponential approach never arrives, so the field would
+   sit forever a hair off its target and pay for two evalForm calls it is not using. A linear slew
+   reaches 0 and 1 exactly. The easing is applied shader-side as smootherstep, so the morph is
+   still C2 at both ends.
+
+   window.KAL = {phase} overrides the mirror angle and pins it. */
 let kalMode='auto';                                   // 'auto' | 'on' | 'off'
-let kalWant=false, kalAmt=0;
+let kalAmt=0, kalDrive=0, kalBoost=0;
+let kalRef=1;                                         // the track's own peak section energy
+let kalPhase=1.0;                                     // mirror angle, in units of PI/seg
 const KAL_SECS=1.2;
-function kalDecide(sec){ return sec.label==='drop'; }
+const KAL_LO=0.66, KAL_HI=0.92;                       // fractions of kalRef: off below, full above
+function kalCalibrate(){
+  let mx=0; for(const s of director.sections) mx=Math.max(mx, s.energy||0);
+  // A floor on the reference, or a track the analyser reads as uniformly quiet divides by almost
+  // nothing and blooms permanently.
+  kalRef=Math.max(0.25, mx);
+}
+// A deterministic per-section angle: same track, same sequence, every play.
+function kalPhaseFor(t0){
+  const h=Math.abs(Math.sin(t0*12.9898)*43758.5453)%1;
+  return 0.35+h*1.30;
+}
 // Ribbon twist: integer only (see the shader note), latched and cross-faded so it never pops.
 // Vestigial: the Ribbon it cross-faded is gone. Kept only because the section-change handler
 // and the uniform upload still reference it; the shader no longer declares u_twA/u_twB, so
@@ -2862,6 +2896,7 @@ async function loadFile(file){
   }
   if(poll) clearInterval(poll);
   setProg(1,'Analysed'); setProg(null);
+  kalCalibrate();                 // the kaleidoscope's threshold is relative to THIS track
   $('hGenre').textContent=director.genre.primary+'  ('+(director.genre.confidence)+')';
   $('hBpm').textContent=director.tempo.bpm+' BPM';
   buildTimelineUI();
@@ -3010,7 +3045,12 @@ function frame(){
        little over half the pixels, and that is very close to the factor the second evaluation
        costs. It is the same bargain a tier makes -- resolution for frames -- made by the one
        feature that needs it, and it lasts only as long as the bloom does. */
-    const KFL=1.0-0.30*kalAmt;
+    // Gated on being ON, not on how far. The two-evaluation path costs the same at kalAmt 0.1
+    // as at 1.0, so a relaxation proportional to the amount gives back a fraction of a cost
+    // that has already been paid in full. smoothstep rather than a step so the floor does not
+    // snap rscale up the instant the bloom starts to release.
+    const kOn=Math.min(1,Math.max(0,(kalAmt-0.0)/0.15)); 
+    const KFL=1.0-0.30*(kOn*kOn*(3-2*kOn));
     const SMIN=(TIERS[TIER].scaleMax?(TIERS[TIER].scaleMin||0):0)*KFL, SMAX=TIERS[TIER].scaleMax||0;
     const SFLOOR=(TIERS[TIER].scaleMin||1.00)*KFL;   // banded tiers use SMIN above; the rest use this
     if(QLOCK){}
@@ -3093,11 +3133,24 @@ function frame(){
     for(const b of BANDS) BND[b]=sm(BND[b],sampleCurve(b,t),8.0,dt);
     prevT=t;
     const s=currentSection(t);
+    /* THE DRIVE. energy against the track's own peak, mapped through KAL_LO..KAL_HI, smoothed,
+       then lifted by epicness and pinned to full on a drop. The deadzone at the bottom is what
+       keeps the cheap one-evaluation path in use for the quiet part of a track -- see the note
+       above kalMode for why any nonzero value costs the same as a full bloom. */
+    { // the LIVE curve, not the section's mean -- the point is that the fold keeps moving with the
+      // music inside a section, not that it steps once at each boundary
+      let kd=(Math.max(0,energy)/kalRef - KAL_LO)/(KAL_HI-KAL_LO);
+      kd=Math.min(1,Math.max(0,kd)); kd=kd*kd*(3-2*kd);
+      kd=Math.min(1, Math.max(kd, kalBoost) + epic*0.22);
+      kalDrive = kd<0.12 ? 0 : (kd-0.12)/0.88; }
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
     moodTarget=s.palette||MO;
     const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy);
-      kalWant=kalDecide(s);
+      kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
+      // only while the form is unfolded: swinging the mirror line under a folded shape throws
+      // the twin across it in one frame
+      if(kalAmt<0.02) kalPhase=kalPhaseFor(s.t0);
       const want=2+Math.round(Math.max(0,Math.min(1,s.energy))*2);   // 2..4 twists, per SECTION
       if(want!==twA && twMix===0){ twB=want; twMix=1e-4; } }
     // predictive anticipation: ramp before a drop
@@ -3105,7 +3158,7 @@ function frame(){
     if(p){ const eta=p.t-t;
       if(p.type==='drop'&&eta<(p.lead||5)&&eta>0){ const a=1-eta/(p.lead||5); arousal=Math.max(arousal,a); tension=Math.max(tension,a*0.8); }
       // the fold takes KAL_SECS to complete, so it has to LEAVE that early to ARRIVE on the drop
-      if(p.type==='drop'&&eta>0&&eta<KAL_SECS) kalWant=true;
+      if(p.type==='drop'&&eta>0&&eta<KAL_SECS) kalBoost=1.0;
       $('next').textContent=(p.type==='drop'?'DROP in ':(p.type+' in '))+eta.toFixed(1)+'s';
     } else $('next').textContent='—';
     // beat flash (from beats list) — gentle
@@ -3154,8 +3207,11 @@ function frame(){
   formSpin   += spinRate*dt;
   formTumble += 2*Math.PI*(bpm/60)/TUMBLE_BEATS*dt;  // second axis, about X
   formSwirl  += 2*Math.PI*(bpm/60)/SWIRL_BEATS *dt;  // third axis, about Z
-  const kalT=(kalMode==='on')?1:(kalMode==='off')?0:(kalWant?1:0);
-  kalAmt=Math.max(0,Math.min(1, kalAmt+(kalT?dt:-dt)/KAL_SECS));
+  // SLEW, not a spring: at most one full scale per KAL_SECS in either direction, so the drive
+  // can move as fast as it likes and the shape still takes 1.2s to travel. This is what makes a
+  // live curve safe to steer with; nothing here can snap.
+  const kalT=(kalMode==='on')?1:(kalMode==='off')?0:kalDrive;
+  { const st=dt/KAL_SECS; kalAmt=Math.max(0,Math.min(1, kalAmt+Math.max(-st,Math.min(st,kalT-kalAmt)))); }
   // spinKick is gone. Feeding onsets into the rotation at all — as velocity OR as a decaying
   // offset — is what read as jiggle: something in the mix hits on almost every frame, so the
   // form sat permanently trembling around its own axis instead of turning. The beat still
@@ -3285,7 +3341,7 @@ function frame(){
      than a lattice to compute. window.KAL={phase} to try others. */
   const KALO=window.KAL||{};
   gl.uniform1f(US('u_kal'),kalAmt);
-  gl.uniform1f(US('u_kalPh'),(Math.PI/Math.max(1,PRM.seg))*(KALO.phase!==undefined?KALO.phase:1.0));
+  gl.uniform1f(US('u_kalPh'),(Math.PI/Math.max(1,PRM.seg))*(KALO.phase!==undefined?KALO.phase:kalPhase));
   gl.uniform1f(US('u_room'),ENV.room);
   gl.uniform1f(US('u_segN'),PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
   gl.uniform1f(US('u_pDepth'),PRM.depth);
