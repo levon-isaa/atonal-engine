@@ -203,7 +203,7 @@
       <option value="6">ASCII</option></select></div>
     <div class="row" id="rowFilt" style="display:none"><label>Amount</label>
       <input type="range" id="filtAmt" min="0" max="100" value="100"><span class="val" id="filtAmtV">100</span></div>
-    <div class="row" id="rowCell" style="display:none"><label>Cell</label>
+    <div class="row" id="rowCell" style="display:none"><label id="labCell">Cell</label>
       <input type="range" id="filtCell" min="3" max="60" value="14"><span class="val" id="filtCellV">14</span></div>
   </details>
 
@@ -2238,6 +2238,7 @@ uniform float u_amt;              // blend back toward the untouched frame
 uniform float u_cell;             // cell size in device pixels
 uniform float u_ang;              // screen angle, radians
 uniform float u_gain;             // dot gain / quantisation / band count / fold count
+uniform float u_off;              // thermal: a smooth shift of the band boundaries
 uniform float u_glyphN;
 uniform vec3  u_ink, u_paper;
 uniform float u_time;
@@ -2295,20 +2296,60 @@ void main(){
     if(u_gain>1.5) c=floor(c*u_gain+0.5)/u_gain;
     col=c;
   } else if(m<4.5){
-    // ---- THERMAL. Quantise luminance into bands and colour them from the SECTION'S palette
-    // rather than a stock heatmap, so this reads as the piece's own colourway posterised. The
-    // noise added before quantising is what makes the band boundaries wander like contour lines
-    // on a map instead of following the image's own iso-luminance curves exactly.
-    float li=tone(src);
-    // TWO OCTAVES, and the base one is LOW. A single octave at 5 cells across the frame wanders
-    // by 0.10 over a distance where the image's own luminance barely changes, so wherever the
-    // frame is flat the band edge shreds into noise rather than wandering -- visible as hair along
-    // every boundary in the empty corners. A long wobble with a small ripple on it reads as a
-    // contour line on a map, which is the thing being imitated.
+    /* ---- THERMAL. Quantise luminance into bands and colour them from the SECTION'S palette
+       rather than a stock heatmap, so this reads as the piece's own colourway posterised.
+
+       THREE THINGS WERE WRONG WITH THE FIRST VERSION and all three came from the same instinct --
+       reusing machinery built for a different filter.
+
+       1. It ran tone(), the contrast expansion the halftone needs. A halftone wants contrast
+          because it is about to throw the range away and keep one number per cell. A BANDING
+          filter wants the opposite: the whole range spread across the bands. tone() multiplies
+          about the midpoint by 1.45 and clamps, so most of a frame whose luminance sits in
+          0.25..0.95 saturates at 0 or 1 -- and a value already at the rail cannot be moved by the
+          contour noise either. The result was two enormous flat areas with the other four bands
+          crammed into the edges between them. It is a levels window now: black point at the
+          bottom of what this renderer actually produces, white point at the top, no expansion in
+          the middle.
+
+       2. The band count was driven continuously from energy, round(3+energy*7+epic*3). Changing
+          the count by one re-quantises the ENTIRE frame, so every boundary in the picture jumped
+          at once, over and over, as the energy curve drifted across each integer. That is not
+          reactivity, it is flicker. The count is a stable number the user sets now.
+
+       3. Nothing else moved, so with a stable count the picture would be static. The audio drives
+          a smooth OFFSET of the boundaries instead: the bands travel across the image like the
+          isotherms on a weather map, which animates continuously and never re-quantises.
+
+       The noise on top is two octaves with a low base -- one octave at 5 cells across the frame
+       wanders by more than the image's own luminance does wherever the frame is flat, and the
+       band edge shreds into hair rather than wandering. */
+    /* CENTRED ON THE FRAME'S OWN MEAN, read from the top of the mip chain. A fixed window cannot
+       work here: this renderer's luminance range moves with the section palette and the look, and
+       an idle pale-on-pale frame occupies about 0.55..0.85 of it -- so a window guessed at
+       0.22..0.94 spent half the bands on tones that were not in the picture, and the subject and
+       the backdrop landed in the same band. One texture fetch at the coarsest level is the whole
+       frame averaged, which is exactly the number needed to put the bands where the content is.
+       The width stays fixed: it is the CENTRE that has to track, and a width derived from the same
+       one-tap average would be a standard deviation it does not contain. */
+    float mean=lum(textureLod(u_tex, vec2(0.5), 14.0).rgb);
+    // 0.24, not 0.34. The width is what decides how many bands a given frame actually shows, and
+    // these frames are low-contrast by construction -- a pale form on a pale field, or a dark
+    // outro on a dark one. At 0.34 a quiet section spent its whole luminance range inside three
+    // bands. Narrower spreads more of the ramp across what is there; the cost is that a very
+    // contrasty frame clips at both ends, which for a BANDING filter only means the first and
+    // last bands get larger -- a far smaller fault than half the palette going unused.
+    float li=clamp((lum(src)-mean)*(1.0/0.24)+0.5, 0.0, 1.0);
     vec2 nq=uv*vec2(u_res.x/u_res.y,1.0);
     li+=(vn(nq*2.2+u_time*0.03)-0.5)*0.085 + (vn(nq*5.5-u_time*0.02)-0.5)*0.030;
-    float nb=max(2.0,u_gain);
-    float q=floor(clamp(li,0.,0.999)*nb)/(nb-1.0);
+    float nb=max(2.0,floor(u_gain+0.5));
+    /* THE OFFSET SLIDES, IT DOES NOT WRAP. fract() was the obvious way to keep it in range and it
+       is wrong here: this ramp is monotonic, dark to hot, so wrapping puts the brightest band
+       immediately next to the darkest one and the frame tears into black shapes against cream
+       wherever the image crosses the top of the range. A wrap only works on a CYCLIC palette.
+       Bounded to +/-17% of the range instead: enough that the isotherms visibly creep, never
+       enough to run a band off either end. */
+    float q=floor(clamp(li+(u_off-0.5)*0.35,0.,0.999)*nb)/(nb-1.0);
     /* FOUR STOPS, EVENLY SPACED. The first version cross-faded three overlapping smoothsteps, and
        overlapping bands average toward each other: six quantised levels came out as three
        distinguishable colours, which is a posterisation that has thrown half its levels away. A
@@ -2319,7 +2360,7 @@ void main(){
     vec3 c1=mix(u_ink,   vec3(0.14,0.20,0.62), 0.75);
     vec3 c2=mix(u_paper, vec3(0.86,0.34,0.42), 0.55);
     vec3 c3=mix(u_paper, vec3(1.00,0.86,0.45), 0.45);
-    float t3=q*3.0;
+    float t3=clamp(q,0.,1.)*3.0;
     col = t3<1.0 ? mix(c0,c1,t3) : t3<2.0 ? mix(c1,c2,t3-1.0) : mix(c2,c3,clamp(t3-2.0,0.,1.));
   } else if(m<5.5){
     // ---- FACETS: a mirror fold of the IMAGE about frame centre. The form already has a fold of
@@ -2397,10 +2438,14 @@ function initLdr(w,h){
   if(ldrT) gl.deleteTexture(ldrT); if(ldrF) gl.deleteFramebuffer(ldrF);
   ldrT=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,ldrT);
   gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  // MIPPED, so the thermal band filter can read the frame's own average luminance out of the top
+  // of the chain and centre its bands on the content instead of on a guessed window. Nothing else
+  // reads a level above 0, and the chain is only regenerated for the mode that needs it.
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.generateMipmap(gl.TEXTURE_2D);                       // allocate the chain once
   ldrF=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,ldrF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,ldrT,0);
   gl.bindFramebuffer(gl.FRAMEBUFFER,null);
@@ -2712,7 +2757,8 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
 
    FILT.cell is in DEVICE pixels, so the screen stays the same physical size whatever dpr is; a
    cell in CSS pixels would halve on a retina panel and the halftone would vanish into the grid. */
-const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
+const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, off:0, ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
+let filtBands=6, filtFolds=6, thermOff=0;   // held counts; see the drive block for why
 /* ======================= ROUTING MATRIX =======================
    Taken from the audio-reactivity panel in Sketch Tools, where every animated parameter is a row
    of  target <- source x amount  that you wire by hand.
@@ -3489,6 +3535,7 @@ function frame(){
     const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy);
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
       sectRand=Math.random();                       // the matrix's 'Section step' source
+      filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
       // only while the form is unfolded: swinging the mirror line under a folded shape throws
       // the twin across it in one frame
       if(kalAmt<0.02) kalPhase=kalPhaseFor(s.t0);
@@ -3537,9 +3584,19 @@ function frame(){
     FILT.ang = 0.45 + formSpin*0.16 + VAR.tilt*0.2;
     FILT.gain = FILT.mode<2.5 ? 1.0+pulseS*0.30+HITS.low*0.22          // dot swell on the beat
               : FILT.mode<3.5 ? Math.round(3+energy*9)                  // colour levels
-              : FILT.mode<4.5 ? Math.round(3+energy*7+epic*3)           // thermal bands
-              : FILT.mode<5.5 ? Math.max(2,Math.round(3+Math.floor(energy*4)+Math.floor(epic*3)))
+              : FILT.mode<4.5 ? filtBands                               // thermal: the user's, held
+              : FILT.mode<5.5 ? filtFolds
               : 1.0;
+    /* THE THERMAL OFFSET. This is the whole animation for that mode, and it has to be CONTINUOUS:
+       anything that changes the band COUNT re-quantises every boundary in the frame at once, which
+       is flicker rather than motion. Sliding the boundaries instead lets the isotherms travel.
+       Slow, and mostly from the section rather than the beat -- contour lines crawling is the
+       effect, contour lines strobing is not. */
+    thermOff = (thermOff + dt*(0.020+arousal*0.045+energy*0.030)) % 1.0;
+    FILT.off = FILT.mode>3.5 && FILT.mode<4.5
+             ? (thermOff + pulseS*0.012 + HITS.low*0.010) % 1.0 : 0.0;
+    /* FOLD COUNT, LATCHED. Same argument as the band count: changing it re-cuts the whole picture,
+       so it steps at section boundaries rather than following a curve. */
     // Inks from the SECTION's colourway, not from a fixed black and white: the paper takes the
     // mood at low saturation and the ink takes its deep end, so a filter that replaces every
     // colour in the frame still agrees with the palette the Director chose.
@@ -4039,6 +4096,9 @@ function frame(){
       gpuBegin('filter');
       gl.useProgram(filtP); gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,ldrT);
+      // Only Thermal reads a mip. Regenerating the chain for every mode would be a full-frame
+      // downsample nobody else uses.
+      if(FILT.mode>3.5 && FILT.mode<4.5) gl.generateMipmap(gl.TEXTURE_2D);
       gl.uniform1i(UF('u_tex'),0);
       if(FILT.mode>5.5){ initGlyphs();
         gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,glyphT);
@@ -4049,6 +4109,7 @@ function frame(){
       gl.uniform1f(UF('u_amt'),Math.max(0,Math.min(1,FILT.amt+MV('famt'))));
       gl.uniform1f(UF('u_cell'),FILT.cell);  gl.uniform1f(UF('u_ang'),FILT.ang);
       gl.uniform1f(UF('u_gain'),FILT.gain);
+      gl.uniform1f(UF('u_off'),FILT.off||0);
       gl.uniform3f(UF('u_ink'),FILT.ink[0],FILT.ink[1],FILT.ink[2]);
       gl.uniform3f(UF('u_paper'),FILT.paper[0],FILT.paper[1],FILT.paper[2]);
       drawFS(aFilt);
@@ -4814,18 +4875,34 @@ $('selDetail').addEventListener('change',e=>{ const v=e.target.value;
   if(bakeDetail(v)) return;
   loadDetail(v).catch(err=>showStat('Detail map failed — '+err.message,true)); });
 $('selLook').addEventListener('change',e=>{ const l=LOOKS[e.target.value]; if(l) Object.assign(LKT,l); });
+/* The second slider means something different per mode, and it says so. Facets is the only mode
+   with nothing to put there -- the fold count is re-cut per section, not held, so a slider would
+   be overwritten on the next section boundary. */
+function filtRow(){
+  const m=FILT.mode, on=m>0.5;
+  $('rowFilt').style.display = on?'flex':'none';
+  const hasCell = on && m!==5;
+  $('rowCell').style.display = hasCell?'flex':'none';
+  if(!hasCell) return;
+  const therm = (m===4);
+  $('labCell').textContent = therm?'Bands':'Cell';
+  const el=$('filtCell');
+  el.min = therm?2:3; el.max = therm?14:60;
+  el.value = therm?filtBands:filtBase;
+  $('filtCellV').textContent = el.value;
+}
 $('selFilt').addEventListener('change',e=>{
   FILT.mode=+e.target.value;
-  const on = FILT.mode>0.5;
-  $('rowFilt').style.display = on?'flex':'none';
-  // Facets and Thermal have no cell -- one folds the whole frame and the other bands it, so a
-  // cell-size slider on either is a control that does nothing.
-  $('rowCell').style.display = (on && FILT.mode!==4 && FILT.mode!==5)?'flex':'none';
-  showStat(on ? 'Filter · '+e.target.selectedOptions[0].textContent : 'Filter off');
+  filtRow();
+  showStat(FILT.mode>0.5 ? 'Filter · '+e.target.selectedOptions[0].textContent : 'Filter off');
   hideStat(1400);
 });
 $('filtAmt').addEventListener('input',e=>{ FILT.amt=+e.target.value/100; $('filtAmtV').textContent=e.target.value; });
-$('filtCell').addEventListener('input',e=>{ filtBase=+e.target.value; $('filtCellV').textContent=e.target.value; });
+$('filtCell').addEventListener('input',e=>{
+  const v=+e.target.value;
+  if(FILT.mode===4) filtBands=v; else filtBase=v;
+  $('filtCellV').textContent=v;
+});
 
 /* ---- PANEL ---- collapse the whole thing, and remember which groups were open.
    Stored per group rather than as one flag: the useful state is usually "Form and View open,
