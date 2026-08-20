@@ -126,8 +126,7 @@
        iridescence banding and the specular sweep, so it is the one that gives a genuinely
        featureless surface. -->
   <div class="row grp"><label>Surface</label>
-    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Textured</button>
-    <button id="belt" class="mini on" title="Orbital belt — shards orbiting the form on the bar. Off leaves the subject alone in frame.">Belt</button></div>
+    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Textured</button></div>
   <div class="row"><label>Finish</label><select id="selFinish">
     <option value="satin" selected>Satin</option>
     <option value="matte">Matte</option>
@@ -286,7 +285,6 @@ uniform float u_nobound;               // 1 = march unbounded, as before the ray
 uniform float u_bmarg;                 // extra bounding radius, for testing whether the bound clips
 uniform float u_mipflat;               // 1 = let mip averaging flatten the normal; 0 = the old re-inflate (A/B)
 uniform float u_trivar;                // 1 = variance-normalise the triplanar blend (A/B)
-uniform float u_orbAmt;                // orbital belt density; placement is in u_orbP
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
@@ -1138,77 +1136,6 @@ vec3 bg(vec3 rd, vec2 sv){
   return col*(0.80+u_bgAmt*0.30);
 }
 
-/* ---- ORBITAL BELT ----
-   The frame was one object in the middle of a gradient, and the gradient carried no depth cue of
-   its own: the fluid backdrop moves, but it is painted at infinity, so nothing in the picture ever
-   passed IN FRONT of anything else. That is what read as empty. A subject needs something to be in
-   front of.
-
-   So: a belt of shards orbiting the form, on the form's own axis. They are not marched. Every one
-   is an ellipsoid, and a ray/ellipsoid intersection is a quadratic — forty of them cost about what
-   one map() call does, against the 112 map() calls the primary march is budgeted. Folding them
-   into map() instead would have put the same geometry behind an estimator that is evaluated ~30x
-   per hit ray, plus AO, plus shadows: the same shapes at roughly thirty times the price.
-
-   Compositing is a depth compare against whatever the primary ray already found, so shards pass
-   behind the form and in front of it correctly, and because the scene pass writes depth into
-   alpha, the post pass's DOF blurs the near and far ones while the subject stays sharp. That
-   near/far blur is most of what turns a flat picture into a deep one, and it comes for free here.
-
-   Where the shards ARE, and why, is in buildBelt() on the JS side — see the note there. This half
-   is only the intersection. */
-#define ORBN 40
-uniform vec4 u_orbP[ORBN];   // xyz = shard centre in WORLD space, w = radius. See buildBelt().
-uniform int  u_orbN;         // how many entries of u_orbP are live this frame
-/* PLACED ON THE CPU, INTERSECTED ON THE GPU.
-
-   The first cut generated each shard's orbit inside this loop -- two sin/cos for the azimuth, a
-   sin for the bob, three fract hashes, a normalize and a cross, per shard PER PIXEL. Every one of
-   those is the same value for all four million pixels in the frame, and the belt's bounding sphere
-   subtends 50 degrees against a 19 degree half-FOV, so there is no pixel it does not run for.
-   MEASURED at High with a track playing: 60.2 fps with the belt off, 40.0 with it on -- 8.4 ms,
-   which is half a frame for forty spheres.
-
-   Placement moved to JS, uploaded as one vec4 array. What is left here is the part that genuinely
-   varies per pixel: a rejection test and a quadratic.
-
-   THE ELLIPSOID NEEDS ONLY ITS AXIS. A shard is a sphere squashed by KFLAT along its radial
-   direction, which is the quadratic form  q'Mq = r^2  with  M = I + (1/KFLAT^2 - 1) e0 e0'.
-   Written that way it costs three dot products and no basis at all -- the earlier version built a
-   full orthonormal frame with a cross product to do the same job. The normal is M q by the same
-   token, which is why the axis term goes IN rather than being divided out. */
-float orbTrace(vec3 ro,vec3 rd,float tMax,out vec3 oN,out float oIdx){
-  oN=vec3(0.,1.,0.); oIdx=0.;
-  if(u_orbAmt<0.002) return -1.0;
-  const float KFLAT=0.52;
-  const float K2=1.0/(KFLAT*KFLAT)-1.0;
-  float best=tMax, hit=-1.0;
-  for(int i=0;i<ORBN;i++){
-    if(i>=u_orbN) break;
-    vec4 P=u_orbP[i];
-    vec3 oc=ro-P.xyz;
-    // CHEAP REJECT FIRST, on the bounding SPHERE of the shard -- two dot products. A pixel sees at
-    // most one or two shards out of forty, so this is the test that actually runs, and the
-    // ellipsoid form below only runs for the handful that survive it.
-    float b0=dot(oc,rd), c0=dot(oc,oc)-P.w*P.w;
-    if(b0>0.0 || b0*b0<c0 || -b0>best) continue;
-    vec3 e0=normalize(P.xyz);                     // the orbit is centred on the origin
-    float re=dot(rd,e0), oe=dot(oc,e0);
-    float qa=1.0+K2*re*re;
-    float qb=b0+K2*oe*re;
-    float qc=c0+K2*oe*oe;
-    float h=qb*qb-qa*qc;
-    if(h<=0.0) continue;
-    float ts=(-qb-sqrt(h))/qa;
-    if(ts>0.05 && ts<best){
-      best=ts; hit=ts; oIdx=float(i);
-      vec3 q=oc+rd*ts;                            // surface point relative to the centre
-      oN=normalize(q+K2*dot(q,e0)*e0);            // M q: the ellipsoid's own gradient
-    }
-  }
-  return hit;
-}
-
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
   // DIAG 6/7: the detail map itself, screen-mapped, with no triplanar and no lighting in the way.
@@ -1324,12 +1251,6 @@ void main(){
     if(tp>0.02 && (mid<0.0 || tp<t)){ t=tp; mid=2.0; }
   }
   vec3 Lw=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
-  // ORBITAL BELT, composited by depth against whatever the primary ray found. Passing t as the
-  // cap on a hit means a shard behind the form is rejected by the intersection test itself and
-  // never shaded; on a miss the belt is the only thing that can be there, so the cap is open.
-  vec3 obN; float obI;
-  float tOrb=orbTrace(ro,rd,(mid<0.0?1e9:t),obN,obI);
-  if(tOrb>0.0){ t=tOrb; mid=3.0; }
   vec3 back=bg(rd,uv);       // miss + aerial fade
   vec3 col;
   // DIAG 13: primary-march step count / 112, for BOTH hits and misses. Step count is the one
@@ -1344,57 +1265,6 @@ void main(){
     // concentric contour rings in 8-bit, which no amount of tuning the falloff removes. This is
     // the same failure the ground plane above was deleted for. The form floats in the field; the
     // Studio scene still has a real floor and a real cast shadow, where one actually belongs.
-  }
-  else if(mid>2.5){                                  // ---- ORBITAL BELT ----
-    /* Shaded from the same rig as the form, at a fraction of the cost: one env() tap, one key
-       lobe, one Fresnel rim. No AO, no shadow, no texture — a shard is a few dozen pixels across
-       and every one of those would be paying full price for detail the eye cannot resolve.
-
-       Held DELIBERATELY below the subject in value. The belt exists to give the frame depth and
-       rhythm, and the instant a shard is as bright as the form the composition has two subjects
-       and reads as clutter. So the albedo is the section's mood at 45-70% (never white), the key
-       is weaker than the form's, and the rim is the only place a shard is allowed to be bright —
-       which is also the one that makes it read as lit from the same room. */
-    vec3 n=obN;
-    vec3 amb=env(n,0.42);
-    if(u_hardAmb>0.001){
-      /* PARTIALLY, not fully. The flat look answers the normal with ONE ambient tone, which is
-         right for the subject — it is a faceted body, and flat facets are the whole point. A
-         sphere lit that way is not flat-shaded, it is a DISC: no gradient anywhere on it, so a
-         shard crossing in front of the form read as a hole punched in the silhouette rather than
-         as an object in front of it. Held at 0.55 so the belt still belongs to the same look
-         while keeping enough falloff across each shard to read as round. */
-      vec3 ambF=env(vec3(0.,1.,0.),0.42)*0.55
-               +env(vec3(0.,-1.,0.),0.42)*0.45;
-      amb=mix(amb, ambF*u_hardAmbK, u_hardAmb*0.55);
-    }
-    vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
-    /* PER-SHARD VARIETY. Forty identical shards read as one object stamped forty times, and a
-       field only reads as depth if its members differ in VALUE — that is the cue the eye uses to
-       sort near from far. Two independent hashes off the index: how much mood the albedo carries,
-       and whether the shard is polished. Roughly a third of them take the specular, so the field
-       has sparkle in it without becoming a bag of marbles. */
-    float hA=fract(obI*0.5300), hB=fract(obI*0.2749+0.31), hC=fract(obI*0.4127+0.66);
-    // Three hashes, and the third is the important one: how much MOOD a shard carries only moves
-    // its hue, and against a backdrop built from the same mood that is barely a difference at all.
-    // Value is what separates near from far, so the albedo is scaled too — the field needs dark
-    // members as much as bright ones or it flattens into one tone at one depth.
-    // BUT ONLY THE SMALL ONES MAY GO DARK. Visual weight is area times contrast, and a large dark
-    // shard on a pale backdrop outweighs the subject itself: the first cut of this put one beside
-    // the form that pulled the eye straight off it. hS is buildBelt's own size hash, recovered
-    // from the index, so the largest shards hold their value and only the small ones vary.
-    float hS=pow(fract(obI*0.7911),2.5);
-    vec3 alb=mix(vec3(0.70), u_mood, 0.30+0.62*hA)*mix(0.60+0.62*hC, 1.00, hS);
-    float NoL=max(0.,dot(n,Lw));
-    float fres=pow(1.0-clamp(dot(n,-rd),0.,1.),4.0);
-    float gloss=smoothstep(0.62,0.98,hB);
-    vec3  hv=normalize(Lw-rd);
-    float spec=gloss*pow(max(0.,dot(n,hv)),64.0)*2.2;
-    // The key is the shard's only source of shape and the rim its only separation from whatever
-    // is behind it, so both carry more weight here than they would on a fully shaded body.
-    col=alb*(amb*0.78 + keyC*NoL*(0.55+u_energy*0.25))
-      + keyC*spec
-      + fres*(0.22+u_pulse*0.12+u_bAir*0.10)*mix(vec3(1.),u_mood,0.5);
   }
   else if(mid>1.5){                                  // ---- STUDIO FLOOR ----
     vec3 p=ro+rd*t, gn=vec3(0,1,0);
@@ -2450,10 +2320,20 @@ let camKick=0;                      // decaying angular OFFSET from low/sub onse
 /* ---- USER CAMERA: drag to orbit, wheel to zoom, all composed ON TOP of the Director ---- */
 let autoRotate=true, dragging=false, raysOn=true;
 let userAz=0, userEl=0, userZoom=1, userAzV=0, userElV=0;
-// One full revolution per SPIN_BEATS beats. 32 = 8 bars in 4/4, the standard phrase length in
-// most electronic music, so a turn lines up with the structure the Director cuts sections on.
-// Lower it for a faster spin: 16 = 4 bars, 8 = 2 bars.
-const SPIN_BEATS=32;
+/* One full revolution per SPIN_BEATS beats, so angular velocity comes from the track's own BPM
+   and a faster track visibly spins faster.
+
+   16 = 4 bars in 4/4, one standard phrase. It was 32 (8 bars), which at 129 BPM is a revolution
+   every FIFTEEN SECONDS -- the form does turn all the way round, but at a quarter of a degree per
+   frame nobody watching reads it as a rotation; it reads as a still object that happens to be
+   drifting. 16 halves that to ~7s, which is slow enough to hold a pose and fast enough that the
+   turn is the movement you notice.
+
+   This is the one motion in the file that never reverses, and that is the point. Everything that
+   oscillated here -- spinKick's onset offsets, the bar-locked orbit sway -- was removed for
+   reading as wobble; a monotonic turn cannot, however fast it goes.
+   Raise it for a slower spin: 32 = 8 bars, 64 = 16. */
+const SPIN_BEATS=16;
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
 const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
@@ -2512,7 +2392,6 @@ let svgReach=0.7, svgReachY=0.7;
 const VOL_REACH=1.343, VOL_REACH_Y=1.000;
 // One bar in seconds, from the Director's own bpm. 4/4 assumed, which is what the tempo prior
 // in analyze.py already assumes.
-function barSecs(){ const b=(director&&director.tempo&&director.tempo.bpm)||120; return 4*60/b; }
 function frameReachY(){
   if(volOn) return VOL_REACH_Y;
   if(svgOn) return svgReachY;
@@ -2528,64 +2407,7 @@ function frameReach(){                                 // blended across a morph
   return r0+(r1-r0)*k;
 }
 let pulse=0, pulseS=0, prevT=-1;                      // beat pulse (raw + smoothed envelope)
-let beatCount=-1, barPhase=0;                         // bar position, for accent and bar-locked motion
-// ORBITAL BELT state. orbPh is an ACCUMULATED angle rather than a function of the transport clock,
-// so a seek or a tempo change bends the belt's speed instead of teleporting it.
-let orbPh=0, orbBurst=0, orbAmt=0, orbOn=true, ORB_R=1.0;
-const ORBN=40;                                   // must match #define ORBN in the scene shader
-const ORB_BUF=new Float32Array(ORBN*4);
-let orbCount=0;
-/* WHERE THE SHARDS ARE. Every number here is constant across the frame, which is the whole reason
-   it lives in JS: see the note above orbTrace() for what running it per pixel cost.
-
-   Distribution, and why each part is the way it is:
-   - GOLDEN ANGLE azimuths (2.39996 rad apart). It is the one spacing that never lines shards up
-     into spokes, at any count, so the belt can grow and shrink without the pattern showing.
-   - A WIDE radius band, 1.75..4.20 form-radii. The form is framed to fill the frame, so a shell
-     that only just clears its bounding sphere projects to the frame EDGE: the first cut of this
-     used 1.95..3.30 and put exactly one shard of nine on screen. The far shards sweep in and out
-     at the edges; the near ones cross in FRONT of the subject, which is the depth cue the belt
-     exists for.
-   - DIFFERENTIAL ROTATION, inner shells faster. A single rate makes the belt one rigid object and
-     the eye locks onto it; shearing against itself, it never repeats a pose.
-   - OBLATE, not flat, with height scaling WITH radius. A zero-thickness ring reads as a wire hoop
-     and projects into the one horizontal band the form already occupies.
-   - SIZE as a POWER of the hash and scaled by the shell, so most shards are small, a few are
-     genuinely large, and the large ones are always the FAR ones. Uncoupled, the biggest shard can
-     land at the inner radius beside the subject at a third of its size, which reads as a second
-     object rather than as a companion. */
-function buildBelt(roX,roY,roZ,S,tilt,time){
-  const ct=Math.cos(tilt), st=Math.sin(tilt);
-  let n=0;
-  for(let i=0;i<ORBN;i++){
-    // Shards grow in rather than popping in: density is a continuous number and each shard's
-    // radius is its own share of it, so energy can ramp the count without anything appearing at
-    // full size on a single frame.
-    const grow=Math.min(1,Math.max(0,orbAmt*ORBN-i));
-    if(grow<=0.002) break;                       // density is monotonic in i, so nothing follows
-    const sh=(i*0.6180340)%1;                    // which shell this shard belongs to
-    let R=(1.75+2.45*sh)*ORB_R;
-    const a=i*2.39996323 + orbPh*(1.25-0.77*sh);
-    const yy=((i*0.4400+0.17)%1-0.5)*2;
-    const y=yy*(0.55+0.35*sh)*R*0.58 + Math.sin(time*0.42+i*1.7)*0.07;
-    let rr=(0.040+0.110*Math.pow((i*0.7911)%1,2.5))*(0.55+0.65*sh)*grow;
-    // the beat pushes the belt OUT and swells the shards — the same downbeat that punches the
-    // form, read at the edge of frame where the form's own pulse has nothing to be measured against
-    R  *= 1+orbBurst*0.055*(0.40+sh);
-    rr *= 1+orbBurst*0.22;
-    let cx=Math.cos(a)*R, cy=y, cz=Math.sin(a)*R;
-    const cy2=cy*ct+cz*st, cz2=-cy*st+cz*ct;     // inverse of map()'s tilt: the belt shares the axis
-    cx*=S; cy=cy2*S; cz=cz2*S; rr*=S;
-    // A shard that drifts between the lens and the subject subtends more of the frame the closer
-    // it gets, without limit. Fading it out over the last stretch keeps the near-foreground cue
-    // (which is the good part) and drops the frame-filling smear at the end of it.
-    const d=Math.hypot(roX-cx,roY-cy,roZ-cz);
-    const f=Math.min(1,Math.max(0,(d-0.30)/1.10)); rr*=f*f*(3-2*f);
-    if(rr<=1e-4) continue;
-    ORB_BUF[n*4]=cx; ORB_BUF[n*4+1]=cy; ORB_BUF[n*4+2]=cz; ORB_BUF[n*4+3]=rr; n++;
-  }
-  orbCount=n;
-}
+let beatCount=-1;                                     // position in the bar, for the downbeat accent
 /* ---- PER-BAND SOUND REACTION: every distinct sound in the mix gets its own envelope ---- */
 const BANDS=['sub','low','mid','high','air'];
 const HIT ={sub:0,low:0,mid:0,high:0,air:0};          // transient, raw (set on each onset)
@@ -3107,23 +2929,17 @@ function frame(){
        the three after it. That is the accent pattern a listener is already hearing, so the form
        moving with it reads as rhythm rather than as a metronome.
 
-       barPhase (0..1 across the bar) is the other half, and it is the one that can carry
-       CONTINUOUS movement safely. Every previous attempt at more motion here fed onsets into the
-       rotation and got jitter, because something in a mix hits on nearly every frame -- the note
-       above spinKick is the post-mortem. A phase locked to the beat GRID cannot do that: it is
-       smooth, it is periodic, and its period is a musical one, so the movement it drives is in
-       time by construction rather than by luck. */
+       The accent is ALL the beat drives directly. There was also a continuous bar phase here,
+       feeding a sway into the camera orbit; it is gone, with the sway. Being locked to the grid
+       kept it from jittering but could not keep it from wobbling, which is a different fault and
+       the one that actually showed. Beat -> accent, tempo -> rate of turn, and nothing beat-driven
+       touches the rotation itself. */
     if(prevT>=0 && t>prevT){
       for(let bi=0;bi<beats.length;bi++){ if(beats[bi]>prevT && beats[bi]<=t){
         beatCount++; const inBar=beatCount&3;
         pulse = inBar===0 ? 1.0 : 0.62;              // downbeat lands harder than the rest
         break; } }
     }
-    // Continuous position within the bar, interpolated between beat times so it never jumps.
-    { let bi=0; while(bi<beats.length-1 && beats[bi+1]<=t) bi++;
-      const b0=beats[bi], b1=beats[Math.min(bi+1,beats.length-1)];
-      const span=Math.max(1e-3,b1-b0);
-      barPhase = (((bi&3) + Math.min(1,Math.max(0,(t-b0)/span))) / 4.0) % 1.0; }
     // ---- fire the individual sounds: walk each band's onset list up to now ----
     const on=director.events.onsets;
     if(on){
@@ -3203,35 +3019,23 @@ function frame(){
   // framing distance, height, roll, the dolly on the kick — keeps running, because those are
   // composition decisions rather than "movement the user might want to take over".
   if(autoRotate) camAng += (CM.spin*(0.45+energy*0.45) + 0.008)*dt;
-  /* BAR-LOCKED SWAY. A slow oscillation whose period is exactly one bar, added to the orbit on
-     top of the steady turn. Because the period is the bar, the camera arrives back where it
-     started on every downbeat, so the movement is IN TIME rather than merely reactive -- and
-     because it is a sine of a phase rather than a sum of impulses, it cannot jitter however dense
-     the mix gets. Amplitude follows arousal and energy, so a quiet passage barely moves and a
-     loud one swings; it is zero when nothing is playing.
-     The roll is the same phase at half rate (two bars), which keeps the two from locking into one
-     visible wobble. */
-  const swayA=(isPlaying?1:0)*(0.010+arousal*0.030+energy*0.022);
-  camAng += Math.cos(barPhase*6.2831853)*swayA*6.2831853*dt/Math.max(0.25,barSecs());
-  rollS  += (Math.sin(barPhase*3.14159265)*(0.012+epic*0.030)*(isPlaying?1:0) - rollS)*(1-Math.exp(-3.0*dt));
-  /* ORBITAL BELT (see orbTrace() in the shader for the geometry and why it is not marched).
-     One revolution every ORB_BARS bars, so the belt's period is a musical one and the shards
-     line back up with the structure the Director cuts sections on -- the same reasoning as
-     SPIN_BEATS above. Arousal and energy bend the rate around that, which is what keeps a quiet
-     passage from drifting at the same speed as a drop.
-     The burst is a spring on the beat pulse, so the belt breathes OUT on the downbeat. It reads
-     at the edge of frame, where the form's own scale pulse is invisible because there is no
-     reference next to it -- a shard moving against the backdrop is the only pulse cue out there.
-     Tunable live: window.ORB = {amt, r, bars} overrides density, radius and revolution period. */
-  const ORB=window.ORB||{};
-  ORB_R=ORB.r||1.0;
-  const ORB_BARS=ORB.bars||10;
-  orbPh   += 6.2831853*dt/Math.max(0.5,barSecs()*ORB_BARS)*(1.0+arousal*0.55+energy*0.35);
-  orbBurst += (pulseS*(0.55+HITS.low*0.70) - orbBurst)*(1-Math.exp(-6.5*dt));
-  // Density ramps with the track but never falls to zero while the belt is on: an idle viewer is
-  // the state the frame looked emptiest in, so the belt has to be there before the music is.
-  const orbT=(!orbOn)?0:(ORB.amt!==undefined?ORB.amt:(0.55+energy*0.34+epic*0.10));
-  orbAmt  += (orbT-orbAmt)*(1-Math.exp(-2.0*dt));
+  /* NO CAMERA SWAY. There was a bar-locked oscillation here -- a sine on the orbit angle with a
+     period of exactly one bar, plus the same phase at half rate on the roll -- and it was sized
+     against nothing at all. MEASURED against the orbit it was added to:
+
+       base orbit   CM.spin*(0.45+energy*0.45)+0.008   ~0.038 rad/s
+       sway, peak   swayA*2*PI/barSecs, swayA~0.049    ~0.164 rad/s      4.4x the orbit
+
+     Four times the rate it was riding on, and a sine, so for half of every bar it was NEGATIVE:
+     the camera did not sway, it REVERSED, twice a bar, every bar. That is the wobble, and it is
+     also why the turn stopped reading as a turn -- the rocking is four times faster than the
+     rotation it sits on, so the rotation is what you stop seeing.
+
+     Being locked to the beat grid was the wrong safeguard for the wrong fault. It bought immunity
+     to JITTER, which is what spinKick died of, and jitter was never the risk in a smooth sine; the
+     risk was periodic REVERSAL, and the eye reads that as instability however musical its period.
+     Nothing beat-driven touches the rotation now. The bar keeps the ACCENT (see the downbeat pulse
+     above) and the tempo sets the rate of the turn, and both of those are monotonic. */
   // POSE PIN, for measurement only. Every A/B in this file has to compare the SAME frame, and
   // without this the form and the camera have both moved by the time the second capture lands —
   // which has invalidated more than one comparison here. window.POSE={spin,cam} holds both.
@@ -3292,33 +3096,6 @@ function frame(){
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
   let rx=fz,ry=0,rz=-fx; const rl=Math.hypot(rx,ry,rz)||1; rx/=rl;ry/=rl;rz/=rl;
   let ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
-  /* BAR-LOCKED FRAMING DRIFT. The form was nailed to the centre of frame for the whole of every
-     track: the camera orbited it, but the subject never moved WITHIN the picture, so the
-     composition was the same one from the first bar to the last. This pans the lens off centre
-     and back over a bar, which lets the subject travel through the empty half of the frame
-     instead of sitting in the middle of it.
-
-     A PAN, not a target offset. Shifting the look-at point moves the subject and the belt by
-     different amounts (they are at different distances), so the two slide against each other and
-     the parallax reads as the shards being dragged. Rotating the lens moves the whole picture as
-     one, which is what a camera actually does.
-
-     Horizontal is one cycle per bar and vertical is one per two, so the subject traces a slow
-     figure rather than sliding back and forth along a line. Amplitudes stay under ~7% of frame:
-     the framing logic above exists to fit the silhouette, and a drift big enough to notice on its
-     own would be big enough to push an arm out of frame on a wide variant. */
-  // window.DRIFT scales this — 0 ablates the drift for an A/B, >1 exaggerates it to make a
-  // movement this deliberately subtle visible enough to check.
-  const drA=(window.POSE?0:(isPlaying?1:0))*(0.030+arousal*0.042+epic*0.030)
-          * (window.DRIFT===undefined?1:window.DRIFT);
-  if(drA>1e-4){
-    const panX=Math.sin(barPhase*6.2831853)*drA;
-    const panY=Math.sin(barPhase*3.14159265+0.9)*drA*0.55;
-    fx+=rx*panX+ux*panY; fy+=ry*panX+uy*panY; fz+=rz*panX+uz*panY;
-    const fl2=Math.hypot(fx,fy,fz)||1; fx/=fl2; fy/=fl2; fz/=fl2;
-    rx=fz; ry=0; rz=-fx; const rl2=Math.hypot(rx,ry,rz)||1; rx/=rl2; ry/=rl2; rz/=rl2;
-    ux=fy*rz-fz*ry; uy=fz*rx-fx*rz; uz=fx*ry-fy*rx;
-  }
   // emotional camera: tension leans the horizon (a held lean, never a rocking motion),
   // epicness opens the lens out so big moments feel wider
   rollS=sm(rollS,(tension-0.35)*0.26,0.9,dt);
@@ -3371,12 +3148,6 @@ function frame(){
   gl.uniform3f(US('u_mood'),MK[0],MK[1],MK[2]);
   gl.uniform1f(US('u_energy'),energy); gl.uniform1f(US('u_tension'),tension); gl.uniform1f(US('u_arousal'),arousal);
   gl.uniform1f(US('u_pulse'),pulseS); gl.uniform1f(US('u_flux'),flux);
-  gl.uniform1f(US('u_orbAmt'),orbAmt);
-  if(orbAmt>0.002){
-    buildBelt(roX,roY,roZ, Math.max(reform,0.2)*(1+energy*0.10+pulseS*0.10+HITS.low*0.13+HITS.sub*0.09)*0.95,
-              VAR.tilt, time);
-    gl.uniform4fv(US('u_orbP'),ORB_BUF); gl.uniform1i(US('u_orbN'),orbCount);
-  } else gl.uniform1i(US('u_orbN'),0);
   // PACE from the beat envelope and the kick; EMOTION sets how hard each beat lands. A calm
   // section barely breathes, a high-arousal one throws the key a third brighter on every hit.
   // pulseS is already tempo-locked (it is driven by the beat list), so the rate follows the
@@ -4347,11 +4118,6 @@ bindPrm('pSeg','seg',1,v=>v.toFixed(0));
 bindPrm('pEdge','edge',0.01,v=>v.toFixed(2));
 bindPrm('pMass','mass',0.01,v=>v.toFixed(2));
 bindPrm('pDepth','depth',0.01,v=>v.toFixed(2));
-$('belt').addEventListener('click',()=>{
-  orbOn=!orbOn;
-  $('belt').classList.toggle('on',orbOn);
-  showStat(orbOn?'Orbital belt on':'Orbital belt off'); hideStat(1400);
-});
 $('surf').addEventListener('click',()=>{
   surfTarget=surfTarget>0.5?0:1;
   $('surf').classList.toggle('on',surfTarget>0.5);
