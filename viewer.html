@@ -79,9 +79,9 @@
 <div id="ctrl">
   <div class="row"><label>Shape</label><select id="selShape">
     <option value="auto">Auto · Director</option>
-    <option value="0" selected>Triskelion</option><option value="1">Clover</option>
+    <option value="0">Triskelion</option><option value="1">Clover</option>
     <option value="2">Arc</option><option value="3">Chevron</option>
-    <option value="4">Wave</option><option value="5">Plate</option>
+    <option value="4" selected>Wave</option><option value="5">Plate</option>
     <option value="mesh">Reference mesh</option>
     <option value="svg">Custom SVG…</option></select></div>
   <!-- SHAPE PARAMETERS. These apply to every form, because they act on the extrusion and the
@@ -126,8 +126,11 @@
        iridescence banding and the specular sweep, so it is the one that gives a genuinely
        featureless surface. -->
   <div class="row grp"><label>Surface</label>
-    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Textured</button>
-    <button id="kal" class="mini" title="Kaleidoscope — mirror-fold the form about its own axis. Toggles back off through the same morph.">Kaleido</button></div>
+    <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Textured</button></div>
+  <div class="row"><label>Kaleido</label><select id="selKal">
+    <option value="auto" selected>Auto · Director</option>
+    <option value="on">Always on</option>
+    <option value="off">Off</option></select></div>
   <div class="row"><label>Finish</label><select id="selFinish">
     <option value="satin" selected>Satin</option>
     <option value="matte">Matte</option>
@@ -286,7 +289,8 @@ uniform float u_nobound;               // 1 = march unbounded, as before the ray
 uniform float u_bmarg;                 // extra bounding radius, for testing whether the bound clips
 uniform float u_mipflat;               // 1 = let mip averaging flatten the normal; 0 = the old re-inflate (A/B)
 uniform float u_trivar;                // 1 = variance-normalise the triplanar blend (A/B)
-uniform float u_kal,u_kalN;             // kaleidoscope: amount 0..1, and the fold count
+uniform float u_kal,u_kalPh;           // kaleidoscope: amount 0..1, and the mirror line's angle
+uniform float u_swirl;                 // third rotation axis (xy / about z); see formRot
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
@@ -633,6 +637,26 @@ float evalMode(vec3 p,float m){
   else if(m<4.5)  return mPods(p);
   else            return mAperture(p);
 }
+/* THE FORM'S ORIENTATION, in one place. map() and objP() both need it and they MUST agree: objP
+   is the frame the surface texture is projected in, so any disagreement makes the detail slide
+   through the geometry. This was two copies of the same two lines; a third axis is exactly the
+   kind of change that gets applied to one copy and not the other.
+
+   THREE PLANES, THREE INDEPENDENT ANGLES. The two-plane spin that was removed from this file long
+   ago drove both planes off the SAME angle, which is not a tumble but a precessing axis -- the
+   form never repeats a pose and there is nothing for the eye to lock onto. These are three clocks
+   at 16, 24 and 48 beats, so every axis turns at its own rate and the whole system returns to its
+   starting orientation every 48 beats: twelve bars, one phrase group.
+
+   Z FIRST. The profile is drawn in xy and extruded along z, so u_swirl turns the form about its
+   own symmetry axis -- and it is the axis the kaleidoscope folds about, which means the fold
+   travels with the form instead of the form travelling through the fold. */
+vec3 formRot(vec3 p){
+  p.xy*=rot(u_swirl);
+  p.yz*=rot(u_tilt);
+  p.xz*=rot(u_spin);
+  return p;
+}
 /* The mode pair and the morph between them, factored out of map() so the kaleidoscope below can
    evaluate the SAME form at a second position without duplicating the blend.
    SMOOTHERSTEP (6t^5-15t^4+10t^3) rather than smoothstep. smoothstep has zero first derivative
@@ -646,54 +670,52 @@ float evalForm(vec3 p){
   return d;
 }
 /* ---- KALEIDOSCOPE ----
-   Mirror-repeat the azimuth into N sectors about the form's own axis. mod() alone gives rotational
-   copies; the abs() after it is what makes this a kaleidoscope rather than a carousel — it folds
-   each sector onto its own mirror, so adjacent copies meet as reflections and the seams read as
-   the joins in a mandala instead of as N separate objects.
+   THE FORM IS UNIONED WITH ITS OWN MIRROR IMAGE. That is the whole design, and it is the second
+   attempt: the first one folded the domain, mod-and-abs, the way every kaleidoscope shader does.
 
-   THE FOLD IS AN ISOMETRY, so evalForm(kalFold(p)) is still a distance — to the nearest image of
-   the form under the symmetry group rather than to the form itself. The one place that is not
-   exact is at a sector seam, where the true nearest copy can be across the boundary and the fold
-   OVERESTIMATES; an overestimate is the dangerous direction for a march, because it steps through
-   the surface. map() already returns a half-scaled field, and that factor of two is exactly the
-   headroom this needs, which is why the fold can be dropped in without touching the step size.
+   Folding is wrong HERE for a reason specific to these shapes. A domain fold keeps only what lies
+   inside one wedge and replicates that; everything outside is discarded. The Triskelion's mass is
+   in three arms that hook outward, and most of that mass sits at angles the wedge does not cover,
+   so folding threw the arms away and replicated the hub — a small six-pointed star with no visible
+   relationship to the form it came from. Measured by eye against the same pose: the folded version
+   was roughly half the silhouette area and shared no feature with the original.
 
-   Radius is untouched, so the folded form is contained in the same bounding sphere the march and
-   the early-out are built on. Nothing about the framing or the bound has to know this exists.
+   A union cannot lose anything. min(f, f∘mirror) contains the original exactly, plus its
+   reflection, so every feature survives and the form GROWS into a symmetric version of itself
+   rather than being cut down into one. The profiles are already N-fold symmetric about z (p2Tris
+   rotates by i*2PI/u_segN), so adding one reflection promotes C_N to the full dihedral D_N: the
+   same arms, in the same places, each now paired with a mirror twin.
 
-   IT COSTS ~7.8 ms OF GPU TIME at High, and that is not the fold's arithmetic. Measured with
-   timer queries on a POSE-pinned frame, which is the only instrument here with a repeatable
-   baseline -- wall-clock frame time gave 60.0 fps and 43.9 fps for the same unchanged off-path
-   in two runs minutes apart, while the GPU clock repeated to 0.4 ms:
+   THE MIRROR LINE IS ABOUT Z, which is the axis the profiles are actually built on — they are
+   drawn in xy and extruded along z. The first version folded xz, about Y, an axis they have no
+   structure on at all, which is the other half of why it read as a different object.
 
-     scene pass, u_kal 0     10.3 / 10.6 / 10.3 / 10.4 ms      four runs
-     scene pass, u_kal 1     18.3 ms                           +7.8
+   u_kalPh is the mirror line's angle, and it CHANGES THE RESULT MORE THAN THE MATHS SUGGESTS.
+   For a profile with N-fold symmetry the twin should repeat every PI/N, so on a three-arm form
+   0 and 60 degrees ought to be the same object. Rendered on one frozen frame with the pose pinned,
+   0, 60 and 120 degrees gave three visibly different shapes — because only p2Tris and p2Clover are
+   N-fold at all. The default startup profile is p2Wave, a Z-stroke with nothing but C2 symmetry
+   and no relationship to u_segN whatever, and four of the six modes are like it. So treat the
+   angle as a dial with a look at each setting, not as a lattice with equivalent positions.
 
-   The obvious suspect was the two transcendentals and the sqrt above, so this was rewritten to
-   rotate back by whole sectors instead -- no length(), and the mirror falls out as an abs() on a
-   component rather than a fold of the angle. Genuinely fewer operations, and it measured 7.7 ms
-   against 7.8: NOTHING, inside a baseline that itself moves by 0.8. So the cost is in the MARCH,
-   not in the transform, which is what you would expect of a shape with six times the silhouette
-   it had -- grazing rays are the expensive ones and the rosette has six times as many edges to
-   graze. The rewrite was reverted for being harder to read at no gain. What remains is a real
-   cost with no cheap fix in it; the governor gives up render scale to absorb it, which is what
-   the tier floors exist for. */
-vec3 kalFold(vec3 p){
-  float sect=6.28318530/max(2.0,u_kalN);
-  float r=length(p.xz);
-  float a=atan(p.z,p.x);
-  a=abs(mod(a+sect*0.5, sect)-sect*0.5);       // mod = copies; the abs is what mirrors them
-  p.x=cos(a)*r; p.z=sin(a)*r;
+   This is also why the effect is a UNION and not a fold: a fold's output depends entirely on which
+   symmetry you assume the form has, and most of these do not have one. A union cannot be wrong
+   about that — whatever the profile is, the original survives it intact.
+
+   smin rather than min, so the twins meet in a fillet instead of a crease.
+
+   VALID AS A FIELD at every value of u_kal. smin of two 1-Lipschitz functions is 1-Lipschitz, and
+   so is a convex combination of two of those, so the morph never produces a field the march can
+   step through. Mixing a folded POSITION into an unfolded one — the obvious way to blend this —
+   has no such guarantee: a domain map whose derivative passes through zero compresses space and
+   the field then overestimates in the compressed direction. */
+vec3 kalMirror(vec3 p){
+  float c=cos(2.0*u_kalPh), sn=sin(2.0*u_kalPh);   // reflection about the line at angle u_kalPh
+  p.xy=vec2(c*p.x+sn*p.y, sn*p.x-c*p.y);
   return p;
 }
 vec2 map(vec3 wp){
-  vec3 p=wp;
-  // CLEAN AXIS SPIN. u_spin used to drive TWO planes at once — xz plus xy at 0.22 — which is a
-  // tumble, not a spin: the axis itself precesses, so the form never repeats a pose and the eye
-  // cannot lock onto the rotation. One plane only. u_tilt stays as a fixed lean on the axis, so
-  // the form is seen at a three-quarter angle rather than dead side-on, but the lean is static
-  // and the spin is a clean turn about it.
-  p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
+  vec3 p=formRot(wp);
   // 0.95 = global framing scale: keeps the whole silhouette inside frame at the closest camera
   // bass hits punch the whole form; sub adds the deep swell
   float s=formScale();
@@ -725,20 +747,13 @@ vec2 map(vec3 wp){
   float dObj;
   if(br>mix(0.10,0.85,u_scene)) dObj=br*s*0.5;
   else{
-  /* KALEIDOSCOPE, blended in and out as two FIELDS rather than as one warped domain. Mixing the
-     folded position into the unfolded one is the obvious way to do this and it is wrong: a domain
-     map whose derivative passes through zero compresses space, the field then overestimates in the
-     compressed direction, and the march walks through the surface. Mixing two valid distance
-     fields keeps the result Lipschitz-bounded by the larger of the two, which is the same
-     reasoning the mode morph above rests on and the same machinery.
-     Both ends are the FAST path -- fully on costs one evalForm, exactly like fully off. Only the
-     ~1.2s transition pays for two, which is the one moment there is no other way to be smooth. */
-  float d;
-  float kk=clamp(u_kal,0.,1.);
-  if(kk<0.002)      d=evalForm(p);
-  else if(kk>0.998) d=evalForm(kalFold(p));
-  else { kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
-         d=mix(evalForm(p), evalForm(kalFold(p)), kk); }
+  // KALEIDOSCOPE: the form softly unioned with its own reflection, faded in by u_kal. Off costs
+  // one evalForm and skips the second entirely; on costs two, for as long as it is on.
+  float d=evalForm(p);
+  if(u_kal>0.002){
+    float kk=clamp(u_kal,0.,1.); kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
+    d=mix(d, smin(d, evalForm(kalMirror(p)), 0.08), kk);
+  }
   // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
   // surface chatter. Amplitude is divided back down by the frequency: displacement gradient
   // (freq * amp) must stay bounded or the field stops being a valid SDF and the march creases.
@@ -759,15 +774,7 @@ vec2 map(vec3 wp){
    as it turns instead of sliding through it. Two channels do most of the work: a micro
    normal that breaks up the specular, and a roughness field that stops every highlight
    reading as one flat plastic sheen. u_txAniso stretches the noise for brushed metal. */
-vec3 objP(vec3 p){
-  // CLEAN AXIS SPIN. u_spin used to drive TWO planes at once — xz plus xy at 0.22 — which is a
-  // tumble, not a spin: the axis itself precesses, so the form never repeats a pose and the eye
-  // cannot lock onto the rotation. One plane only. u_tilt stays as a fixed lean on the axis, so
-  // the form is seen at a three-quarter angle rather than dead side-on, but the lean is static
-  // and the spin is a clean turn about it.
-  p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
-  return p;
-}
+vec3 objP(vec3 p){ return formRot(p); }
 /* ---- SURFACE DETAIL ----
    An IMAGE, triplanar-projected, rather than procedural fbm.
 
@@ -2383,16 +2390,32 @@ const CAM={
 const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
-let camAng=0, formSpin=0, formTumble=0, rollS=0;
+let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
 /* KALEIDOSCOPE. kalAmt ramps LINEARLY, not as a spring, and that is deliberate: an exponential
    approach never actually arrives, so the field would sit forever a hair off 1.0 and pay for two
    evalForm calls for the whole time the effect is on. A linear ramp reaches both ends exactly and
    hands the shader a clean 0 or 1, where map() has a one-eval fast path for each. The easing is
    applied on the shader side, as smootherstep, so the motion is still C2 at both ends.
-   window.KAL = {n} sets the fold count; 6 is two mirrored copies of a three-fold form, which reads
-   as the same object multiplied rather than as an unrelated one. */
-let kalOn=false, kalAmt=0;
+
+   AUTO IS DECIDED PER SECTION, not per frame. A threshold on a live curve flutters wherever the
+   curve sits near it, and a shape morph that flickers is far worse than one that never fires. The
+   Director already cuts the track into labelled sections, so the decision is made once when the
+   section changes and then held for its whole length -- which also means the effect arrives with
+   the structure a listener is already hearing rather than with a number crossing a line.
+
+   DROPS ONLY. The first rule also took any groove carrying the track's own weight, and on the
+   test track that left the kaleidoscope on for 53 seconds out of 120 -- an effect that is on half
+   the time is not an event, it is the look. Restricting it to drops gives two blooms in two
+   minutes, each one arriving on the biggest moment the Director found, and it halves how long the
+   expensive path is running. The 1.2s ramp starts EARLY off the Director's drop prediction so the
+   bloom arrives WITH the drop rather than after it: measured on the second drop, the ramp began
+   0.7s before the boundary and completed 0.5s after it, against 1.2s late with no pre-roll.
+
+   window.KAL = {fold, phase} overrides the fold multiple and the mirror phase. */
+let kalMode='auto';                                   // 'auto' | 'on' | 'off'
+let kalWant=false, kalAmt=0;
 const KAL_SECS=1.2;
+function kalDecide(sec){ return sec.label==='drop'; }
 // Ribbon twist: integer only (see the shader note), latched and cross-faded so it never pops.
 // Vestigial: the Ribbon it cross-faded is gone. Kept only because the section-change handler
 // and the uniform upload still reference it; the shader no longer declares u_twA/u_twB, so
@@ -2434,7 +2457,11 @@ const SPIN_BEATS=16;
    that recurrence is what lets the eye lock on. The earlier two-plane spin that was removed from
    this file failed for the opposite reason: it drove both planes off the SAME angle, which is not
    a tumble but a precessing axis, and the form never repeated a pose at all. */
-const TUMBLE_BEATS=SPIN_BEATS*3;
+const TUMBLE_BEATS=SPIN_BEATS*3;                     // 48 beats, about X
+// The third axis, about Z -- the one the profile's own symmetry runs on, so this is the arms
+// windmilling in their own plane rather than the body leaning. 24 against 16 and 48 makes all
+// three rates distinct and still commensurate: the orientation recurs every 48 beats.
+const SWIRL_BEATS=SPIN_BEATS*1.5;                    // 24 beats, about Z
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
 const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
@@ -2899,11 +2926,11 @@ function gpuEnd(){
 function frame(){
   requestAnimationFrame(frame);
   /* ---- MEASUREMENT HOOKS, all console-only, all no-cost when unset ----
-       window.POSE   = {spin,cam,tumble}
-                                     pins the form, the orbit and the second rotation axis.
-                                     Nothing below is a valid A/B without it: all three move
-                                     between two captures otherwise, and that has silently
-                                     invalidated comparisons in this file before.
+       window.POSE   = {spin,cam,tumble,swirl}
+                                     pins the orbit and all three rotation axes. Nothing below is
+                                     a valid A/B without it: every one of them moves between two
+                                     captures otherwise, and that has silently invalidated
+                                     comparisons in this file before.
        window.TFREEZE= seconds       pins the clock and sets dt to 0 (see below).
        window.QLOCK  = true          freezes the quality governor.
        window.DIAG   = 1..7          renders the shading intermediates instead of the image:
@@ -2975,8 +3002,17 @@ function frame(){
     // Ultra pins its own render scale, so the governor must not claw it back — that is the
     // difference between a tier and a suggestion.
     const DCAP=TIERS[TIER].dpr, SCAP=TIERS[TIER].ss||1.45;
-    const SMIN=TIERS[TIER].scaleMax?(TIERS[TIER].scaleMin||0):0, SMAX=TIERS[TIER].scaleMax||0;
-    const SFLOOR=TIERS[TIER].scaleMin||1.00;   // banded tiers use SMIN above; the rest use this
+    /* THE KALEIDOSCOPE BUYS ITS OWN COST IN RENDER SCALE. It roughly doubles the scene pass --
+       every map() call evaluates the form twice -- and both tiers are already sitting ON their
+       floors before it engages, so the governor has nothing left to give and the frame just drops:
+       measured at High during a drop, 46.5 ms with the floor held at 0.82.
+       Relaxing the floor by 30% while it is on takes the march to ~0.57 of native, which is a
+       little over half the pixels, and that is very close to the factor the second evaluation
+       costs. It is the same bargain a tier makes -- resolution for frames -- made by the one
+       feature that needs it, and it lasts only as long as the bloom does. */
+    const KFL=1.0-0.30*kalAmt;
+    const SMIN=(TIERS[TIER].scaleMax?(TIERS[TIER].scaleMin||0):0)*KFL, SMAX=TIERS[TIER].scaleMax||0;
+    const SFLOOR=(TIERS[TIER].scaleMin||1.00)*KFL;   // banded tiers use SMIN above; the rest use this
     if(QLOCK){}
     // A BANDED tier adapts like any other, but between its own floor and ceiling rather than
     // between 1.0 and SCAP. Same thresholds, so it behaves the way the rest of the governor does;
@@ -3061,12 +3097,15 @@ function frame(){
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
     moodTarget=s.palette||MO;
     const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy);
+      kalWant=kalDecide(s);
       const want=2+Math.round(Math.max(0,Math.min(1,s.energy))*2);   // 2..4 twists, per SECTION
       if(want!==twA && twMix===0){ twB=want; twMix=1e-4; } }
     // predictive anticipation: ramp before a drop
     const p=nextPrediction(t);
     if(p){ const eta=p.t-t;
       if(p.type==='drop'&&eta<(p.lead||5)&&eta>0){ const a=1-eta/(p.lead||5); arousal=Math.max(arousal,a); tension=Math.max(tension,a*0.8); }
+      // the fold takes KAL_SECS to complete, so it has to LEAVE that early to ARRIVE on the drop
+      if(p.type==='drop'&&eta>0&&eta<KAL_SECS) kalWant=true;
       $('next').textContent=(p.type==='drop'?'DROP in ':(p.type+' in '))+eta.toFixed(1)+'s';
     } else $('next').textContent='—';
     // beat flash (from beats list) — gentle
@@ -3113,8 +3152,10 @@ function frame(){
   const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
   const spinRate=2*Math.PI*(bpm/60)/SPIN_BEATS;
   formSpin   += spinRate*dt;
-  formTumble += 2*Math.PI*(bpm/60)/TUMBLE_BEATS*dt;   // the second axis; see TUMBLE_BEATS
-  kalAmt=Math.max(0,Math.min(1, kalAmt+(kalOn?dt:-dt)/KAL_SECS));
+  formTumble += 2*Math.PI*(bpm/60)/TUMBLE_BEATS*dt;  // second axis, about X
+  formSwirl  += 2*Math.PI*(bpm/60)/SWIRL_BEATS *dt;  // third axis, about Z
+  const kalT=(kalMode==='on')?1:(kalMode==='off')?0:(kalWant?1:0);
+  kalAmt=Math.max(0,Math.min(1, kalAmt+(kalT?dt:-dt)/KAL_SECS));
   // spinKick is gone. Feeding onsets into the rotation at all — as velocity OR as a decaying
   // offset — is what read as jiggle: something in the mix hits on almost every frame, so the
   // form sat permanently trembling around its own axis instead of turning. The beat still
@@ -3145,7 +3186,8 @@ function frame(){
   // without this the form and the camera have both moved by the time the second capture lands —
   // which has invalidated more than one comparison here. window.POSE={spin,cam,tumble} holds
   // all three -- tumble is a second axis now, so pinning the first two no longer pins the pose.
-  if(window.POSE){ formSpin=window.POSE.spin; camAng=window.POSE.cam; formTumble=window.POSE.tumble||0; }
+  if(window.POSE){ formSpin=window.POSE.spin; camAng=window.POSE.cam;
+                   formTumble=window.POSE.tumble||0; formSwirl=window.POSE.swirl||0; }
   camKick  += ((HITS.low*0.014 + HITS.sub*0.010) - camKick)*(1-Math.exp(-4.0*dt));
   // Drag inertia: the grab ends but the orbit keeps carrying and settles, which is what makes a
   // camera feel like it has weight instead of stopping dead with the pointer.
@@ -3236,7 +3278,14 @@ function frame(){
   // the section's held lean plus the tumble, as ONE angle -- see TUMBLE_BEATS for why they are
   // not two uniforms
   gl.uniform1f(US('u_tilt'),VAR.tilt+formTumble); gl.uniform1f(US('u_iridHue'),VAR.hue);
-  gl.uniform1f(US('u_kal'),kalAmt); gl.uniform1f(US('u_kalN'),(window.KAL&&window.KAL.n)||6);
+  gl.uniform1f(US('u_swirl'),formSwirl);
+  /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
+     have segments (p2Tris, p2Clover) and just a reasonable angle on the four that do not. See
+     the note above kalMirror() for why that is fine and why this is a dial to look at rather
+     than a lattice to compute. window.KAL={phase} to try others. */
+  const KALO=window.KAL||{};
+  gl.uniform1f(US('u_kal'),kalAmt);
+  gl.uniform1f(US('u_kalPh'),(Math.PI/Math.max(1,PRM.seg))*(KALO.phase!==undefined?KALO.phase:1.0));
   gl.uniform1f(US('u_room'),ENV.room);
   gl.uniform1f(US('u_segN'),PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
   gl.uniform1f(US('u_pDepth'),PRM.depth);
@@ -4237,10 +4286,10 @@ bindPrm('pSeg','seg',1,v=>v.toFixed(0));
 bindPrm('pEdge','edge',0.01,v=>v.toFixed(2));
 bindPrm('pMass','mass',0.01,v=>v.toFixed(2));
 bindPrm('pDepth','depth',0.01,v=>v.toFixed(2));
-$('kal').addEventListener('click',()=>{
-  kalOn=!kalOn;
-  $('kal').classList.toggle('on',kalOn);
-  showStat(kalOn?'Kaleidoscope':'Back to the form'); hideStat(1400);
+$('selKal').addEventListener('change',e=>{
+  kalMode=e.target.value;
+  showStat(kalMode==='auto'?'Kaleidoscope follows the Director'
+          :kalMode==='on'?'Kaleidoscope held on':'Kaleidoscope off'); hideStat(1600);
 });
 $('surf').addEventListener('click',()=>{
   surfTarget=surfTarget>0.5?0:1;
