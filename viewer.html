@@ -26,7 +26,11 @@
   #drop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;z-index:9;pointer-events:none}
   #drop h2{margin:0;font-size:12px;letter-spacing:.4em;text-transform:uppercase;color:#8a8b91}
   #drop p{margin:0;font-size:10px;letter-spacing:.16em;color:#5a5a5d;text-transform:uppercase}
-  #stat{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:12;padding:8px 16px;
+  #perf{position:fixed;left:14px;bottom:64px;z-index:40;display:none;padding:8px 10px;
+  border-radius:8px;background:rgba(8,8,14,.72);color:#cfd2e6;font:11px/1.55 ui-monospace,Menlo,monospace;
+  letter-spacing:.02em;pointer-events:none;white-space:pre}
+#perf b{color:#fff;font-size:13px}
+#stat{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:12;padding:8px 16px;
     background:rgba(14,14,17,.85);border:1px solid rgba(255,255,255,.12);border-radius:3px;font-size:10px;
     letter-spacing:.18em;text-transform:uppercase;color:#cfcfd4;display:none;backdrop-filter:blur(12px)}
   #statBar{display:none;width:190px;height:3px;background:rgba(255,255,255,.16);border-radius:2px;
@@ -153,6 +157,12 @@
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
 <div id="stat"><span id="statTxt">…</span><span id="statBar"><i id="statFill"></i></span><span id="statPct"></span></div>
+  <!-- PERF READOUT. Press P. Off by default and it costs nothing until it is on: the numbers are
+       already being computed for the governor, this only prints them. It exists because the frame
+       rate cannot be diagnosed from anywhere except the machine that is dropping it -- every
+       renderer-side ablation I can run measures flat, so the useful question is which line MOVES
+       when the frame rate does, and only the person watching it can answer that. -->
+  <div id="perf"></div>
 
 <div id="bar">
   <span class="grp">Source</span>
@@ -2771,6 +2781,7 @@ function frame(){
   let time=(now-t0)/1000;
   if(window.TFREEZE!=null){ time=window.TFREEZE; dt=0; }   // pins clock AND every dt-integrated
   // value (camera angle, spin, springs) — pinning the clock alone leaves the orbit still moving.
+  PERF.n++;
   frameAvg += (Math.min(80,dt*1000)-frameAvg)*0.1;   // adaptive quality: scale render res to hold fps
   if(now-lastQ>500){ lastQ=now;
     // ceiling is 1.45: above 1.0 the march genuinely supersamples, which the post pass
@@ -4090,7 +4101,26 @@ $('tl').addEventListener('click',e=>{ if(!audioBuffer)return; const r=$('tl').ge
   seek((e.clientX-r.left)/r.width*audioBuffer.duration); });
 addEventListener('dragover',e=>e.preventDefault());
 addEventListener('drop',e=>{ e.preventDefault(); const a=[...e.dataTransfer.files].find(f=>f.type.startsWith('audio')); if(a)loadFile(a); });
-addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();$('play').click();} });
+addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault();$('play').click();}
+  if(e.code==='KeyP'&&!e.metaKey&&!e.ctrlKey){ PERF.on=!PERF.on; $('perf').style.display=PERF.on?'block':'none';
+    showStat(PERF.on?'Perf readout on — press P to hide':'Perf readout off'); hideStat(1400); } });
+/* The readout samples on a timer, not per frame: updating text every frame is itself a cost, and
+   a number that changes 60 times a second cannot be read anyway. */
+const PERF={on:false, n:0, t0:performance.now(), fps:0};
+setInterval(()=>{
+  if(!PERF.on) return;
+  const el=(performance.now()-PERF.t0)/1000;
+  PERF.fps=PERF.n/Math.max(el,1e-3); PERF.n=0; PERF.t0=performance.now();
+  const mpxMarch=(RW*RH)/1e6, mpxCanvas=(glc.width*glc.height)/1e6;
+  const bake=window.__DBAKE||{};
+  $('perf').innerHTML=
+    '<b>'+PERF.fps.toFixed(1)+' fps</b>  ('+(1000/Math.max(PERF.fps,1e-3)).toFixed(1)+' ms)<br>'+
+    'tier '+TIER+'   rscale '+rscale.toFixed(2)+'   dpr '+dpr.toFixed(2)+'<br>'+
+    'march '+RW+'x'+RH+'  ('+mpxMarch.toFixed(1)+' Mpx)<br>'+
+    'canvas '+glc.width+'x'+glc.height+'  ('+mpxCanvas.toFixed(1)+' Mpx)<br>'+
+    'shadow N '+STEP.shaN+'   detail '+(bake.size||'-')+'  ('+(bake.mb||0)+' MB)<br>'+
+    'look '+$('selLook').value+'   governor avg '+frameAvg.toFixed(1)+' ms';
+},500);
 
 if(!bakeDetail('micro')) loadDetail('micro').catch(e=>__showErr('detail map: '+e.message));
 frame();
