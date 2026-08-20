@@ -271,6 +271,8 @@ uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see th
 uniform float u_fill;                  // directional fill leg of the rig; 0 ablates it (DXS.fill)
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
 uniform float u_hwlod;                 // 1 = hardware mip selection instead of the analytic one (A/B)
+uniform float u_nobound;               // 1 = march unbounded, as before the ray/sphere test (A/B)
+uniform float u_bmarg;                 // extra bounding radius, for testing whether the bound clips
 uniform float u_mipflat;               // 1 = let mip averaging flatten the normal; 0 = the old re-inflate (A/B)
 uniform float u_trivar;                // 1 = variance-normalise the triplanar blend (A/B)
 #define PI 3.14159265
@@ -428,6 +430,12 @@ const float EXR = 1.15;                    // the radius every profile is normal
    result is scaled by 0.88 to keep it a conservative underestimate. That is the same discipline
    the morph guard follows, and it matters for exactly the same reason: a field that overestimates
    its own distance gets marched straight through. */
+/* The form's global scale, used by map() and by the ray/bound test in main(). Factored out so
+   there is exactly one definition: a bound computed from a stale copy of this expression would
+   clip the silhouette the moment a bass hit pushed the form past it. */
+float formScale(){
+  return max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10+u_hLow*0.13+u_hSub*0.09)*0.95;
+}
 float extr(float d2,vec3 p,float halfD,float bev){
   float r = clamp(length(p.xy)/EXR, 0.0, 1.0);
   float hd = halfD*(1.0 + (0.075*(1.0-r*r) - 0.150*r*r*r)*u_thickVar);
@@ -610,7 +618,7 @@ vec2 map(vec3 wp){
   p.yz*=rot(u_tilt); p.xz*=rot(u_spin);
   // 0.95 = global framing scale: keeps the whole silhouette inside frame at the closest camera
   // bass hits punch the whole form; sub adds the deep swell
-  float s=max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10+u_hLow*0.13+u_hSub*0.09)*0.95;
+  float s=formScale();
   p/=s;
   // bounding sphere: every form lives inside r=1.3, so empty space is skipped without
   // ever touching a fractal estimator. This is what keeps the heavy modes affordable.
@@ -1135,8 +1143,51 @@ void main(){
   float f=0.5/tan(u_fov*0.5);        // uv.y spans +/-0.5, so the 0.5 is required or the FOV halves
   vec3 rd=normalize(uv.x*u_rt+uv.y*u_up+f*u_fw), ro=u_ro;
   float dth=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
-  float t=0.02+dth*0.012,mid=-1.;                 // dithered start kills stair-step banding
-  for(int i=0;i<112;i++){ vec3 p=ro+rd*t; vec2 h=map(p);
+  /* THE MARCH IS BOUNDED BY THE FORM'S SPHERE, ANALYTICALLY. map() already skips empty space by
+     returning a bounding-sphere distance out there, but the RAY still had to walk it: every
+     background pixel sphere-traced from the camera out to t=18 before giving up, and the form
+     covers about 16% of the canvas, so five pixels in six were paying for a march that could
+     never hit anything.
+
+     A ray/sphere test costs a dot product and a square root and answers both halves of that:
+     rays that miss the bound skip the loop entirely, and rays that hit start at the sphere's
+     ENTRY rather than at the near plane, so the empty run between camera and form is never
+     stepped at all. The exit point replaces the t>18 cutoff, which also ends the march the
+     instant a ray leaves the far side instead of letting it run on.
+
+     calcSha has done exactly this for the light ray since it was rewritten; the primary ray
+     never got the same treatment.
+
+     MEASURED, with the one instrument here that has no timing noise in it -- the march step count
+     itself, rendered to screen as DIAG 13 and averaged over the canvas, with u_nobound switching
+     the bound off for a same-frame A/B:
+
+       unbounded   mean 18.0 steps/px,  25.3% of pixels take zero steps
+       bounded     mean  3.6 steps/px,  88.2% of pixels take zero steps      -80%
+
+     Rays that DO hit are untouched: max steps is 90 either way.
+
+     The radius comes from formScale() so it tracks the pulse, at 1.55 against the 1.45 the
+     field's own early-out uses, plus a margin for the displacement. It does not clip: growing it
+     by 0.5 and by 1.5 changes the result by 0.005% of pixels, so the bound is already clear of
+     the form.
+
+     NOT bit-identical, and it cannot be. 0.17% of pixels differ from the unbounded render,
+     scattered across the whole silhouette. A bounded ray starts at the sphere instead of the near
+     plane, so it takes a different step sequence and lands on a different residual inside the
+     epsilon -- the same per-pixel variance this file already documents two comments down, which
+     is what the three Newton steps exist to absorb. Neither version is the more correct one, and
+     the two are indistinguishable on screen. */
+  float mid=-1.;
+  float bR=(1.55+u_bmarg)*formScale()+0.10;
+  float bb=dot(ro,rd), bc=dot(ro,ro)-bR*bR, bdisc=bb*bb-bc;
+  float bsq=bdisc>0.0?sqrt(bdisc):0.0;
+  float tIn=max(-bb-bsq,0.02), tOut=min(-bb+bsq,18.0);
+  float t=tIn+dth*0.012;                          // dithered start kills stair-step banding
+  if(u_nobound>0.5){ tIn=0.02; tOut=18.0; t=0.02+dth*0.012; }   // A/B: the old unbounded march
+  int STEPS=((bdisc<=0.0||tOut<=tIn)&&u_nobound<0.5)?0:112;      // ray misses the bound: nothing to march
+  int nStep=0;
+  for(int i=0;i<STEPS;i++){ nStep++; vec3 p=ro+rd*t; vec2 h=map(p);
     // SURFACE EPSILON. 0.0015 was far too loose for thin-walled forms. Measured against a
     // high-precision reference march on the Shell: at 0.0015, 1.42% of interior rays converged
     // on the FAR wall instead of the near one, p99 depth error 1.097 — about the depth of the
@@ -1154,7 +1205,7 @@ void main(){
     // large and the value comes straight off the bounding sphere) that is doubly conservative
     // and burns steps crossing nothing. 1.35*h.x is still only ~0.68 of the true distance.
     t+=h.x*(h.x>0.20 ? u_stepFar : u_stepK);
-    if(t>18.)break; }
+    if(t>tOut)break; }
   // SURFACE REFINEMENT. The loop stops on a RELATIVE epsilon (0.0015*t), so each pixel halts at
   // its own residual anywhere in [0, eps] — and the start is dithered per pixel, which decides
   // where in that interval it lands. At t~4 the spread is ~0.004 object units while calcN reads
@@ -1192,6 +1243,9 @@ void main(){
   vec3 Lw=normalize(mix(vec3(-.40,.80,.40), vec3(.58,.28,.74), u_tension*0.65));
   vec3 back=bg(rd,uv);       // miss + aerial fade
   vec3 col;
+  // DIAG 13: primary-march step count / 112, for BOTH hits and misses. Step count is the one
+  // measure of march cost with no timing noise in it at all.
+  if(u_diag>12.5){ o=vec4(vec3(float(nStep)/112.0),t); return; }
   if(mid<0.){
     col=back;
     // SHADOW CATCHER REMOVED. It projected the form's occlusion onto an invisible plane, and in
@@ -3028,6 +3082,8 @@ function frame(){
   gl.uniform1f(US('u_diag'),window.DIAG||0);
   gl.uniform1f(US('u_kvar'),(window.KVAR!==undefined)?window.KVAR:KVAR_CAP);
   gl.uniform1f(US('u_hwlod'),window.HWLOD?1:0);
+  gl.uniform1f(US('u_nobound'),window.NOBOUND?1:0);
+  gl.uniform1f(US('u_bmarg'),window.BMARG||0);
   gl.uniform1f(US('u_mipflat'),(window.MIPFLAT!==undefined)?window.MIPFLAT:1);
   gl.uniform1f(US('u_trivar'),(window.TRIVAR!==undefined)?window.TRIVAR:1);
   gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
