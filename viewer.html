@@ -210,6 +210,10 @@
   <!-- ROUTING MATRIX. See MODSRC / MODTGT in the script for what each end of a route is and why
        the Director's own signals are the sources. -->
   <details id="gMod"><summary>Modulation</summary>
+    <div class="row"><label>Routing</label><select id="selMod">
+      <option value="auto" selected>Auto &middot; Director</option>
+      <option value="manual">Manual</option>
+      <option value="off">Off</option></select></div>
     <div id="modEmpty">Nothing routed. The Director still drives everything on its own &mdash;
       a route is an extra hand on top of it.</div>
     <div id="modList"></div>
@@ -1905,7 +1909,16 @@ void main(){
   // ONLY for rays that hit something. On a miss col IS the background already, and running the
   // fade there overwrote the shadow catcher's work with an unshadowed copy of the backdrop.
   if(mid>=0.0) col=mix(col, back, smoothstep(6.5,15.0,t));
-  o=vec4(max(col,0.), t);        // alpha carries scene depth -> the post pass builds DOF from it
+  /* Alpha carries scene DEPTH. The miss case now writes an explicit sentinel rather than
+     whatever t the march happened to stop at: a ray that misses the bounding sphere never
+     enters the loop at all, so t stayed at tIn -- which for a ray pointing away from the form
+     is 0.02, i.e. a BACKGROUND pixel reporting itself as the nearest possible hit. Everything
+     (and no backticks in here: this is inside the JS template literal holding the shader, so
+      one would end the string and take the whole script with it -- which is what it did)
+     reading this alpha tests for less than 17 to mean 'hit something' (DBGMASK, the motion-blur
+     reprojection, and now the thermal filter), and all three were wrong on exactly those
+     pixels. Dormant until now only because the shutter is 0 in every tier. */
+  o=vec4(max(col,0.), mid<0.0 ? 99.0 : t);
 }`;
 
 const BRIGHT=`#version 300 es
@@ -2201,7 +2214,13 @@ void main(){
   col+=(r2(gl_FragCoord.xy+fract(u_time)*17.)-r2(gl_FragCoord.xy*1.31+fract(u_time)*53.))*(1.5/255.)*(1.0-u_flat);
   col+=(r2(gl_FragCoord.xy*1.7+fract(u_time)*91.)-.5)*.032*u_grain;
   col*=mix(1.,smoothstep(1.5,.3,length(c2)*.95),u_vig);
-  o=vec4(max(col,0.),1.);
+  /* DEPTH GOES OUT IN ALPHA, normalised, background pinned at 1. The filter pass needs to know
+     what is subject and what is backdrop -- luminance cannot tell it, because a pale form on a
+     pale field differs by a few percent -- and this is the one channel that already carries the
+     answer. Free: the context is created with alpha:false, so when this pass draws straight to
+     the screen the value is discarded by the compositor rather than making the page
+     see-through. */
+  o=vec4(max(col,0.), clamp(texture(u_tex,uv).a*(1.0/16.0), 0.0, 1.0));
 }`;
 
 /* ======================= FILTER PASS =======================
@@ -2259,6 +2278,21 @@ float vn(vec2 p){                                  // value noise, for the therm
 // The tone a cell should print. Sampling the CELL CENTRE rather than the pixel is what makes a
 // halftone read as one dot per cell: sampling per pixel puts the source's own gradient inside
 // every dot and the screen stops being a screen.
+/* IRONBOW. The standard thermal ramp -- black through indigo, magenta, red and orange to white.
+   The first version built its stops out of the SECTION'S palette, on the argument that a filter
+   replacing every colour in the frame should still agree with the colourway. That argument is
+   right for the halftone and wrong here: "thermal" is not a look, it is a specific and very
+   familiar false-colour mapping, and a version of it in mauve and cream is just a posterisation.
+   No mood tint at all -- any is enough to stop it reading as a sensor image. */
+vec3 iron(float t){
+  t=clamp(t,0.,1.);
+  vec3 k0=vec3(0.010,0.012,0.075), k1=vec3(0.130,0.040,0.380), k2=vec3(0.480,0.055,0.470);
+  vec3 k3=vec3(0.880,0.150,0.220), k4=vec3(1.000,0.520,0.030), k5=vec3(1.000,0.965,0.720);
+  float x=t*5.0, i=floor(x), f=x-i;
+  vec3 a = i<0.5?k0 : i<1.5?k1 : i<2.5?k2 : i<3.5?k3 : k4;
+  vec3 b = i<0.5?k1 : i<1.5?k2 : i<2.5?k3 : i<3.5?k4 : k5;
+  return mix(a,b,f);
+}
 vec3 cellColor(vec2 frag, vec2 cell){
   return texture(u_tex, ((floor(frag/cell)+0.5)*cell)/u_res).rgb;
 }
@@ -2296,72 +2330,42 @@ void main(){
     if(u_gain>1.5) c=floor(c*u_gain+0.5)/u_gain;
     col=c;
   } else if(m<4.5){
-    /* ---- THERMAL. Quantise luminance into bands and colour them from the SECTION'S palette
-       rather than a stock heatmap, so this reads as the piece's own colourway posterised.
+    /* ---- THERMAL ----
+       IT HAS TO SEPARATE THE SUBJECT, AND LUMINANCE CANNOT DO IT. That was the real fault: a pale
+       form on a pale colour field differs by a few percent of luminance, so any mapping built on
+       brightness alone put the object and the backdrop in the same band and the frame read as
+       one flat shape. A thermal image separates by TEMPERATURE, and the closest thing this
+       renderer has to temperature is DEPTH -- the subject is a solid body at 3..7 units, the
+       backdrop is at infinity. The scene pass has always written depth into alpha; POST now
+       forwards it, so the two zones can be mapped to two ends of the ramp and never meet.
 
-       THREE THINGS WERE WRONG WITH THE FIRST VERSION and all three came from the same instinct --
-       reusing machinery built for a different filter.
+       Near parts of the subject run hotter than far ones, which is the gradient a real sensor
+       shows as a body recedes, and the backdrop gets a cold floor with only a whisper of its own
+       shading in it.
 
-       1. It ran tone(), the contrast expansion the halftone needs. A halftone wants contrast
-          because it is about to throw the range away and keep one number per cell. A BANDING
-          filter wants the opposite: the whole range spread across the bands. tone() multiplies
-          about the midpoint by 1.45 and clamps, so most of a frame whose luminance sits in
-          0.25..0.95 saturates at 0 or 1 -- and a value already at the rail cannot be moved by the
-          contour noise either. The result was two enormous flat areas with the other four bands
-          crammed into the edges between them. It is a levels window now: black point at the
-          bottom of what this renderer actually produces, white point at the top, no expansion in
-          the middle.
-
-       2. The band count was driven continuously from energy, round(3+energy*7+epic*3). Changing
-          the count by one re-quantises the ENTIRE frame, so every boundary in the picture jumped
-          at once, over and over, as the energy curve drifted across each integer. That is not
-          reactivity, it is flicker. The count is a stable number the user sets now.
-
-       3. Nothing else moved, so with a stable count the picture would be static. The audio drives
-          a smooth OFFSET of the boundaries instead: the bands travel across the image like the
-          isotherms on a weather map, which animates continuously and never re-quantises.
-
-       The noise on top is two octaves with a low base -- one octave at 5 cells across the frame
-       wanders by more than the image's own luminance does wherever the frame is flat, and the
-       band edge shreds into hair rather than wandering. */
-    /* CENTRED ON THE FRAME'S OWN MEAN, read from the top of the mip chain. A fixed window cannot
-       work here: this renderer's luminance range moves with the section palette and the look, and
-       an idle pale-on-pale frame occupies about 0.55..0.85 of it -- so a window guessed at
-       0.22..0.94 spent half the bands on tones that were not in the picture, and the subject and
-       the backdrop landed in the same band. One texture fetch at the coarsest level is the whole
-       frame averaged, which is exactly the number needed to put the bands where the content is.
-       The width stays fixed: it is the CENTRE that has to track, and a width derived from the same
-       one-tap average would be a standard deviation it does not contain. */
-    float mean=lum(textureLod(u_tex, vec2(0.5), 14.0).rgb);
-    // 0.24, not 0.34. The width is what decides how many bands a given frame actually shows, and
-    // these frames are low-contrast by construction -- a pale form on a pale field, or a dark
-    // outro on a dark one. At 0.34 a quiet section spent its whole luminance range inside three
-    // bands. Narrower spreads more of the ramp across what is there; the cost is that a very
-    // contrasty frame clips at both ends, which for a BANDING filter only means the first and
-    // last bands get larger -- a far smaller fault than half the palette going unused.
-    float li=clamp((lum(src)-mean)*(1.0/0.24)+0.5, 0.0, 1.0);
-    vec2 nq=uv*vec2(u_res.x/u_res.y,1.0);
-    li+=(vn(nq*2.2+u_time*0.03)-0.5)*0.085 + (vn(nq*5.5-u_time*0.02)-0.5)*0.030;
+       SOFT, because a thermal sensor is genuinely low-resolution and that softness is most of what
+       makes an image read as one. Free here: the mip chain is already being generated for the
+       mean, so one textureLod at 1.35 is a blur that costs a fetch. The band edges are
+       anti-aliased against their own screen-space derivative and then given a floor, so they
+       gradate rather than stair-step. */
+    vec4  sm  = textureLod(u_tex, uv, 1.35);
+    float mean= lum(textureLod(u_tex, vec2(0.5), 14.0).rgb);
+    float shade=clamp((lum(sm.rgb)-mean)*(1.0/0.30)+0.5, 0.0, 1.0);
+    float far = sm.a;                                  // 0 near .. 1 background
+    float subj= 1.0-smoothstep(0.72,0.96,far);
+    float near= 1.0-clamp(far*2.4,0.0,1.0);
+    float temp= mix(shade*0.18, 0.34+0.48*shade+0.18*near, subj);
+    vec2  nq  = uv*vec2(u_res.x/u_res.y,1.0);
+    temp += (vn(nq*2.2+u_time*0.03)-0.5)*0.05 + (vn(nq*5.5-u_time*0.02)-0.5)*0.020;
+    /* The offset SLIDES, it does not wrap. fract() was the obvious way to keep it in range and it
+       is wrong on a monotonic ramp: the wrap puts the hottest band directly against the coldest
+       and the frame tears wherever it crosses the top. Bounded to +/-10% instead. */
+    temp = clamp(temp + (u_off-0.5)*0.20, 0.0, 1.0);
     float nb=max(2.0,floor(u_gain+0.5));
-    /* THE OFFSET SLIDES, IT DOES NOT WRAP. fract() was the obvious way to keep it in range and it
-       is wrong here: this ramp is monotonic, dark to hot, so wrapping puts the brightest band
-       immediately next to the darkest one and the frame tears into black shapes against cream
-       wherever the image crosses the top of the range. A wrap only works on a CYCLIC palette.
-       Bounded to +/-17% of the range instead: enough that the isotherms visibly creep, never
-       enough to run a band off either end. */
-    float q=floor(clamp(li+(u_off-0.5)*0.35,0.,0.999)*nb)/(nb-1.0);
-    /* FOUR STOPS, EVENLY SPACED. The first version cross-faded three overlapping smoothsteps, and
-       overlapping bands average toward each other: six quantised levels came out as three
-       distinguishable colours, which is a posterisation that has thrown half its levels away. A
-       flat three-segment lerp keeps every level its own colour.
-       The stops are the section's own ink and paper pulled toward a heat ramp, rather than a stock
-       blue-to-white, so this is the piece's colourway posterised instead of a thermal camera. */
-    vec3 c0=u_ink;
-    vec3 c1=mix(u_ink,   vec3(0.14,0.20,0.62), 0.75);
-    vec3 c2=mix(u_paper, vec3(0.86,0.34,0.42), 0.55);
-    vec3 c3=mix(u_paper, vec3(1.00,0.86,0.45), 0.45);
-    float t3=clamp(q,0.,1.)*3.0;
-    col = t3<1.0 ? mix(c0,c1,t3) : t3<2.0 ? mix(c1,c2,t3-1.0) : mix(c2,c3,clamp(t3-2.0,0.,1.));
+    float x=temp*nb;
+    float w=clamp(fwidth(x)*1.2, 0.045, 0.5);
+    float q=clamp((floor(x)+smoothstep(1.0-w,1.0,fract(x)))/nb, 0.0, 1.0);
+    col=iron(q);
   } else if(m<5.5){
     // ---- FACETS: a mirror fold of the IMAGE about frame centre. The form already has a fold of
     // its own in map(); this is the screen-space one, and the two are different effects -- that
@@ -2758,7 +2762,7 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
    FILT.cell is in DEVICE pixels, so the screen stays the same physical size whatever dpr is; a
    cell in CSS pixels would halve on a retina panel and the halftone would vanish into the grid. */
 const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, off:0, ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
-let filtBands=6, filtFolds=6, thermOff=0;   // held counts; see the drive block for why
+let filtBands=8, filtFolds=6, thermOff=0;   // held counts; see the drive block for why
 /* ======================= ROUTING MATRIX =======================
    Taken from the audio-reactivity panel in Sketch Tools, where every animated parameter is a row
    of  target <- source x amount  that you wire by hand.
@@ -2794,6 +2798,58 @@ const MODTGT={
   dolly:'Camera distance', fov:'Field of view', hue:'Hue'
 };
 let MODB=[];                                   // the routes themselves: {t, s, a}
+let MODMODE='auto';                            // 'auto' | 'manual' | 'off'
+/* ---- AUTOMATIC MAPPING ----
+   The matrix is the manual half of this; nothing about it required the ROUTES to be manual too.
+   The Director already knows enough about a track to wire a sensible patch for it, and doing that
+   is the same move the rest of the file makes everywhere else: the automatic answer first, with
+   the controls left in place to argue with it.
+
+   IT IS DATA-DRIVEN, NOT A GENRE TABLE. A lookup keyed on the genre label would be a guess about
+   a string; these are measurements of the track in hand. Which band drives the body is whichever
+   band this track actually articulates, counted from the onset lists. How hard the bloom follows
+   energy comes from how much the energy MOVES -- a track with no dynamics gets a small number,
+   because a big one on a flat curve is a constant, not a reaction. Whether saturation follows
+   tension or valence depends on which of the two the track actually has.
+
+   The routes it writes are ordinary rows: visible in the panel, editable, deletable. Auto is a
+   starting point you can see, not a hidden layer. */
+function autoPatch(){
+  const secs=(director&&director.sections)||[];
+  if(!secs.length) return [];
+  const on=(director.events&&director.events.onsets)||{};
+  const cnt=k=>(on[k]||[]).length;
+  const es=secs.map(s=>s.energy||0);
+  const eMax=Math.max(0.1,...es), dyn=Math.max(0,eMax-Math.min(...es));
+  const tens=secs.reduce((a,s)=>a+(s.tension||0),0)/secs.length;
+  /* WHAT DRIVES THE BODY. The first version ranked the bands by onset COUNT and took the top one.
+     That is a density measure, and the densest band is almost always the hats -- on the first
+     track it wired the form's mass to a hi-hat at 228 onsets against the kick's 40, which is
+     flutter rather than a pulse. The body follows the LOW end whenever the track has one, and
+     falls through to the mid only when it genuinely does not. */
+  const lowN=cnt('low')+cnt('sub');
+  const body = lowN>=8 ? (cnt('sub')>cnt('low') ? 'sub' : 'kick')
+                       : (cnt('mid')>=cnt('high') ? 'snare' : 'hat');
+  const P=[];
+  P.push({t:'scale', s:body, a:+(0.30+0.26*eMax).toFixed(2)});
+  // The fast band gets somewhere of its own to go, so a busy hat pattern is not competing with
+  // the body for the same target. Light: this is detail, not structure.
+  if(body!=='hat' && cnt('high')>60) P.push({t:'hue', s:'hat', a:0.16});
+  P.push({t:'bloom', s:'energy',    a:+(0.20+0.30*dyn).toFixed(2)});
+  P.push(tens>0.42 ? {t:'sat', s:'tension', a:-0.30}
+                   : {t:'sat', s:'valence', a: 0.26});
+  // Epicness opens the lens, but only on a track that HAS dynamics -- on a flat one this is a
+  // permanent wide-angle rather than a moment.
+  if(dyn>0.32) P.push({t:'fov', s:'epic', a:0.24});
+  // Something slow, on the bar, so the frame is never completely still between transients.
+  P.push({t:'swirl', s:'bar', a:0.28});
+  return P;
+}
+function autoMap(reason){
+  if(MODMODE!=='auto' || !director) return;
+  MODB=autoPatch(); modSave(); if(window.modRender) modRender();
+  if(reason) { showStat('Routed automatically — '+MODB.length+' routes'); hideStat(1800); }
+}
 const MODV={};                                 // this frame's summed value per target
 /* Two clocks the sources need that nothing else in the file keeps: a phase in BEATS, and a
    sample-and-hold that re-rolls on it. Both are derived from the Director's tempo, so an LFO here
@@ -2814,9 +2870,12 @@ function modUpdate(dt,bpm){
     MODV[r.t]=(MODV[r.t]||0)+r.a*v;
   }
 }
-const MV=k=>MODV[k]||0;
-function modSave(){ try{ localStorage.setItem('atonal.mod',JSON.stringify(MODB)); }catch(e){} }
-function modLoad(){ try{ const v=JSON.parse(localStorage.getItem('atonal.mod')||'[]');
+const MV=k=>(MODMODE==='off')?0:(MODV[k]||0);
+function modSave(){ try{ localStorage.setItem('atonal.mod',JSON.stringify(MODB));
+  localStorage.setItem('atonal.modmode',MODMODE); }catch(e){} }
+function modLoad(){ try{ const m=localStorage.getItem('atonal.modmode');
+  if(m==='auto'||m==='manual'||m==='off') MODMODE=m;
+  const v=JSON.parse(localStorage.getItem('atonal.mod')||'[]');
   if(Array.isArray(v)) MODB=v.filter(r=>MODTGT[r.t]&&MODSRC[r.s]).map(r=>({t:r.t,s:r.s,a:+r.a||0})); }catch(e){} }
 let filtBase=14;
 let kalMode='auto';                                   // 'auto' | 'on' | 'off'
@@ -3283,6 +3342,7 @@ async function loadFile(file){
   if(poll) clearInterval(poll);
   setProg(1,'Analysed'); setProg(null);
   kalCalibrate();                 // the kaleidoscope's threshold is relative to THIS track
+  autoMap(false);                 // and the routing matrix is wired from THIS track
   $('hGenre').textContent=director.genre.primary+'  ('+(director.genre.confidence)+')';
   $('hBpm').textContent=director.tempo.bpm+' BPM';
   buildTimelineUI();
@@ -3566,8 +3626,15 @@ function frame(){
      source and the reason the matrix has no idea where its inputs come from. */
   SIG.energy=energy; SIG.tension=tension; SIG.arousal=arousal; SIG.epic=epic;
   SIG.valence=valence; SIG.darkness=darkness; SIG.flux=flux;
-  SIG.pulse=pulseS; SIG.kick=HITS.low; SIG.snare=HITS.mid; SIG.hat=HITS.high;
-  SIG.air=HITS.air; SIG.sub=HITS.sub;
+  /* THE TRANSIENT SOURCES ARE SCALED INTO 0..1. HITS.* are smoothed attack envelopes and they
+     peak around 0.15 on a loud track (measured: low 0.158, sub 0.176, high 0.153, air 0.472,
+     pulse 0.546) -- so a route at a full 100% on the kick was moving its target by three percent
+     and every amount in the matrix read as broken. The emotion curves already use their whole
+     range and are passed straight through. */
+  SIG.pulse=Math.min(1,pulseS*1.8);
+  SIG.kick =Math.min(1,HITS.low*5.0);  SIG.snare=Math.min(1,HITS.mid*5.0);
+  SIG.hat  =Math.min(1,HITS.high*5.0); SIG.air  =Math.min(1,HITS.air*2.4);
+  SIG.sub  =Math.min(1,HITS.sub*5.0);
   modUpdate(dt,(director&&director.tempo&&director.tempo.bpm)||120);
   /* ---- THE DIRECTOR DRIVES THE FILTER ---- see the note above FILT for the reasoning. */
   if(FILT.mode>0.5){
@@ -4929,7 +4996,15 @@ function optsFor(map,sel){
 }
 function modRender(){
   const L=$('modList'); L.innerHTML='';
-  $('modEmpty').style.display = MODB.length ? 'none' : 'block';
+  const em=$('modEmpty');
+  em.style.display = MODB.length ? 'none' : 'block';
+  em.innerHTML = MODMODE==='auto'
+    ? 'Auto &middot; the Director wires these from the track when one is analysed. Edit or delete '
+      +'any of them; the next track rewires.'
+    : MODMODE==='off'
+    ? 'Routing off. The rows are kept but nothing is applied.'
+    : 'Nothing routed. The Director still drives everything on its own &mdash; a route is an '
+      +'extra hand on top of it.';
   MODB.forEach((r,i)=>{
     const d=document.createElement('div'); d.className='mrow';
     d.innerHTML='<div class="r1"><select class="mtgt">'+optsFor(MODTGT,r.t)+'</select>'
@@ -4945,6 +5020,14 @@ function modRender(){
     L.appendChild(d);
   });
 }
+$('selMod').addEventListener('change',e=>{
+  MODMODE=e.target.value; modSave();
+  // Switching TO auto rewires immediately if there is a track to read; without that the choice
+  // does nothing visible until the next load, which reads as a broken control.
+  if(MODMODE==='auto' && director) autoMap(true);
+  else { showStat(MODMODE==='off'?'Routing off':'Routing manual'); hideStat(1300); }
+  modRender();
+});
 $('modAdd').addEventListener('click',()=>{
   // The first route is a WORKING one, not an empty stub. An unset row asks the user to guess what
   // the two lists mean before anything moves; kick -> form scale is the one pairing whose effect
@@ -4956,7 +5039,7 @@ $('modAdd').addEventListener('click',()=>{
 });
 $('modClear').addEventListener('click',()=>{ MODB=[]; modSave(); modRender();
   showStat('Routes cleared'); hideStat(1200); });
-modLoad(); modRender(); panelLoad();
+modLoad(); $('selMod').value=MODMODE; modRender(); panelLoad();
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });
 $('selPal').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ palAuto=true; return; }
