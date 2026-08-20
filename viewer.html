@@ -443,8 +443,21 @@ const float EXR = 1.15;                    // the radius every profile is normal
 /* The form's global scale, used by map() and by the ray/bound test in main(). Factored out so
    there is exactly one definition: a bound computed from a stale copy of this expression would
    clip the silhouette the moment a bass hit pushed the form past it. */
+/* THE BEAT TERMS ARE HALVED. u_energy is a section-level curve and stays where it was; the three
+   after it are the per-beat swell, and they were sizing the form up and down on every kick, with
+   the camera dollying in on the same hit for a bit more on top. Measured as peak-to-peak
+   on-screen size over two windows of playback (the spread between them is just how loud that
+   stretch of the track is):
+
+                    form     camera    net
+     before         5.2%     1.7%      6.8%      quiet stretch
+     before         7.2%     1.2%      8.4%      loud stretch
+     after          3.6%     0.6%      4.2%      same loud stretch
+
+   Both sides are scaled by the same 0.5, so the net halves wherever it is measured -- the numbers
+   above are a confirmation, not a target. ~2Hz at 8% is a throb; at 4% it is an accent. */
 float formScale(){
-  return max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.10+u_hLow*0.13+u_hSub*0.09)*0.95;
+  return max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.05+u_hLow*0.065+u_hSub*0.045)*0.95;
 }
 float extr(float d2,vec3 p,float halfD,float bev){
   float r = clamp(length(p.xy)/EXR, 0.0, 1.0);
@@ -3085,7 +3098,9 @@ function frame(){
   groundY=-(yExt*sBase+0.05);     // just under the form's underside
   // userZoom multiplies the DERIVED framing distance rather than replacing it, so the framing
   // logic still normalises across shapes and the zoom stays a relative adjustment on top.
-  const dolly=framed*(1-HITS.low*0.055-HITS.sub*0.045)*userZoom;
+  // The push-in on the kick is halved with the form's own swell in formScale() -- the two are
+  // the same gesture seen from opposite ends, and cutting only one of them just moves the throb.
+  const dolly=framed*(1-HITS.low*0.0275-HITS.sub*0.0225)*userZoom;
   // The drag offsets are added to the Director's angle, not swapped in for it. That is what
   // lets you pull the camera round mid-track and have the orbit continue from where you left
   // it, instead of the two fighting over the same variable.
