@@ -103,6 +103,16 @@
   .mrow .mdel:hover{color:#ffb4b4;border-color:rgba(255,120,120,.5)}
   .mrow .mv{font-size:9px;color:#c8b8ff;flex:0 0 34px;text-align:right;font-variant-numeric:tabular-nums}
   #modEmpty{font-size:9px;line-height:1.6;color:#6f7078;padding:4px 0 6px;letter-spacing:.04em}
+  /* A control that cannot do anything right now says so, rather than leaving you to drag it and
+     wonder. Same idea as the dead-route marking in the matrix. */
+  #ctrl .row.inert{opacity:.38}
+  #ctrl .row.inert input,#ctrl .row.inert select{pointer-events:none}
+  .mrow .meter{position:relative;height:3px;margin-top:6px;border-radius:2px;
+    background:rgba(255,255,255,.08);overflow:hidden}
+  .mrow .meter i{position:absolute;top:0;bottom:0;left:50%;width:0;background:#c8b8ff;
+    border-radius:2px;transition:width .06s linear,left .06s linear}
+  .mrow.dead .meter i{background:#7a5a5a}
+  .mrow.dead .mtgt{color:#c9a0a0}
 </style>
 
 <canvas id="gl"></canvas>
@@ -126,6 +136,8 @@
       <option value="0">Triskelion</option><option value="1">Clover</option>
       <option value="2">Arc</option><option value="3">Chevron</option>
       <option value="4" selected>Wave</option><option value="5">Plate</option>
+      <option value="6">Gear</option><option value="7">Knot</option>
+      <option value="8">Lattice</option>
       <option value="mesh">Reference mesh</option>
       <option value="svg">Custom SVG&hellip;</option></select></div>
     <!-- SHAPE PARAMETERS. These apply to every form, because they act on the extrusion and the
@@ -141,6 +153,22 @@
       <option value="auto" selected>Auto &middot; Director</option>
       <option value="on">Always on</option>
       <option value="off">Off</option></select></div>
+  </details>
+
+  <!-- MOTION. Multipliers on the tempo-derived rates, not absolute speeds -- see MOT in the
+       script for why the tempo lock has to survive the dial. 0 holds a pose. -->
+  <details id="gMotion"><summary>Motion</summary>
+    <div class="row"><label title="The form turning about its own axis — one revolution every 16 beats at 1.0">Spin</label>
+      <input type="range" id="mSpin" min="0" max="300" value="100"><span class="val" id="mSpinV">1.00</span></div>
+    <div class="row"><label title="The second axis, about X — one revolution every 48 beats at 1.0">Tumble</label>
+      <input type="range" id="mTumble" min="0" max="300" value="100"><span class="val" id="mTumbleV">1.00</span></div>
+    <div class="row"><label title="The third axis, about Z — the profile's own plane">Swirl</label>
+      <input type="range" id="mSwirl" min="0" max="300" value="100"><span class="val" id="mSwirlV">1.00</span></div>
+    <div class="row"><label title="The camera's orbit around the form. Independent of the form's own rotation.">Orbit</label>
+      <input type="range" id="mOrbit" min="0" max="300" value="100" title="Speed of the camera orbit. Has no effect while Camera·Orbit is off, because nothing is driving it then."><span class="val" id="mOrbitV">1.00</span></div>
+    <div class="row"><label>&nbsp;</label>
+      <button id="motStop" class="mini" title="Hold every axis still">Freeze</button>
+      <button id="motReset" class="mini" title="Back to 1.00 on all four">Reset</button></div>
   </details>
 
   <details id="gMat"><summary>Material</summary>
@@ -165,7 +193,7 @@
          iridescence banding and the specular sweep, so it is the one that gives a genuinely
          featureless surface. -->
     <div class="row"><label>Surface</label>
-      <button id="surf" class="mini on" title="Micro surface detail — off gives a perfectly smooth object">Textured</button></div>
+      <button id="surf" class="mini on" title="The stronger of the two detail switches: off removes the normal map AND the iridescence banding and the specular sweep. Detail·None only drops the map.">Textured</button></div>
   </details>
 
   <details id="gScene"><summary>Scene</summary>
@@ -218,7 +246,7 @@
 
   <details id="gView" open><summary>View</summary>
     <div class="row"><label>Camera</label>
-      <button id="auto" class="mini on" title="Director's automatic orbit — drag the canvas to take over">Orbit</button>
+      <button id="auto" class="mini on" title="Who drives the camera: the Director, or you. Drag the canvas to take over. The RATE of the orbit is the Orbit slider under Motion.">Orbit</button>
       <button id="reset" class="mini" title="Return to the Director's framing (or double-click the canvas)">Reset</button></div>
     <!-- One axis, not three. Auto / Rays / Surface asked the viewer to understand a render-scale
          governor, a volumetric toggle and a normal-map switch in order to answer "make it look
@@ -658,12 +686,69 @@ float p2Plate(vec2 p){
    the framing constants below would have to encode six different natural extents, and every one
    of them would silently drift the moment a profile constant was touched. One target radius, six
    scales derived from the geometry, and the camera can frame them all identically. */
+/* ---- THREE MORE COMPLEX PROFILES ----
+   The original six are single strokes: three arms, three lobes, a broken ring, a chevron, a Z and
+   a plate. Each is one gesture, and from most angles the silhouette is one closed outline. These
+   three are built to have INTERNAL structure -- holes, crossings, repeated teeth -- so the form
+   still has something to show when it turns edge-on and the light has somewhere to break up.
+
+   All three are exact unions of primitives rather than folded domains, for the reason the
+   kaleidoscope note gives at length: a fold's result depends on a symmetry the shape has to
+   actually possess, while min() of real primitives cannot be wrong about one. They also stay
+   cheap -- the cost is a fixed number of segment/circle distances, the same order as p2Tris. */
+// GEAR — a toothed annulus with a bore. u_segN sets the teeth, at two per segment, so the
+// Segments slider means something obvious here: 3 gives six teeth, 8 gives sixteen.
+float p2Gear(vec2 p){
+  int N=int(clamp(u_segN,2.0,8.0))*2;
+  float w=0.075+u_gDense*0.020;
+  float d=abs(length(p)-0.44)-(0.145+u_gThick*0.02);       // the rim
+  for(int i=0;i<16;i++){
+    if(i>=N) break;
+    vec2 q=rr2(float(i)*6.2831853/float(N)+u_gTwist*0.10)*p;
+    d=min(d, s2Seg(q, vec2(0.42,0.0), vec2(0.70,0.0), w));  // one tooth
+  }
+  return max(d, -(length(p)-(0.16+u_gCut*0.03)));           // and the bore
+}
+// KNOT — N rings, each pushed off centre, overlapping into a rosette. Real holes between them,
+// and the crossings give the extrusion something to do that a single outline never does.
+float p2Knot(vec2 p){
+  int N=int(clamp(u_segN,2.0,6.0));
+  float w=0.070+u_gDense*0.025;
+  float R=0.36, off=0.32;
+  float d=1e9;
+  for(int i=0;i<6;i++){
+    if(i>=N) break;
+    vec2 c=rr2(float(i)*6.2831853/float(N))*vec2(off,0.0);
+    d=min(d, abs(length(p-c)-R)-w);
+  }
+  return d;
+}
+// LATTICE — a woven grid clipped to a disc. The one profile here with no radial symmetry at all,
+// which is deliberate: everything else in the set turns about its centre, and a square weave
+// reads completely differently under the same rotation.
+float p2Lattice(vec2 p){
+  int N=int(clamp(u_segN,2.0,5.0));
+  float w=0.048+u_gDense*0.022;
+  float st=1.30/float(N+1);
+  vec2 q=rr2(u_gTwist*0.18)*p;
+  float d=1e9;
+  for(int i=0;i<5;i++){
+    if(i>=N) break;
+    float o=(float(i)-float(N-1)*0.5)*st;
+    d=min(d, abs(q.y-o)-w);
+    d=min(d, abs(q.x-o)-w);
+  }
+  return max(d, length(p)-(0.74+u_gThick*0.04));           // clipped, or the bars run forever
+}
 float mArray(vec3 p){    float S=EXR/1.152; return extr(p2Tris (p.xy/S)*S, p, exDepth(), exBevel()); }
 float mStack(vec3 p){    float S=EXR/1.020; return extr(p2Clover(p.xy/S)*S, p, exDepth(), exBevel()); }
 float mRings(vec3 p){    float S=EXR/0.930; return extr(p2Arc  (p.xy/S)*S, p, exDepth(), exBevel()); }
 float mTruss(vec3 p){    float S=EXR/0.870; return extr(p2Chev (p.xy/S)*S, p, exDepth()*0.92, exBevel()); }
 float mPods(vec3 p){     float S=EXR/1.070; return extr(p2Wave (p.xy/S)*S, p, exDepth(), exBevel()); }
 float mAperture(vec3 p){ float S=EXR/1.075; return extr(p2Plate(p.xy/S)*S, p, exDepth()*1.05, exBevel()); }
+float mGear(vec3 p){     float S=EXR/1.000; return extr(p2Gear (p.xy/S)*S, p, exDepth()*0.95, exBevel()); }
+float mKnot(vec3 p){     float S=EXR/1.020; return extr(p2Knot (p.xy/S)*S, p, exDepth()*0.90, exBevel()); }
+float mLattice(vec3 p){  float S=EXR/1.060; return extr(p2Lattice(p.xy/S)*S, p, exDepth()*0.85, exBevel()); }
 
 /* ---- CUSTOM SVG ----
    The uploaded artwork arrives as a 2D signed distance field baked into a texture, so the
@@ -718,7 +803,10 @@ float evalMode(vec3 p,float m){
   else if(m<2.5)  return mRings(p);
   else if(m<3.5)  return mTruss(p);
   else if(m<4.5)  return mPods(p);
-  else            return mAperture(p);
+  else if(m<5.5)  return mAperture(p);
+  else if(m<6.5)  return mGear(p);
+  else if(m<7.5)  return mKnot(p);
+  else            return mLattice(p);
 }
 /* THE FORM'S ORIENTATION, in one place. map() and objP() both need it and they MUST agree: objP
    is the frame the surface texture is projected in, so any disagreement makes the detail slide
@@ -2778,6 +2866,12 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
 
    FILT.cell is in DEVICE pixels, so the screen stays the same physical size whatever dpr is; a
    cell in CSS pixels would halve on a retina panel and the halftone would vanish into the grid. */
+/* MOTION RATES, as multipliers on the tempo-derived rates rather than as absolute speeds. The
+   rates themselves are musical -- one revolution per SPIN_BEATS beats -- and replacing them
+   with a number in degrees per second would throw away the tempo lock that makes the turn land
+   with the track. A multiplier keeps the lock and still lets the whole thing be slowed to a
+   crawl or stopped. Zero is a legitimate setting: it is how you hold a pose. */
+const MOT={spin:1, tumble:1, swirl:1, orbit:1}; window.MOT=MOT;
 const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, off:0, org:[0,0], ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
 let filtBands=8, filtFolds=6, thermOff=0;   // held counts; see the drive block for why
 /* ======================= ROUTING MATRIX =======================
@@ -2988,12 +3082,16 @@ rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
 // modes: 0 ribbon  1 tower  2 gyroscope  3 space frame  4 pods  5 shell
 const GENRE_MODES={
-  techno:[2,5,4,3],'melodic techno':[1,3,0],house:[1,3,2],edm:[0,4,5],electronic:[0,1,2,3,4,5],
-  dance:[3,1,4],trance:[1,3,0],'drum & bass':[5,4,0],dubstep:[5,4,2],ambient:[1,3,2],
-  cinematic:[1,0,3],classical:[3,1,2],'hip hop':[2,5,4],pop:[1,3,2],rock:[5,2,0],
+  techno:[2,5,4,3,6],'melodic techno':[1,3,0,7],house:[1,3,2,7],edm:[0,4,5,6],
+  electronic:[0,1,2,3,4,5,6,7,8],
+  dance:[3,1,4,7],trance:[1,3,0,7],'drum & bass':[5,4,0,6],dubstep:[5,4,2,6],ambient:[1,3,2,8],
+  cinematic:[1,0,3,8],classical:[3,1,2,8],'hip hop':[2,5,4,6],pop:[1,3,2,7],rock:[5,2,0,6],
 };
 // low -> high energy: contemplative lattices, then organic fractals, then aggressive ones
-const CALM=[3,2], MID=[1,3], HOT=[0,4,5];
+// low -> high energy. The three new profiles are placed by how BUSY they read rather than by
+// how they are built: the Lattice is a quiet regular grid, the Knot is an intricate middle,
+// and the Gear's teeth are the most aggressive silhouette in the set.
+const CALM=[3,2,8], MID=[1,3,7], HOT=[0,4,5,6];
 let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 // Object-space reach per mode — the radius that actually sets the silhouette, read off each
 // SDF's own constants:
@@ -3002,13 +3100,16 @@ let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 //   4 pods    capsule reach 0.80 + radius 0.215         5 shell   clipped to sphere 0.90
 // Each body is an ellipsoid, so the framing radius is its LARGEST semi-axis.
 // 0 shell 1.00  1 ovoid 1.00  2 cross 1.00  3 lattice 0.95  4 column 1.00  5 disc 1.00
-const REACH=[1.15,1.15,1.15,1.15,1.15,1.15];   // all six normalised to EXR in the shader
+// All nine normalised to EXR in the shader, so the framing radius is the same for each.
+const REACH=[1.15,1.15,1.15,1.15,1.15,1.15, 1.15,1.15,1.15];
 // Vertical half-extent per mode, which is NOT the same as the framing radius: the Ribbon
 // sweeps to 1.27 across but is only ~0.38 deep, so a floor placed at its radius sat almost a
 // unit below the form and the contact shadow had nothing to make contact with.
 // DISC is the case this table exists for: 1.00 across and 0.64 deep, so framing it on the
 // radius alone would leave a third of the frame empty above and below it.
-const REACH_Y=[0.89,1.15,1.15,1.00,0.58,0.92];  // Y extent of each profile after that scale
+// Gear and Knot are radially symmetric, so their Y extent IS their radius; the Lattice is a
+// square weave clipped to a disc, so likewise.
+const REACH_Y=[0.89,1.15,1.15,1.00,0.58,0.92, 1.15,1.15,1.10];
 // The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
@@ -3737,9 +3838,14 @@ function frame(){
   /* ROUTED. Each rate takes its own route as a multiplier, floored at zero -- a route pushed deep
      negative would run the form BACKWARDS, and a reversing rotation is the exact fault the
      bar-locked camera sway was removed for. Ceiling at 3x so one route cannot make it a blur. */
-  const rSpin=Math.max(0,Math.min(3,1+MV('spin')*1.2));
-  const rTum =Math.max(0,Math.min(3,1+MV('tumble')*1.2));
-  const rSwi =Math.max(0,Math.min(3,1+MV('swirl')*1.2));
+  /* USER RATE x MATRIX, in that order. MOT.* is the dial in the panel and MV() is whatever the
+     routing is doing to it, so a route still bends a rate the user has set rather than replacing
+     it -- the same relationship every other control here has with the Director.
+     Floored at zero: a rate driven negative would run the form BACKWARDS, and a reversing
+     rotation is the exact fault the bar-locked camera sway was removed for. */
+  const rSpin=Math.max(0,Math.min(4,MOT.spin  *(1+MV('spin')  *1.2)));
+  const rTum =Math.max(0,Math.min(4,MOT.tumble*(1+MV('tumble')*1.2)));
+  const rSwi =Math.max(0,Math.min(4,MOT.swirl *(1+MV('swirl') *1.2)));
   formSpin   += spinRate*dt*rSpin;
   formTumble += 2*Math.PI*(bpm/60)/TUMBLE_BEATS*dt*rTum;  // second axis, about X
   formSwirl  += 2*Math.PI*(bpm/60)/SWIRL_BEATS *dt*rSwi;  // third axis, about Z
@@ -3756,7 +3862,7 @@ function frame(){
   // AUTO-ROTATE is a gate on the Director's orbit only. Everything else the Director decides —
   // framing distance, height, roll, the dolly on the kick — keeps running, because those are
   // composition decisions rather than "movement the user might want to take over".
-  if(autoRotate) camAng += (CM.spin*(0.45+energy*0.45) + 0.008)*dt;
+  if(autoRotate) camAng += (CM.spin*(0.45+energy*0.45) + 0.008)*dt*MOT.orbit;
   /* NO CAMERA SWAY. There was a bar-locked oscillation here -- a sine on the orbit angle with a
      period of exactly one bar, plus the same phase at half rate on the roll -- and it was sized
      against nothing at all. MEASURED against the orbit it was added to:
@@ -3818,7 +3924,19 @@ function frame(){
   // base scale only — the beat's punch on u_reform/u_pulse must stay VISIBLE, so it is
   // deliberately left out of the compensation instead of being cancelled by the camera
   const sBase=Math.max(reform,0.2)*(1.0+energy*0.10)*0.95;
-  const framed=2.0*fEff*reach*sBase/fill;
+  /* THE FRAMING HAS TO KNOW ABOUT THE EXTRUSION. reach is the profile's RADIUS -- a 2D number --
+     and Depth extrudes that profile along z by up to 2.6x. With one fixed rotation axis the depth
+     never pointed at the lens and this did not matter; three axes turn it straight down the view
+     vector, and at a high Depth the framing put the camera INSIDE the body. The symptom is a
+     silhouette with no shading in it at all: every ray starts inside the surface, so the march
+     returns the far wall or nothing, and the form renders as a flat black hole. Found by rolling
+     into it -- Depth 1.73 on the Knot.
+     The correction is proportional rather than exact, for the same reason the studio floor uses
+     the field's own bound: reconstructing exDepth() in JS would be a copy of shader arithmetic
+     that goes stale. Monotonic in Depth and 1.0 at the default, so nothing moves until the slider
+     does. */
+  const deepK = 1.0 + Math.max(0, PRM.depth-1.0)*0.42;
+  const framed=2.0*fEff*reach*deepK*sBase/fill;
   // tilt swings the form's depth toward its radius, so blend between the two by the tilt
   /* THE FLOOR, AND WHY THE FORM WAS GOING THROUGH IT. Two independent leaks, and it took both to
      explain "sometimes":
@@ -3898,7 +4016,7 @@ function frame(){
   // the section's held lean plus the tumble, as ONE angle -- see TUMBLE_BEATS for why they are
   // not two uniforms
   gl.uniform1f(US('u_tilt'),VAR.tilt+formTumble);
-  gl.uniform1f(US('u_iridHue'),(VAR.hue+MV('hue'))%1.0);
+  gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_swirl'),formSwirl);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
      have segments (p2Tris, p2Clover) and just a reasonable angle on the four that do not. See
@@ -3930,7 +4048,15 @@ function frame(){
   gl.uniform1f(US('u_reform'),reform*Math.max(0.25,1+MV('scale')*0.45));
   // Key-rotated: this uniform is where the shader builds the Auto colourway from, so it is the
   // one place the tonality tint has to be applied for the whole frame to agree.
-  const MK=moodK();
+  /* THE HUE ROUTE ROTATES THE MOOD, not the iridescence. It used to add into u_iridHue, and that
+     was the second target the matrix could not move: iridescence is a view-dependent term, so
+     flatK gates it to zero under the flat look the renderer ships with, and a route on it was
+     writing into a uniform nothing was reading. u_mood is where the shader builds the whole
+     colourway from -- albedo tint, backdrop, filter inks -- so rotating it is visible in every
+     look and in every filter, which is what a control called Hue should mean. */
+  let MK=moodK();
+  const hRot=MV('hue');
+  if(Math.abs(hRot)>0.001) MK=hueRot(MK,hRot*6.2831853);   // turns -> radians
   gl.uniform3f(US('u_mood'),MK[0],MK[1],MK[2]);
   gl.uniform1f(US('u_energy'),energy); gl.uniform1f(US('u_tension'),tension); gl.uniform1f(US('u_arousal'),arousal);
   gl.uniform1f(US('u_pulse'),pulseS); gl.uniform1f(US('u_flux'),flux);
@@ -4143,7 +4269,10 @@ function frame(){
     gl.uniform1f(UP('u_expo'),0.82+energy*0.45+pulseS*0.12+HITS.low*0.10);
     // Contrast winds up with tension and eases back as it releases, so the grade breathes with
     // the track instead of sitting at one setting through a whole arrangement.
-    gl.uniform1f(UP('u_contrast'),0.45+tension*0.30-release*0.12+LK.contrast); gl.uniform1f(UP('u_grain'),Math.max(0,(0.35+darkness*0.30+density*0.22+MV('grain')*0.6)*LK.grain));   // busier passage, grittier frame
+    gl.uniform1f(UP('u_contrast'),0.45+tension*0.30-release*0.12+LK.contrast); // The route is ADDED OUTSIDE the look's gain, not inside it. Multiplied in, it was dead: the
+    // Hard surface look sets grain to 0.00, so a route on it was multiplied by zero and did
+    // nothing at all -- one of the two targets that made the matrix look like it was not wired up.
+    gl.uniform1f(UP('u_grain'),Math.max(0,(0.35+darkness*0.30+density*0.22)*LK.grain+MV('grain')*0.6));   // busier passage, grittier frame
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
     // ---- volumetric shafts ----
     // The key is DIRECTIONAL, so it has no position to project — but a directional light is a
@@ -4932,6 +5061,18 @@ function bindPrm(id,key,scale,fmt){
   const apply=()=>{ PRM[key]=(+el.value)*scale; out.textContent=fmt(PRM[key]); };
   el.addEventListener('input',apply); apply();
 }
+// ---- motion rates ----
+function bindMot(id,key){
+  const el=$(id), out=$(id+'V');
+  const apply=()=>{ MOT[key]=(+el.value)/100; out.textContent=MOT[key].toFixed(2); };
+  el.addEventListener('input',apply); apply();
+}
+bindMot('mSpin','spin'); bindMot('mTumble','tumble'); bindMot('mSwirl','swirl'); bindMot('mOrbit','orbit');
+function motSet(v){ for(const k of ['spin','tumble','swirl','orbit']){
+  MOT[k]=v; const el=$('m'+k[0].toUpperCase()+k.slice(1)); el.value=Math.round(v*100);
+  $(el.id+'V').textContent=v.toFixed(2); } }
+$('motStop').addEventListener('click',()=>{ motSet(0); showStat('Motion frozen'); hideStat(1300); });
+$('motReset').addEventListener('click',()=>{ motSet(1); showStat('Motion 1.00'); hideStat(1300); });
 bindPrm('pSeg','seg',1,v=>v.toFixed(0));
 bindPrm('pEdge','edge',0.01,v=>v.toFixed(2));
 bindPrm('pMass','mass',0.01,v=>v.toFixed(2));
@@ -4967,6 +5108,17 @@ $('svgfile').addEventListener('change',e=>{ const f=e.target.files[0]; e.target.
   if(f) f.text().then(t=>loadSVGShape(t,f.name)); });
 addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/svg/i.test(x.type)||/\.svg$/i.test(x.name));
   if(f){ e.preventDefault(); f.text().then(t=>loadSVGShape(t,f.name)); } });
+/* WHICH PROFILES ACTUALLY READ u_segN. Four of the nine do not -- Arc, Chevron, Wave and Plate
+   are single strokes with nothing to repeat -- so on those the Segments slider is a control that
+   moves and changes nothing. Greying it out is the difference between "this does nothing" and
+   "this is broken". Checked against the shaders rather than remembered: the four listed here are
+   exactly the p2* functions with no u_segN in them. */
+const SEG_SHAPES={'0':1,'1':1,'6':1,'7':1,'8':1};
+function segRow(){
+  const v=$('selShape').value;
+  const uses = SEG_SHAPES[v] || v==='auto';        // Auto can land on any of them
+  $('pSeg').parentElement.classList.toggle('inert', !uses);
+}
 $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='mesh'){
     // BOTH: the BVH draws the primary ray exactly, while the baked field still answers the
@@ -4989,7 +5141,9 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   volOn=false; meshOn=false;
   if(v==='svg'){ if(svgTex){ svgOn=true; autoShape=false; } else $('svgfile').click(); return; }
   svgOn=false;
-  if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); } });
+  if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); }
+  segRow(); });
+segRow();
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
 $('selFinish').addEventListener('change',e=>{ const f=FINISHES[e.target.value]; if(f) Object.assign(FINT,f); });
 $('selDetail').addEventListener('change',e=>{ const v=e.target.value;
@@ -5077,11 +5231,17 @@ function modRender(){
       +'extra hand on top of it.';
   MODB.forEach((r,i)=>{
     const d=document.createElement('div'); d.className='mrow';
+    /* THE LIVE METER IS THE POINT OF THIS CARD. The matrix was reported as doing nothing, and
+       two of its targets genuinely were dead -- but a routing matrix is also very hard to BELIEVE
+       without feedback: the amount slider says what you asked for, and nothing on screen says
+       what is arriving. The bar under each route shows source x amount as it happens, so a route
+       that is not moving is visibly not moving rather than a suspicion. */
     d.innerHTML='<div class="r1"><select class="mtgt">'+optsFor(MODTGT,r.t)+'</select>'
       +'<button class="mdel" title="Remove">&times;</button></div>'
       +'<div class="r2"><span class="arw">&#8592;</span><select class="msrc">'+optsFor(MODSRC,r.s)+'</select></div>'
       +'<div class="r2"><input type="range" class="mamt" min="-100" max="100" value="'+Math.round(r.a*100)+'">'
-      +'<span class="mv">'+(r.a>0?'+':'')+Math.round(r.a*100)+'%</span></div>';
+      +'<span class="mv">'+(r.a>0?'+':'')+Math.round(r.a*100)+'%</span></div>'
+      +'<div class="meter"><i></i></div>';
     d.querySelector('.mtgt').addEventListener('change',e=>{ MODB[i].t=e.target.value; modSave(); });
     d.querySelector('.msrc').addEventListener('change',e=>{ MODB[i].s=e.target.value; modSave(); });
     d.querySelector('.mamt').addEventListener('input',e=>{ const v=+e.target.value;
@@ -5110,6 +5270,29 @@ $('modAdd').addEventListener('click',()=>{
 $('modClear').addEventListener('click',()=>{ MODB=[]; modSave(); modRender();
   showStat('Routes cleared'); hideStat(1200); });
 modLoad(); $('selMod').value=MODMODE; modRender(); panelLoad();
+/* Meters update on a TIMER, at 20Hz, not in the frame loop. Writing to the DOM every frame is a
+   cost the renderer should not be paying for a 3px bar, and a bar that changes 60 times a second
+   cannot be read anyway -- the same argument as the perf readout. */
+setInterval(()=>{
+  const g=$('gMod'); if(!g||!g.open||$('ctrl').classList.contains('min')) return;
+  const rows=document.querySelectorAll('#modList .mrow');
+  for(let i=0;i<rows.length && i<MODB.length;i++){
+    const r=MODB[i], v=(MODMODE==='off')?0:((SIG[r.s]||0)*r.a);
+    const w=Math.min(50,Math.abs(v)*50), bar=rows[i].querySelector('.meter i');
+    if(bar){ bar.style.left=(v<0?50-w:50)+'%'; bar.style.width=w+'%'; }
+    // A target that cannot move in the current configuration is marked, rather than leaving the
+    // user to guess why a route with a healthy meter changes nothing on screen.
+    rows[i].classList.toggle('dead', modDead(r.t));
+  }
+},50);
+/* WHICH TARGETS CANNOT MOVE RIGHT NOW. Filter cell and Filter amount need a filter; cell also
+   needs one that HAS a cell (Thermal bands and Facets folds are not it). This used to be
+   something you had to know. */
+function modDead(t){
+  if(t==='cell')  return !(FILT.mode>0.5 && FILT.mode!==4 && FILT.mode!==5);
+  if(t==='famt')  return !(FILT.mode>0.5);
+  return false;
+}
 
 /* ======================= THE ROLL =======================
    A global randomiser, and the whole difficulty is that a uniform random over every control does
@@ -5198,13 +5381,18 @@ function rollAll(seedStr){
      profiles use it (p2Tris and p2Clover -- see the note above kalMirror); on the others the
      slider is inert, so rolling a high count there is a roll that did nothing. And the Arc is a
      broken ring: repeated eight times it stops reading as a single stroke. */
-  const shape=pick(r,['0','1','2','3','4','5']);
+  const shape=pick(r,['0','1','2','3','4','5','6','7','8','6','7','8']);   // the complex three, twice as often
   setCtl('selShape',shape);
-  const segMax = (shape==='0'||shape==='1') ? 6 : (shape==='2' ? 3 : 5);
+  /* Segments means something different per profile: teeth on the Gear, rings on the Knot, bars
+     on the Lattice, arms on the Triskelion -- and nothing at all on the Wave or the Plate. The
+     ceiling is per shape so a roll never spends its randomness on a slider that is inert, and
+     never asks the Arc (a broken ring) for eight of itself. */
+  const segMax = (shape==='0'||shape==='1'||shape==='6') ? 6
+               : (shape==='2') ? 3 : (shape==='8') ? 4 : (shape==='7') ? 5 : 5;
   setCtl('pSeg', 2+Math.floor(r()*(segMax-1)));
   setCtl('pEdge',  Math.round(55+r()*140));
   setCtl('pMass',  Math.round(-35+r()*95));
-  setCtl('pDepth', Math.round(55+r()*150));
+  setCtl('pDepth', Math.round(60+r()*130));
   setCtl('selKal', pick(r,['auto','auto','auto','on','off']));
   setCtl('selFilt','0');                                  // recipes opt IN to a filter
   setCtl('filtAmt', Math.round(72+r()*28));
@@ -5242,6 +5430,11 @@ $('selPal').addEventListener('change',e=>{ const v=e.target.value;
   const p=PALS[v];
   if(p){ $('colA').value=p.a; $('colB').value=p.b; }
   BGA=hex2rgb($('colA').value); BGB=hex2rgb($('colB').value); });
+/* NO SECOND hueRot HERE. There is already one at the tonality code above, and a second
+   `function hueRot` in the same scope does not sit alongside it -- it REPLACES it, silently,
+   for every caller including moodK(). Which is the duplicated-and-overriding pattern this
+   pass exists to find, so it would have been an odd thing to add while looking for it.
+   The existing one takes radians; the route is in turns. */
 function onColor(){ palAuto=false; $('selPal').value='custom';
   BGA=hex2rgb($('colA').value); BGB=hex2rgb($('colB').value); }
 $('colA').addEventListener('input',onColor); $('colB').addEventListener('input',onColor);
