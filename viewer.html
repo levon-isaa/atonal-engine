@@ -148,8 +148,8 @@
        surfTarget, STEP.shaN) for measuring. -->
   <div class="row grp"><label>Quality</label>
     <button id="qPreview" class="mini" title="Fast — half shadow samples, no shafts, coarser march. For scrubbing and setup.">Preview</button>
-    <button id="qHigh" class="mini on" title="Full shadows, shafts, surface detail, render scale adapting to hold frame rate">High</button>
-    <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.15x and 1.60x to stay usable">Ultra</button></div>
+    <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
+    <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.00x and 1.60x to stay usable">Ultra</button></div>
   <div class="row grp"><label>Capture</label>
     <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
     <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
@@ -2196,7 +2196,23 @@ const TIERS={
      already promises a coarser image. */
   preview:{label:'Preview', scale:0, dpr:0.72, scaleMin:0.60, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, bake:2048, shutter:0, sss:0,
            note:'Preview — fast'},
-  high:   {label:'High',    scale:0, dpr:1.00, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0,
+  /* HIGH AND ULTRA GET A FLOOR BELOW NATIVE. Both used to bottom out at 1.00 -- High because the
+     governor's floor was hard-coded there, Ultra because its band started at 1.15 -- so on a
+     machine that could not hold the frame at native there was nothing either could give up, and
+     the governor watched the frame rate fall without a lever to pull.
+
+     That is backwards for a governor. The point of one is that quality is what you get when there
+     is headroom, not a promise kept while the frame stutters. Both now go down to 0.82 and 1.00
+     respectively, and both climb straight back the moment the frame allows -- a still frame or a
+     smaller window returns to full resolution on its own.
+
+     Measured against a 2.0x render as ground truth, RMSE over the silhouette band, so the cost of
+     the floor is on the record rather than assumed:
+        rscale 1.00  edge RMSE 6.38     rscale 1.35  edge RMSE 3.60
+        rscale 1.15  edge RMSE 4.31     rscale 1.60  edge RMSE 3.06
+     0.82 is below the bottom of that table and will be visibly softer. It is a floor, not a
+     target: it exists for the case where the alternative is 15 fps. */
+  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0,
            note:'High — shadows, shafts, adaptive scale'},
   /* ULTRA IS A BAND, NOT A PIN. It used to fix rscale at 1.35 and switch the governor off
      entirely -- its own tooltip promised "no adaptation, will drop frames", and it delivered:
@@ -2220,9 +2236,9 @@ const TIERS={
      was pinning it to one point on that dial for every machine. A floor of 1.15 keeps Ultra
      unambiguously the best tier (it never drops to where High's governor lives) while letting it
      climb to 1.60, which is BETTER than it ever reached before, on hardware that can hold it. */
-  ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.15, scaleMax:1.60,
+  ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.00, scaleMax:1.60,
            dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, bake:8192, shutter:0,
-           note:'Ultra — supersampled, adapts between 1.15x and 1.60x'},
+           note:'Ultra — supersampled, adapts between 1.00x and 1.60x'},
 };
 const KVAR_CAP=0.030;   // see the GEOMETRIC SPECULAR AA note in the shader
 let TIER='high';
