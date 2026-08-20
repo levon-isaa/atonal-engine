@@ -2181,7 +2181,20 @@ const TIERS={
   // now comes from work SKIPPED — no shafts, no motion blur, no subsurface, a smaller detail bake
   // and a lower supersampling ceiling — none of which degrades what does get drawn. shaN 96 sits
   // at 1.90 RMS, still inside the clean band.
-  preview:{label:'Preview', scale:0, dpr:1.00, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, bake:2048, shutter:0, sss:0,
+  /* PREVIEW RENDERS FEWER PIXELS. It did not, and that is why it cost exactly what High cost.
+     Its dpr was 1.00 and the governor's render-scale floor was hard-coded at 1.00, so its floor
+     was the same 4.0 Mpx grid as every other tier -- measured, Preview and High and Ultra all
+     came in at the same frame time, and every shading term I switched off changed nothing.
+
+     That is the shape of a per-pixel cost that dominates the per-tier differences, and the only
+     lever on a per-pixel cost is pixels. Preview is the tier whose entire purpose is speed for
+     scrubbing and setup, where softness is the accepted trade, so it takes both: a 0.72 canvas
+     and a render-scale floor of 0.60, which together are about a quarter of the pixels.
+
+     This was tried before, reverted as "stop rendering below native", and the revert was right
+     for HIGH -- where a soft frame is the whole product. It was wrong for Preview, whose tooltip
+     already promises a coarser image. */
+  preview:{label:'Preview', scale:0, dpr:0.72, scaleMin:0.60, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, bake:2048, shutter:0, sss:0,
            note:'Preview — fast'},
   high:   {label:'High',    scale:0, dpr:1.00, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0,
            note:'High — shadows, shafts, adaptive scale'},
@@ -2830,7 +2843,8 @@ function frame(){
     // Ultra pins its own render scale, so the governor must not claw it back — that is the
     // difference between a tier and a suggestion.
     const DCAP=TIERS[TIER].dpr, SCAP=TIERS[TIER].ss||1.45;
-    const SMIN=TIERS[TIER].scaleMin||0, SMAX=TIERS[TIER].scaleMax||0;
+    const SMIN=TIERS[TIER].scaleMax?(TIERS[TIER].scaleMin||0):0, SMAX=TIERS[TIER].scaleMax||0;
+    const SFLOOR=TIERS[TIER].scaleMin||1.00;   // banded tiers use SMIN above; the rest use this
     if(QLOCK){}
     // A BANDED tier adapts like any other, but between its own floor and ceiling rather than
     // between 1.0 and SCAP. Same thresholds, so it behaves the way the rest of the governor does;
@@ -2848,7 +2862,11 @@ function frame(){
     // 8.0 Mpx grid in Preview and High. A tier has to bind the governor, not suggest to it.
     else if(frameAvg>55 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
     else if(frameAvg<48 && dprScale<DCAP){ dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
-    else if(frameAvg>29 && rscale>1.00){ rscale=Math.max(1.00,rscale-0.08); applyScale(); }
+    // The floor is the TIER's, not a constant. It was hard-coded at 1.00, which meant no tier
+    // could ever render fewer pixels than the native grid however slow the frame got -- so the
+    // one lever that measurably moves this renderer was unavailable to the tier that exists to
+    // pull it.
+    else if(frameAvg>29 && rscale>SFLOOR){ rscale=Math.max(SFLOOR,rscale-0.08); applyScale(); }
     else if(frameAvg<23 && rscale<SCAP){ rscale=Math.min(SCAP,rscale+0.06); applyScale(); }
   }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
