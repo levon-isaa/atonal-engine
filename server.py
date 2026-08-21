@@ -33,9 +33,17 @@ def _progress_set(job, d):
     with _PLOCK:
         d["at"] = time.time()
         _PROGRESS[job] = d
-        if len(_PROGRESS) > 64:                       # bound the dict even if TTL never fires
-            for k in [k for k, v in _PROGRESS.items() if time.time() - v.get("at", 0) > _PROGRESS_TTL]:
+        if len(_PROGRESS) > 64:
+            now = time.time()
+            for k in [k for k, v in _PROGRESS.items() if now - v.get("at", 0) > _PROGRESS_TTL]:
                 _PROGRESS.pop(k, None)
+            # TTL alone bounds NOTHING, which is what the old comment here claimed it did: 65
+            # entries all younger than the TTL prune to 65, and the same is true on every insert
+            # after. Evict oldest-first until the cap actually holds.
+            if len(_PROGRESS) > 64:
+                oldest = sorted(_PROGRESS, key=lambda k: _PROGRESS[k].get("at", 0))
+                for k in oldest[:len(_PROGRESS) - 64]:
+                    _PROGRESS.pop(k, None)
 
 def _progress_clear(job):
     if job:
@@ -144,7 +152,13 @@ class H(BaseHTTPRequestHandler):
     # Only these roots are reachable. The studio needs to load ES modules and the vendored
     # three.js, which means real static serving — so the surface is restricted by prefix rather
     # than left open over the whole working directory (which holds out/cache, the venv and .git).
-    _STATIC_OK = ("viewer.html", "studio.html", "studio/", "vendor/", "assets/")
+    # SPLIT INTO FILES AND DIRECTORIES, because one startswith() over both cannot tell them
+    # apart. "viewer.html" as a prefix also matches viewer.html.bak, viewer.html~, viewer.html.orig
+    # and viewer.html.rej -- the editor backups and merge leftovers that collect beside exactly
+    # this file -- and each was served in full, verified with a canary. Directory entries keep
+    # their trailing slash and stay a prefix test; file entries are now matched exactly.
+    _STATIC_FILES = ("viewer.html", "studio.html")
+    _STATIC_DIRS = ("studio/", "vendor/", "assets/")
     _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
              ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
              ".json": "application/json", ".svg": "image/svg+xml", ".wasm": "application/wasm",
@@ -167,7 +181,8 @@ class H(BaseHTTPRequestHandler):
             return False
         if inside == os.pardir or inside.startswith(os.pardir + os.sep) or os.path.isabs(inside):
             return False
-        if not inside.replace(os.sep, "/").startswith(self._STATIC_OK):
+        rel_posix = inside.replace(os.sep, "/")
+        if rel_posix not in self._STATIC_FILES and not rel_posix.startswith(self._STATIC_DIRS):
             return False
         if not os.path.isfile(fp):
             return False
@@ -182,14 +197,21 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         # The vendored library is immutable for a given file; the app code is edited constantly,
         # so only the former is allowed to sit in the browser cache.
-        self.send_header("Cache-Control", "public, max-age=86400" if inside.replace(os.sep, "/").startswith("vendor/") else "no-cache")
+        self.send_header("Cache-Control", "public, max-age=86400" if rel_posix.startswith("vendor/") else "no-cache")
         self.end_headers(); self.wfile.write(body)
         return True
 
     def do_POST(self):
         if not self.path.startswith("/analyze"):
             return self._json(404, {"error": "not found"})
-        n = int(self.headers.get("Content-Length", 0))
+        # Parsed BEFORE the try below, so a non-numeric header used to raise ValueError straight
+        # out of do_POST: no response at all, just a dropped connection and a traceback in the
+        # log. A client cannot tell that apart from the server being down, which is the same
+        # failure the CORS and Private-Network notes above exist to prevent.
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            return self._json(400, {"error": "bad Content-Length"})
         if n <= 0:
             return self._json(400, {"error": "empty body"})
         if n > MAX_UPLOAD:
@@ -219,9 +241,17 @@ class H(BaseHTTPRequestHandler):
             with _ANALYSIS:
                 d = analyze.build_director(tmp, progress=lambda pr: _progress_set(job, pr))
             cache_put(digest, d)
+            # Built defensively and BEFORE the response. This used to index d['sections'],
+            # d['genre'] and d['tempo'] after _json(200) had already written a complete response,
+            # so a single missing key raised into the except below and wrote a SECOND HTTP
+            # response onto the same connection -- logging a 500 and "analysis failed" for an
+            # analysis that had in fact succeeded and been cached, with the real KeyError
+            # swallowed by the generic message.
+            secs = len(d.get("sections") or [])
+            genre = (d.get("genre") or {}).get("primary", "?")
+            bpm = (d.get("tempo") or {}).get("bpm", "?")
             self._json(200, d)
-            print(f"[done] {name}: {len(d['sections'])} sections, "
-                  f"genre={d['genre']['primary']} bpm={d['tempo']['bpm']}", flush=True)
+            print(f"[done] {name}: {secs} sections, genre={genre} bpm={bpm}", flush=True)
         except Exception as e:
             traceback.print_exc()                        # full detail to the server log...
             # ...but never to the client: the raw exception carried absolute filesystem paths
