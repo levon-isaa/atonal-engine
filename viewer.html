@@ -3341,7 +3341,10 @@ function cv(name,t,def){
 }
 function sampleCurve(name,t){
   const c=director.curves, fps=director.meta.director_fps, arr=c[name];
-  if(!arr) return 0;
+  // LENGTH, not just existence: !arr is false for [], and the branches below then return
+  // arr[arr.length-1] === arr[-1] === undefined, which reaches gl.uniform1f as NaN and takes the
+  // whole shader with it — the form vanishes with nothing logged.
+  if(!arr || !arr.length) return 0;
   const x=t*fps, i=Math.floor(x), fdr=x-i;
   if(i<0) return arr[0]; if(i>=arr.length-1) return arr[arr.length-1];
   return arr[i]*(1-fdr)+arr[i+1]*fdr;
@@ -3355,16 +3358,50 @@ function currentSection(t){
   return s[s.length-1];
 }
 function nextPrediction(t){
-  const p=director.events.predictions; for(const e of p) if(e.t>t) return e; return null;
+  // Guarded to the same depth as currentSection() and curveOr(). This runs every frame inside
+  // the render loop, so a director without an events object threw once per frame and stopped the
+  // animation outright instead of degrading.
+  const p=director&&director.events&&director.events.predictions;
+  if(!p||!p.length) return null;
+  for(const e of p) if(e.t>t) return e; return null;
 }
 
 /* ======================= TRANSPORT ======================= */
+/* ONE PLACE THAT STOPS A SOURCE, and every deliberate stop goes through it.
+   A BufferSource is single-use, so `source` is replaced on every start — which made it the only
+   reference to the node that was already running. loadFile() calls play() directly for a newly
+   analysed track without pausing the old one, so that assignment orphaned a still-playing node
+   that stayed connected to ctx.destination: two tracks audible at once, and the first one
+   unstoppable by pause() or seek() for the rest of its duration.
+   onended is cleared before stopping because stop() fires it too, and the natural-end handler
+   below must not run for a stop we asked for. */
+function stopSource(){
+  if(!source) return;
+  source.onended=null;
+  try{ source.stop(); }catch(e){}
+  try{ source.disconnect(); }catch(e){}
+  source=null;
+}
 function play(){ if(!audioBuffer)return; if(ctx.state==='suspended')ctx.resume();
+  stopSource();
+  // Resuming from the very end restarts from the top rather than starting past the buffer, where
+  // the spec begins playback at the buffer's end and ends it immediately — which read as a dead
+  // transport that only scrubbing could recover.
+  if(pausedAt>=audioBuffer.duration-0.05) pausedAt=0;
   source=ctx.createBufferSource(); source.buffer=audioBuffer; source.connect(ctx.destination);
+  // NATURAL END. Without this isPlaying stayed true past the end of the buffer, so pos() kept
+  // counting: the timecode ran past the track length, the playhead left the timeline, and the
+  // button still read Pause. Leaves the playhead at the end; play() above sends it back to 0.
+  source.onended=()=>{ isPlaying=false; pausedAt=audioBuffer.duration;
+                       $('play').textContent='Play'; };
   source.start(0,pausedAt); startedAt=ctx.currentTime-pausedAt; isPlaying=true; $('play').textContent='Pause'; }
-function pause(){ if(!source)return; pausedAt=pos(); try{source.stop();}catch(e){} isPlaying=false; $('play').textContent='Play'; }
+function pause(){ if(!source)return;
+  // Clamped, as seek() already was. pos() runs free of the buffer, so an unclamped store here
+  // handed play() an offset past the end.
+  pausedAt=Math.max(0,Math.min(audioBuffer?audioBuffer.duration:pos(),pos()));
+  stopSource(); isPlaying=false; $('play').textContent='Play'; }
 const pos=()=>isPlaying?ctx.currentTime-startedAt:pausedAt;
-function seek(x){ if(!audioBuffer)return; const was=isPlaying; if(isPlaying){try{source.stop();}catch(e){}isPlaying=false;}
+function seek(x){ if(!audioBuffer)return; const was=isPlaying; if(isPlaying){stopSource();isPlaying=false;}
   pausedAt=Math.max(0,Math.min(audioBuffer.duration-0.1,x));
   prevT=-1; resetOnsetCursors(pausedAt); if(was)play(); }
 
@@ -3470,8 +3507,8 @@ async function loadFile(file){
   $('hGenre').textContent=director.genre.primary+'  ('+(director.genre.confidence)+')';
   $('hBpm').textContent=director.tempo.bpm+' BPM';
   buildTimelineUI();
-  const nOn=director.events.onsets
-    ? BANDS.reduce((a,b)=>a+((director.events.onsets[b]||[]).length),0) : 0;
+  const onsets=(director.events&&director.events.onsets)||null;
+  const nOn=onsets ? BANDS.reduce((a,b)=>a+((onsets[b]||[]).length),0) : 0;
   showStat(director.sections.length+' sections · '+director.genre.primary
     +(nOn?' · '+nOn+' sounds':'')); hideStat(1800);
   pausedAt=0; prevT=-1; resetOnsetCursors(0); play();
