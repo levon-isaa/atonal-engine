@@ -3554,12 +3554,22 @@ function frame(){
   // TFREEZE pins the clock so the camera stops, which is the only way to A/B two builds on the
   // same frame. Companion to QLOCK; both exist because reasoning about render defects instead of
   // measuring them has cost several wrong fixes here.
-  const now=performance.now(); let dt=Math.min(.05,(now-last)/1000); last=now;
+  const now=performance.now(); const rawMs=now-last;
+  let dt=Math.min(.05,rawMs/1000); last=now;
   let time=(now-t0)/1000;
   if(window.TFREEZE!=null){ time=window.TFREEZE; dt=0; }   // pins clock AND every dt-integrated
   // value (camera angle, spin, springs) — pinning the clock alone leaves the orbit still moving.
   PERF.n++;
-  frameAvg += (Math.min(80,dt*1000)-frameAvg)*0.1;   // adaptive quality: scale render res to hold fps
+  // MEASURE THE FRAME, NOT THE INTEGRATION STEP. dt is clamped to 50ms so one stall cannot
+  // teleport the animation, and frameAvg was fed from it — which capped the governor's own signal
+  // at 50, made the inner Math.min(80,..) dead code, and left the canvas branch below (>55ms)
+  // UNREACHABLE UNDER ANY LOAD. Everything slower than 20fps looked exactly like 20fps, so the
+  // one control that exists for a frame in real trouble had never run.
+  // The 200ms clamp here does a different job from the dt clamp: it stops a single stall (a tab
+  // switch, the analyse pass) dominating the average, rather than hiding the steady state.
+  // TFREEZE zeroes dt but not rawMs, so a pinned frame still measures — it used to drag frameAvg
+  // toward zero exactly while someone was holding a heavy frame still in order to look at it.
+  frameAvg += (Math.min(200,rawMs)-frameAvg)*0.1;
   if(now-lastQ>500){ lastQ=now;
     // ceiling is 1.45: above 1.0 the march genuinely supersamples, which the post pass
     // resolves with a real 4-tap tent — the cleanest edges available for the cost
@@ -4016,6 +4026,12 @@ function frame(){
   // the section's held lean plus the tumble, as ONE angle -- see TUMBLE_BEATS for why they are
   // not two uniforms
   gl.uniform1f(US('u_tilt'),VAR.tilt+formTumble);
+  // u_wob was declared, read by map()'s surface-noise amplitude, and never uploaded — so it read
+  // 0 forever and its term was dead, while rerollVariant kept choosing a value for it every
+  // section. Either the variation was meant to exist or the uniform was not; this wires it, which
+  // is what the reroll and the shader both already assume. Amplitude is unchanged: it enters the
+  // same na budget at 0.010, alongside terms of 0.030 and 0.014.
+  gl.uniform1f(US('u_wob'),VAR.wob);
   gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_swirl'),formSwirl);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
