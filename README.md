@@ -190,7 +190,11 @@ raymarch creases.
 - **Shape** — `Auto · Director` lets the Director pick, or lock one of Shell / Ovoid / Cross /
   Lattice / Column / Disc, plus `Reference mesh` (a BVH over a 4,608-triangle mesh packed into
   textures, `assets/mesh_*.f32`) and `Custom SVG…`.
-- **Material** — Pearl, Glass, Clay, Frosted, Holographic. Glass **marches its own
+- **Material** — Chrome, Gold, Plastic, Matte, Pearl, Glass, Clay, Frosted, Holographic.
+  Gold carries its own **`f0Tint`** (1.00, 0.77, 0.34), read off the preset rather than the eased
+  value: metal reflectance is a discrete identity, and easing it would cross-fade a switch to
+  Chrome through white on the way. Gold is not chrome with a yellow light on it.
+  Glass **marches its own
   interior**: the field is negative inside the form, so `-mapD` carries the refracted ray to where
   it actually leaves. That gives thickness, which drives Beer-Lambert absorption so thin edges stay
   clear and the body deepens in colour, and a second refraction at the exit surface, where the
@@ -212,6 +216,17 @@ raymarch creases.
   blending the sampled normals first and perturbing once flattens anything facing a corner.
   `u_txAmp` stays the material's tilt in radians, so every preset keeps its relative weighting.
 - **Finish** — gloss/iridescence multiplier layered over the material preset.
+- **Wear** — edge abrasion, and the opposite of the cavity mask: the cavity mask darkens
+  recesses (dirt collects), wear roughens and thins the coating on the **high points** (they rub
+  against everything else). A surface wants both. It costs nothing to compute — the edge signal
+  is the rate the shading normal turns across a pixel, which the specular-AA term already derives
+  and then discards. Being screen-space, a fillet reads as an edge at any zoom. It sits beside the
+  material rather than inside it, because wear is a property of the object's history, not of what
+  it is made of: chrome and plastic can both be worn.
+- **Lighting** — four prefiltered HDRI environments (Studio · daylight, Studio · small, Dawn,
+  City; CC0, Poly Haven) plus `Analytic room`, which is the built-in fallback exposed as a choice.
+  Each `.bin` is an 8-level equirect chain, one `textureLod` at runtime. See *Image-based
+  lighting* below.
 
 Detail used to be **procedural** (`fbmT`), and the notes from that period are kept because the
 measurements still hold for anyone reaching for noise here. Detail is amplitude x frequency, and
@@ -299,6 +314,34 @@ the code was asking for half of it.
   current section's mood and slams the saturation; or pick Blood / Acid / Ultra / Cyber /
   Solar / Mono, or set the two colours by hand. The palette also feeds the duotone inks,
   so the whole frame stays on one colourway.
+
+## Image-based lighting
+
+The environments are **prefiltered offline** by `tools_pmrem.py`, which turns a Radiance `.hdr`
+into an 8-level equirect mip chain stored as one float16 blob (`AENV` magic, 1.05 MB each):
+
+```bash
+python tools_pmrem.py studio.hdr assets/env_studio.bin
+```
+
+Doing the convolution in the browser was the alternative and it is strictly worse: it is the
+expensive part, it never changes, and paying for it on every page load buys nothing. Shipping the
+finished chain makes the runtime cost of IBL **one `textureLod`** — measured *cheaper* than the
+analytic room it replaced (54.7 ms → 51.5 ms).
+
+**Not hardware mips.** Tried first, measured, rejected: box-filtering an equirect map is far too
+aggressive a convolution. By the level a satin surface selects, the room is a smear, and the render
+came out *flatter* than the analytic room — the form's luminance range collapsed from 91 levels to
+26, and it was slightly slower besides. A mip level here is a GGX lobe of a specific roughness,
+importance-sampled with a Hammersley sequence, which is a different filter entirely and the one
+the BRDF actually asks for. The **last** level is a *cosine* convolution rather than GGX, because
+that level is what the diffuse term reads, and what a diffuse surface integrates is the
+cosine-weighted hemisphere.
+
+The parameterisation is **equal-area** (`y = sin(elevation)`), which is why no `sin(theta)`
+weighting appears in the convolution: every texel already covers the same solid angle. Getting
+that wrong biases the whole result toward the poles. Verified by energy conservation — every mip
+mean lands within 1% of the source's 0.720.
 
 ## Clearcoat and subsurface
 
