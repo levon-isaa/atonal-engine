@@ -836,6 +836,59 @@ float evalForm(vec3 p){
    step through. Mixing a folded POSITION into an unfolded one — the obvious way to blend this —
    has no such guarantee: a domain map whose derivative passes through zero compresses space and
    the field then overestimates in the compressed direction. */
+/* WHICH PROFILES CAN BE FOLDED, and at what order. Returns the profile's rotational symmetry
+   about z, or 0 for "no symmetry to fold on, use the union instead".
+
+   THIS GATE IS THE WHOLE LESSON of the previous attempt, recorded above. A domain fold by 2PI/N
+   only maps arms onto arms if the profile really is C_N; on one that is not, it cuts the form and
+   replicates a slice, and the surviving pieces come apart. Read off the constructions rather than
+   assumed -- and the reading disagrees with the older note, which said only p2Tris and p2Clover:
+
+     mArray   p2Tris     loop at i*2PI/N, N=clamp(segN,2,8)          -> C_segN
+     mStack   p2Clover   loop at i*2PI/N plus a centred disc         -> C_segN
+     mGear    p2Gear     teeth at i*2PI/2N, circular rim and bore    -> C_2segN, so C_segN holds
+     mKnot    p2Knot     loop at i*2PI/N, N=clamp(segN,2,6)          -> C_segN AT ITS OWN CLAMP
+     mRings   p2Arc      p.x=abs(p.x): one mirror, no rotation       -> none
+     mTruss   p2Chev     two mirrored chevrons                       -> none
+     mPods    p2Wave     a Z-stroke, C2 at best and never C_segN     -> none
+     mAperture p2Plate   rounded SQUARE (C4) cut by THREE bores (C3) -> C1, none
+     mLattice p2Lattice  parallel bars, translational                -> none
+
+   p2Knot matters: it clamps its own N to 2..6, so a fold at segN=8 would be folding at an order
+   the profile does not have. It gets its clamp, not segN's.
+
+   The imported mesh and the uploaded SVG replace the generated set outright in evalMode() and
+   have no symmetry at all, so they are excluded first. */
+float foldOrder(float m){
+  if(u_volOn>0.5 || u_svgOn>0.5) return 0.0;
+  float n=clamp(floor(u_segN+0.5),2.0,8.0);
+  if(m<1.5)      return n;                       // Tris, Clover
+  else if(m<5.5) return 0.0;                     // Arc, Chevron, Wave, Plate
+  else if(m<6.5) return n;                       // Gear: C_2n contains C_n
+  else if(m<7.5) return clamp(n,2.0,6.0);        // Knot, at its own clamp
+  return 0.0;                                    // Lattice
+}
+/* The order the FOLD may use, which is the order the whole evaluated field has. evalForm blends
+   two modes whenever u_mix is live, and a blend of a C_3 and a C_5 form is neither -- so the two
+   have to agree before anything may be folded. */
+float kalOrder(){
+  float a=foldOrder(u_mode);
+  if(a<1.5) return 0.0;
+  if(u_mix>0.001 && abs(a-foldOrder(u_mode2))>0.5) return 0.0;
+  return a;
+}
+/* THE DOMAIN FOLD. Polar, about Z, into a wedge of half-angle PI/N with the mirror plane at
+   u_kalPh. One isometry on the sample point, so f(fold(p)) is exactly as Lipschitz as f, and the
+   form is evaluated ONCE -- where the union costs two evaluations for as long as it is on. */
+vec3 kalFold(vec3 p,float N){
+  float w=PI/N;
+  float a=atan(p.y,p.x)-u_kalPh;
+  a-=2.0*w*floor((a+w)/(2.0*w));                 // wrap into [-w, w)
+  a=abs(a)+u_kalPh;                              // mirror about the plane at u_kalPh
+  float r=length(p.xy);
+  p.xy=vec2(cos(a),sin(a))*r;
+  return p;
+}
 vec3 kalMirror(vec3 p){
   float c=cos(2.0*u_kalPh), sn=sin(2.0*u_kalPh);   // reflection about the line at angle u_kalPh
   p.xy=vec2(c*p.x+sn*p.y, sn*p.x-c*p.y);
@@ -876,10 +929,27 @@ vec2 map(vec3 wp){
   else{
   // KALEIDOSCOPE: the form softly unioned with its own reflection, faded in by u_kal. Off costs
   // one evalForm and skips the second entirely; on costs two, for as long as it is on.
-  float d=evalForm(p);
-  if(u_kal>0.002){
+  /* KALEIDOSCOPE. A domain FOLD where the profile has a rotational symmetry to fold on, and the
+     mirror UNION everywhere else -- see foldOrder() for which is which and why the gate exists.
+     The fold is the better construction on both counts that matter: it has no intersection curve,
+     so it cannot crease, and at a fully open fold it evaluates the form ONCE, where the union
+     always costs two. It just cannot be applied to a profile that is not C_N. */
+  float d;
+  float kalN=(u_kal>0.002)?kalOrder():0.0;
+  if(u_kal>0.998 && kalN>1.5){
+    d=evalForm(kalFold(p,kalN));                 // the cheap path: one evaluation, no seam
+  } else if(u_kal>0.002){
     float kk=clamp(u_kal,0.,1.); kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
-    d=mix(d, smin(d, evalForm(kalMirror(p)), 0.08), kk);
+    if(kalN>1.5){
+      // Fading: blend the two FIELDS, never the two positions. A domain map blended toward the
+      // identity stops being an isometry, and a compressed domain makes the field overestimate.
+      d=mix(evalForm(p), evalForm(kalFold(p,kalN)), kk);
+    } else {
+      d=evalForm(p);
+      d=mix(d, smin(d, evalForm(kalMirror(p)), 0.08), kk);
+    }
+  } else {
+    d=evalForm(p);
   }
   // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
   // surface chatter. Amplitude is divided back down by the frequency: displacement gradient
