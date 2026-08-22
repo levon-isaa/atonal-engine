@@ -786,6 +786,27 @@ float evalForm(vec3 p){
    relationship to the form it came from. Measured by eye against the same pose: the folded version
    was roughly half the silhouette area and shared no feature with the original.
 
+   TRIED A SECOND TIME AND REVERTED, so the next person does not spend the day on it. The obvious
+   repair to the above is to fold about Z instead of Y (these profiles are drawn in xy, so Z is
+   the axis their structure is actually on) and to take the wedge from u_segN, the form's own
+   segment count -- the argument being that the profiles are already C_N about z, so folding by
+   2PI/N maps every arm onto an arm that was already there and only the abs() adds anything.
+
+   The argument is sound and the premise is false, and the note below says so twenty lines further
+   down: only p2Tris and p2Clover are N-fold at all. p2Wave is C2 at best and four of the six
+   modes are like it. On a profile that is NOT C_N, folding by 2PI/N does not map arms onto arms;
+   it cuts the form and replicates a slice, and the pieces that survive are DISCONNECTED. Under
+   Director-driven playback -- auto shape, a morph in flight, segments off their default -- a drop
+   rendered the form as a body plus two detached fragments floating beside it.
+
+   It measured well on every static test: silhouette retention 0.73 against the first attempt's
+   0.50, and a cost of -12% against the union's +64%, because a fully open fold is one evalForm
+   where the union is two. All of that is still true. It was verified on the Triskelion, which is
+   one of the two shapes where the premise holds, and a frozen-pose sweep never reproduced the
+   fragmentation. If this is attempted again: gate the fold on the profile actually being C_N and
+   keep the union for the rest, and make the test a CONNECTED-COMPONENT count under a playing
+   track, not a still frame.
+
    A union cannot lose anything. min(f, f∘mirror) contains the original exactly, plus its
    reflection, so every feature survives and the form GROWS into a symmetric version of itself
    rather than being cut down into one. The profiles are already N-fold symmetric about z (p2Tris
