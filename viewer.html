@@ -312,7 +312,12 @@ if(FILE_MODE){
 
 /* ======================= WEBGL ======================= */
 const glc=$('gl');
-const gl=glc.getContext('webgl2',{antialias:false,alpha:false,preserveDrawingBuffer:false});
+// preserveDrawingBuffer stays FALSE in normal use - it forces the driver to keep a copy of every
+// frame. ?readback turns it on for measurement only: without it the canvas reads back empty from
+// anywhere outside the render callback, so any pixel metric silently returns zero rather than
+// failing, which is the worst way for a measurement to be wrong.
+const gl=glc.getContext('webgl2',{antialias:false,alpha:false,
+  preserveDrawingBuffer:location.search.indexOf('readback')>=0});
 let floatOK=false;
 if(gl){ floatOK=!!gl.getExtension('EXT_color_buffer_float'); gl.getExtension('OES_texture_float_linear'); }
 
@@ -3333,12 +3338,27 @@ const LOOKS={
   hard:    {...LOOK_DEF, grain:0.00,contrast:0.10,sat:0.06,sharp:0.30,
             bevK:0.30,hardAmb:1.00,hardWrap:1.00,flatTex:1.00},
 };
-// DEFAULT LOOK. Hard surface, not Studio. It shipped as an opt-in first and the report back was
-// that nothing had changed -- which was true of what was on screen, because the dropdown still
-// opened on Studio and nothing in the engine ever selects a look on its own. A look nobody
-// selects is a look nobody has. Studio is one click away and byte-for-byte what it always was.
-let lookName='hard';
-const LK =Object.assign({},LOOKS.hard), LKT=Object.assign({},LOOKS.hard);
+/* DEFAULT LOOK: STUDIO, and this REVERSES af21fe0, which made Hard surface the default to match
+   a flat-shaded reference supplied at the time. A newer reference (sticky.ui8.dev) wants the
+   opposite -- product-render modelling, where a form's faces separate by their angle to the key.
+   Hard surface is built to suppress exactly that: it lifts ambient, lifts the AO and cast-shadow
+   floors, and flattens the texture, all so faces meeting at an edge each hold ONE tone.
+
+   Measured on one frozen frame, one load, switching only the look. Mean luminance of two patches
+   on faces that meet at a right angle, and the spread across all three visible faces:
+
+                front   side    top    spread   front vs side
+     hard       182.3   155.3   197.3    42          27
+     studio     137.5   198.4   206.9    69          61
+     clean      124.0   187.8   197.1    73          64
+     chrome     196.3    50.6   197.1   147         146
+
+   Two perpendicular faces reading 27 apart is a sticker; 61 is a solid. (A second pass on hard
+   read 13 -- the form turns slowly, so patches land differently, which is why the comparison is
+   about the size of the gap and not the exact figure.) Hard surface is one call away as
+   window.LOOK('hard') and is byte-for-byte what it always was. */
+let lookName='studio';
+const LK =Object.assign({},LOOKS.studio), LKT=Object.assign({},LOOKS.studio);
 
 let director=null, audioBuffer=null, ctx=null, source=null, isPlaying=false, startedAt=0, pausedAt=0;
 
