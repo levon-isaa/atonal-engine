@@ -190,7 +190,11 @@ raymarch creases.
 - **Shape** — `Auto · Director` lets the Director pick, or lock one of Shell / Ovoid / Cross /
   Lattice / Column / Disc, plus `Reference mesh` (a BVH over a 4,608-triangle mesh packed into
   textures, `assets/mesh_*.f32`) and `Custom SVG…`.
-- **Material** — Pearl, Glass, Clay, Frosted, Holographic. Glass **marches its own
+- **Material** — Chrome, Gold, Plastic, Matte, Pearl, Glass, Clay, Frosted, Holographic.
+  Gold carries its own **`f0Tint`** (1.00, 0.77, 0.34), read off the preset rather than the eased
+  value: metal reflectance is a discrete identity, and easing it would cross-fade a switch to
+  Chrome through white on the way. Gold is not chrome with a yellow light on it.
+  Glass **marches its own
   interior**: the field is negative inside the form, so `-mapD` carries the refracted ray to where
   it actually leaves. That gives thickness, which drives Beer-Lambert absorption so thin edges stay
   clear and the body deepens in colour, and a second refraction at the exit surface, where the
@@ -202,16 +206,29 @@ raymarch creases.
   because the shared near-white base blew out across every lit face.
 
 
-- **Detail** — the surface normal map: `Micro tooth` (default, isotropic) or `Machined`
-  (brushed). **Baked on the GPU at load** into an 8192² RGBA16F texture, not loaded from disk;
-  `assets/detail_*.png` remain only as the fallback for a context without float render targets.
-  See *Surface detail* below for why. Sampled
-  **triplanar**, since a raymarched SDF has no UVs: three projections along the object axes,
-  weighted by `pow(abs(n), 6)`. The three are combined with a **whiteout blend** — the geometric
-  normal is perturbed inside each projection frame and the results are then mixed, because
-  blending the sampled normals first and perturbing once flattens anything facing a corner.
-  `u_txAmp` stays the material's tilt in radians, so every preset keeps its relative weighting.
+- **Surface detail is gone**, and with it the `Detail` selector and the `Surface` toggle. They
+  were one decision wearing two hats: Surface off zeroed `u_txAmp` and `u_txRough`, the amplitudes
+  the map was multiplied by, so `Smooth` already made `Detail` inert while still baking and
+  sampling it. The look decided it — a triplanar tooth map on the large flat faces of an extruded
+  profile reads as orange peel and breaks the specular into mush where the reference holds one
+  clean sweep along the bevel. The shading normal is now the geometric normal.
+  Removed with it: the GPU bake (4096² RGBA16F, 171 MB resident and ~104 ms at load), the PNG
+  fallbacks, the analytic ray differentials that picked its mip level, `fbmT`'s five procedural
+  octaves, 12 uniforms and 7 diagnostic modes. The measurement notes below are kept as a record
+  of what was learned, not as a description of what runs.
+
 - **Finish** — gloss/iridescence multiplier layered over the material preset.
+- **Wear** — edge abrasion, and the opposite of the cavity mask: the cavity mask darkens
+  recesses (dirt collects), wear roughens and thins the coating on the **high points** (they rub
+  against everything else). A surface wants both. It costs nothing to compute — the edge signal
+  is the rate the shading normal turns across a pixel, which the specular-AA term already derives
+  and then discards. Being screen-space, a fillet reads as an edge at any zoom. It sits beside the
+  material rather than inside it, because wear is a property of the object's history, not of what
+  it is made of: chrome and plastic can both be worn.
+- **Lighting** — four prefiltered HDRI environments (Studio · daylight, Studio · small, Dawn,
+  City; CC0, Poly Haven) plus `Analytic room`, which is the built-in fallback exposed as a choice.
+  Each `.bin` is an 8-level equirect chain, one `textureLod` at runtime. See *Image-based
+  lighting* below.
 
 Detail used to be **procedural** (`fbmT`), and the notes from that period are kept because the
 measurements still hold for anyone reaching for noise here. Detail is amplitude x frequency, and
@@ -224,7 +241,10 @@ nothing to filter because the octaves fine enough to alias were the ones already
 no amplitude. A sampled map sidesteps that ceiling entirely: its detail is band-limited by the
 image and filtered by the hardware.
 
-### Surface detail: why it is baked, not shipped
+### Surface detail: why it was baked, and why it is gone
+
+*Kept as a record of what was measured. The detail map itself was removed — see the Surface
+note under the controls above.*
 
 The 512² 8-bit PNGs that preceded this were wrong in three separate ways, each measured on a
 locked frame with the form filling 1474 canvas px.
@@ -299,6 +319,34 @@ the code was asking for half of it.
   current section's mood and slams the saturation; or pick Blood / Acid / Ultra / Cyber /
   Solar / Mono, or set the two colours by hand. The palette also feeds the duotone inks,
   so the whole frame stays on one colourway.
+
+## Image-based lighting
+
+The environments are **prefiltered offline** by `tools_pmrem.py`, which turns a Radiance `.hdr`
+into an 8-level equirect mip chain stored as one float16 blob (`AENV` magic, 1.05 MB each):
+
+```bash
+python tools_pmrem.py studio.hdr assets/env_studio.bin
+```
+
+Doing the convolution in the browser was the alternative and it is strictly worse: it is the
+expensive part, it never changes, and paying for it on every page load buys nothing. Shipping the
+finished chain makes the runtime cost of IBL **one `textureLod`** — measured *cheaper* than the
+analytic room it replaced (54.7 ms → 51.5 ms).
+
+**Not hardware mips.** Tried first, measured, rejected: box-filtering an equirect map is far too
+aggressive a convolution. By the level a satin surface selects, the room is a smear, and the render
+came out *flatter* than the analytic room — the form's luminance range collapsed from 91 levels to
+26, and it was slightly slower besides. A mip level here is a GGX lobe of a specific roughness,
+importance-sampled with a Hammersley sequence, which is a different filter entirely and the one
+the BRDF actually asks for. The **last** level is a *cosine* convolution rather than GGX, because
+that level is what the diffuse term reads, and what a diffuse surface integrates is the
+cosine-weighted hemisphere.
+
+The parameterisation is **equal-area** (`y = sin(elevation)`), which is why no `sin(theta)`
+weighting appears in the convolution: every texel already covers the same solid angle. Getting
+that wrong biases the whole result toward the poles. Verified by energy conservation — every mip
+mean lands within 1% of the source's 0.720.
 
 ## Clearcoat and subsurface
 
@@ -388,17 +436,19 @@ to answer "make it look better", and two of the three were named after their imp
 tier is now a complete point on the cost/quality curve, so the axes move together and cannot be
 left in a nonsensical combination — supersampled, with the shadow budget of a preview.
 
-| | render scale | shadow samples | march step | shafts | detail bake | measured |
-|---|---|---|---|---|---|---|
-| Preview | governor capped at 0.72 | 40 | 1.70 | off | 2048 (43 MB) | 5.2 Mpx, **59.3 fps** |
-| High | governor to 1.0 | 128 | 1.45 | on | 8192 (683 MB) | 5.3 Mpx, **41.2 fps** |
-| Ultra | 1.35 fixed, no adaptation | 200 | 1.25 | on | 8192 (683 MB) | 8.6 Mpx, **26.0 fps** |
+| | render scale | shadow samples | march step | shafts | measured |
+|---|---|---|---|---|---|
+| Preview | governor capped at 0.72 | 40 | 1.70 | off | 5.2 Mpx, **59.3 fps** |
+| High | governor to 1.0 | 128 | 1.45 | on | 5.3 Mpx, **41.2 fps** |
+| Ultra | 1.35 fixed, no adaptation | 200 | 1.25 | on | 8.6 Mpx, **26.0 fps** |
+
+The fps figures predate the removal of the detail map and are therefore conservative. The
+per-tier bake column is gone because there is no bake.
 
 Every knob is one with measured cost behind it: 40 → 128 shadow samples was 12.6 → 15.1 ms for a
 3.1× error cut, so Preview takes it back and Ultra spends 200 where the 1/N curve is still paying;
 the march step was measured at 1.45 → 20 fps against 1.70 → 24 fps at native, so Preview buys real
-time there. The detail bake is re-run only when the size actually changes — it is 170–230 ms at
-8192, and running it on every press would stall the frame for nothing.
+time there.
 
 **A tier binds the governor rather than suggesting to it.** Preview's render scale was handed
 straight back on the first build: the governor saw the headroom Preview had just bought, spent it
@@ -484,9 +534,9 @@ identical frame. `DBGMASK = 1` outputs the depth-derived silhouette instead of t
 `DX = {bloom, chroma, sharpen, thr}` ablates individual post-pass terms and
 `DXS = {ao, shadow, disp, twoTone}` does the same for the scene pass — set `DXS.shadow = 0` and
 the contour banding above vanishes in one step, which is how it was pinned on `calcSha()` rather
-than on the detail map it was sitting under. `window.__DBAKE` reports what the detail bake
-actually uploaded (size, format, solved gradient scale). All of it exists because reasoning about
-render defects instead of measuring them has cost several wrong fixes here.
+than on the detail map it was sitting under. `KEYG` / `FILLG` / `AMBG` override the three IBL rig
+gains for sweeping the key-to-ambient ratio. All of it exists because reasoning about render
+defects instead of measuring them has cost several wrong fixes here.
 
 ## Next
 Camera + world evolution driven further by the Director State (per-section framing,

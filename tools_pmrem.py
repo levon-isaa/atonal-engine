@@ -128,7 +128,13 @@ def convolve(src, W, H, rough, nsamp, cosine=False):
     return (acc / np.maximum(wsum, 1e-9)).astype(np.float32)
 
 if __name__ == '__main__':
-    SRC = '/private/tmp/claude-501/-Users-levonkostandyan-Desktop-Atonal/5dacd0d3-2aec-4f18-82c4-9bf98ac03536/scratchpad/studio.hdr'
+    # Both paths come from the command line. They were hardcoded when this was committed —
+    # an absolute path into a temp directory on one machine, which meant the tool in the repo
+    # could not be run by anyone including its author after that directory was cleaned up.
+    #     python tools_pmrem.py studio.hdr assets/env_studio.bin
+    if len(sys.argv) != 3:
+        raise SystemExit('usage: python tools_pmrem.py <source.hdr> <dest.bin>')
+    SRC, DST = sys.argv[1], sys.argv[2]
     img = read_hdr(SRC)
     print('source', img.shape, 'lum mean %.3f max %.1f' % (img.mean(), img.max()))
     # Work from a half-size copy: the 2K source is far more detail than any level needs, and
@@ -148,5 +154,5 @@ if __name__ == '__main__':
               (L, w, h, rough, 'cosine' if cos else 'ggx', lv.mean()))
     out = b''.join(b.tobytes() for b in blobs)
     hdr = struct.pack('<4sHHHH', b'AENV', W0, H0, LEVELS, 3)
-    open('/Users/levonkostandyan/Desktop/Atonal/assets/env_studio.bin', 'wb').write(hdr + out)
-    print('wrote assets/env_studio.bin  %.2f MB' % ((len(hdr)+len(out))/1e6))
+    open(DST, 'wb').write(hdr + out)
+    print('wrote %s  %.2f MB' % (DST, (len(hdr)+len(out))/1e6))
