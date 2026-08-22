@@ -395,7 +395,6 @@ uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
 uniform float u_bLow,u_bHigh,u_bAir;
-uniform float u_shock,u_shockA;
 // emotion -> geometry: these drive the construction parameters of the forms
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
@@ -407,7 +406,7 @@ uniform int u_shaN;
 uniform sampler2D u_detail;          // RGB = tangent-space normal, A = roughness modulation
 uniform float u_detailOn,u_detailScale;
 uniform float u_diag;                // 0 off; 1 triplanar weights; 2 geometric normal; 3 detail deviation; 4 blend RMS
-uniform float u_svgOn,u_svgDepth,u_svgBevel,u_svgPad;
+uniform float u_svgOn,u_svgDepth,u_svgBevel;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
 uniform float u_fill;                  // directional fill leg of the rig; 0 ablates it (DXS.fill)
@@ -443,10 +442,6 @@ float n3(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*f*(f*(f*6.-15.)+10.);
   float a=h31(i),b=h31(i+vec3(1,0,0)),c=h31(i+vec3(0,1,0)),d=h31(i+vec3(1,1,0));
   float e=h31(i+vec3(0,0,1)),g=h31(i+vec3(1,0,1)),hh=h31(i+vec3(0,1,1)),k=h31(i+vec3(1,1,1));
   return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,g,f.x),mix(hh,k,f.x),f.y),f.z);}
-float sdBox(vec3 p,vec3 b){vec3 d=abs(p)-b;return length(max(d,0.))+min(max(d.x,max(d.y,d.z)),0.);}
-float sdRBox(vec3 p,vec3 b,float r){vec3 d=abs(p)-b+r;return length(max(d,0.))+min(max(d.x,max(d.y,d.z)),0.)-r;}
-float sdTorus(vec3 p,vec2 t){vec2 q=vec2(length(p.xz)-t.x,p.y);return length(q)-t.y;}
-float smax(float a,float b,float k){return -smin(-a,-b,k);}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}
 // TEXTURE NOISE — 5 octaves, normalised. A procedural material has no texel grid to raise, so
 // its resolution IS its octave count: 2 octaves can only ever produce soft blobs at one scale.
@@ -482,46 +477,16 @@ float fbmT(vec3 p){
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
    The emotion curves drive the CONSTRUCTION parameters (twist, density, thickness, cut). */
-/* ---- FORMS ----
-   Pierced shells, fitted to the reference mesh rather than guessed at.
-
-   Three measurements drove every constant here, and each overturned an assumption:
-
-   1. The reference has NO symmetry. Aligned to its own principal axes, every candidate
-      operation (2-fold, 3-fold, 4-fold, inversion) still leaves a mean vertex error of
-      0.16-0.30, and its half-extents are 0.894 / 1.134 / 1.321 — all different. Perfectly
-      symmetric forms read as generated, which is what the earlier sets were. The bodies here
-      are anisotropic for that reason.
-   2. It is HOLLOW. Solid fraction 0.0217 of the sampled volume; a solid body with bores cannot
-      get below 0.0322 without breaking into pieces. That gap is the whole difference — the
-      reference is a shell of about 0.13 wall, not a lump with holes drilled in it.
-   3. Bore radius is bounded by CONNECTIVITY, not by taste. Past roughly 0.48 on these bodies
-      the shell separates into 2-6 components. Each radius below was fitted by sweeping until
-      the solid fraction matched the reference with the form still in one piece; every one is
-      within 8% of 0.0217.
-
-   Irregularity comes from the BODY only. Jittering the bore axes was tried and abandoned: it
-   fragmented four of six variants, and connectivity matters more than subtle asymmetry.
-
-   All six measured at max positive directional derivative 1.00 — the march cannot overshoot. */
-float sdEllip(vec3 p,vec3 R){                          // conservative: scale by the SMALLEST radius
-  return (length(p/R)-1.0)*min(R.x,min(R.y,R.z));
-}
-float shellBody(vec3 p,vec3 R,float t){                // hollow, not solid — see (2) above
-  return max(sdEllip(p,R), -sdEllip(p,R-vec3(t)));
-}
-float boreSub(float d,vec3 p,vec3 a,float r,float k){
-  return smax(d, -(length(p-a*dot(p,a))-r), k);        // a must be unit length
-}
-vec3 tetAxis(int i){
-  vec3 a=(i==0)?vec3( 1, 1, 1):(i==1)?vec3( 1,-1,-1):
-         (i==2)?vec3(-1, 1,-1):vec3(-1,-1, 1);
-  return a*0.5773502692;
-}
-float boreTet(float d,vec3 p,float r,float k){
-  for(int i=0;i<4;i++) d=boreSub(d,p,tetAxis(i),r,k);
-  return d;
-}
+/* MEASURED OFF THE REFERENCE MESH, and still true of it — the constants they produced belonged
+   to the pierced-shell family that the extruded profiles below replaced, but the measurements
+   themselves are about the reference and are kept because they are what a future family would
+   have to be fitted against again:
+     - It has NO symmetry. Aligned to its own principal axes, every candidate operation (2-, 3-,
+       4-fold, inversion) still leaves a mean vertex error of 0.16-0.30, and its half-extents are
+       0.894 / 1.134 / 1.321 — all different. Perfectly symmetric forms read as generated.
+     - It is HOLLOW: solid fraction 0.0217 of the sampled volume, where a solid body with bores
+       cannot get below 0.0322 without breaking into pieces. A shell of about 0.13 wall, not a
+       lump with holes drilled in it. */
 /* ================= EXTRUDED PROFILE SHAPES =================
    Rebuilt to the reference's form language. The previous set were ellipsoid shells with holes
    bored through them — organic blobs, which is why they read as lumps of material rather than as
@@ -544,7 +509,6 @@ float s2Seg(vec2 p,vec2 a,vec2 b,float r){
 }
 float s2Disc(vec2 p,float r){ return length(p)-r; }
 float s2Box(vec2 p,vec2 b,float r){ vec2 d=abs(p)-b+r; return min(max(d.x,d.y),0.0)+length(max(d,0.0))-r; }
-float s2Ring(vec2 p,float R,float w){ return abs(length(p)-R)-w; }
 float sMin2(float a,float b,float k){ float h=clamp(0.5+0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)-k*h*(1.0-h); }
 float sMax2(float a,float b,float k){ float h=clamp(0.5-0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)+k*h*(1.0-h); }
 mat2 rr2(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
@@ -2636,6 +2600,11 @@ function initLdr(w,h){
   ldrF=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,ldrF);
   gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,ldrT,0);
   gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  // LEAVES NO BINDING BEHIND. Everything above ran against whichever unit was active when this
+  // was called, and leaking ldrT onto it is how the caller ends up sampling its own render
+  // target. The call site now runs before the pass sets its units up, and this makes the leak
+  // impossible to reintroduce from a future one.
+  gl.bindTexture(gl.TEXTURE_2D,null);
   ldrW=w; ldrH=h;
 }
 let ldrW=0, ldrH=0;
@@ -3239,7 +3208,6 @@ const BND ={sub:0,low:0,mid:0,high:0,air:0};          // sustained band level
 const DECAY ={sub:3.6,low:4.0,mid:5.4,high:8.0,air:11.0};
 const ATTACK={sub:9,low:10,mid:13,high:19,air:25};
 const OCUR={sub:0,low:0,mid:0,high:0,air:0};          // per-band cursor into the onset list
-let shockT=9, shockA=0;                                // mid-band shockwave ring
 function resetOnsetCursors(t){                         // after a seek, re-place every cursor
   const on=director&&director.events&&director.events.onsets; if(!on) return;
   for(const b of BANDS){ const a=on[b]; if(!a){OCUR[b]=0;continue;}
@@ -3873,7 +3841,6 @@ function frame(){
         while(OCUR[b]<a.length && a[OCUR[b]][0]<=t){
           const s=a[OCUR[b]][1];
           HIT[b]=Math.max(HIT[b],s);
-          if(b==='mid'||b==='high'){ shockT=0; shockA=Math.max(shockA,s*(b==='mid'?0.9:0.5)); }
           OCUR[b]++; } }
     }
     for(const b of BANDS) BND[b]=sm(BND[b],sampleCurve(b,t),8.0,dt);
@@ -3994,8 +3961,7 @@ function frame(){
   // per-band envelopes: decay the transient, then smooth its attack so hits land soft
   for(const b of BANDS){ HIT[b]*=Math.exp(-DECAY[b]*dt);
     HITS[b]+=(HIT[b]-HITS[b])*(1-Math.exp(-ATTACK[b]*dt)); }
-  shockT+=dt; shockA*=Math.exp(-2.4*dt);
-  if(twMix>0){ twMix=Math.min(1,twMix+dt/1.4); if(twMix>=1){ twA=twB; twMix=0; } }              // ring travels out and fades
+  if(twMix>0){ twMix=Math.min(1,twMix+dt/1.4); if(twMix>=1){ twA=twB; twMix=0; } }
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
   // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
   // individual sounds nudge the rotation — articulate, but damped so it never jitters
@@ -4033,8 +3999,7 @@ function frame(){
   // spinKick is gone. Feeding onsets into the rotation at all — as velocity OR as a decaying
   // offset — is what read as jiggle: something in the mix hits on almost every frame, so the
   // form sat permanently trembling around its own axis instead of turning. The beat still
-  // lands, via scale (u_pulse / u_hLow) and the shockwave ring, which are radial and so do not
-  // fight the rotation.
+  // lands, via scale (u_pulse / u_hLow), which is radial and so does not fight the rotation.
   // AUTO-ROTATE is a gate on the Director's orbit only. Everything else the Director decides —
   // framing distance, height, roll, the dolly on the kick — keeps running, because those are
   // composition decisions rather than "movement the user might want to take over".
@@ -4267,7 +4232,6 @@ function frame(){
   gl.uniform1f(US('u_hAir'),HITS.air);
   gl.uniform1f(US('u_bLow'),BND.low);
   gl.uniform1f(US('u_bHigh'),BND.high); gl.uniform1f(US('u_bAir'),BND.air);
-  gl.uniform1f(US('u_shock'),shockT); gl.uniform1f(US('u_shockA'),shockA);
   gl.uniform1f(US('u_valence'),valence); gl.uniform1f(US('u_warmth'),warmth); gl.uniform1f(US('u_epic'),epic);
   /* ---- EMOTION -> CONSTRUCTION: how each form is BUILT is the expression ---- */
   // twist/pitch of arrays and stacks — tension winds them up, arousal adds motion
@@ -4418,15 +4382,23 @@ function frame(){
     gl.uniform1f(UB('u_thr'), DX.thr*2.6*0.95/Math.max(0.35, 0.82+energy*0.45+pulseS*0.12+HITS.low*0.10));
     drawFS(aBright);
     gpuEnd();
-    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,brtT);
-    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
-    gpuBegin('post');
     /* When a filter is on, POST lands in the 8-bit target and the filter pass puts it on screen.
        When it is not, POST goes straight to the screen exactly as before and neither the target
        nor the extra pass exists. */
     const FILT_ON = FILT.mode>0.5;
+    /* ALLOCATED BEFORE THE UNIT BINDINGS BELOW, NOT AFTER THEM. initLdr() binds the texture it
+       creates to whatever unit happens to be active and never restores it, so running it after
+       the binds replaced hdrT on unit 0 with ldrT -- and ldrT is also ldrF's colour attachment,
+       which POST is about to render into. Sampling the target you are drawing to is a feedback
+       loop; WebGL2 answers it with INVALID_OPERATION and DROPS THE DRAW, so the frame that
+       turned a filter on lost its entire post pass -- no tonemap, no bloom, no grade. It read as
+       a one-frame flash, which is why it survived this long, and it recurred on every resize
+       that reallocated the target, not only on first use. */
     if(FILT_ON && (ldrW!==W || ldrH!==H)) initLdr(W,H);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,brtT);
+    if(mipOK) gl.generateMipmap(gl.TEXTURE_2D);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,hdrT);
+    gpuBegin('post');
     gl.useProgram(postP); gl.bindFramebuffer(gl.FRAMEBUFFER, FILT_ON?ldrF:null); gl.viewport(0,0,W,H);
     gl.uniform1i(UP('u_tex'),0); gl.uniform1i(UP('u_brt'),1);
     gl.uniform2f(UP('u_res'),W,H); gl.uniform1f(UP('u_time'),time);
