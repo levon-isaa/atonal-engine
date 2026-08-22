@@ -192,20 +192,13 @@
       <option value="dawn">Dawn</option>
       <option value="city">City</option>
       <option value="analytic">Analytic room</option></select></div>
-    <!-- Default is the ISOTROPIC map. Machined is still here, and it is now a mild 1.6:1 brush
-         rather than the 2.27:1 the PNG had, but any directional map reads as streaking on the
-         large flat faces of an extruded profile — which is not what these forms want by default. -->
-    <div class="row"><label>Detail</label><select id="selDetail">
-      <option value="micro" selected>Micro tooth</option>
-      <option value="machined">Machined</option>
-      <option value="off">None</option></select></div>
-    <!-- Surface is not a quality axis: it decides whether the object has microstructure at all,
-         which is an aesthetic decision the way Material and Finish are. It is also not the same
-         switch as Detail:None — that only drops the normal map, while this additionally gates the
-         iridescence banding and the specular sweep, so it is the one that gives a genuinely
-         featureless surface. -->
-    <div class="row"><label>Surface</label>
-      <button id="surf" class="mini on" title="The stronger of the two detail switches: off removes the normal map AND the iridescence banding and the specular sweep. Detail·None only drops the map.">Textured</button></div>
+    <!-- SURFACE MICROSTRUCTURE IS GONE, and with it the Detail selector that fed it. The two
+         controls were one decision wearing two hats -- Surface off already made Detail inert,
+         since it zeroed the very amplitude the map was multiplied by -- and the textured result
+         was the wrong look for these forms: a triplanar tooth map over a large flat extruded
+         face reads as orange peel, and it breaks the specular into mush exactly where the
+         reference keeps one clean sweep. Smooth is now the only surface, so the map, its GPU
+         bake and its PNG fallbacks are all gone rather than merely switched off. -->
   </details>
 
   <details id="gScene"><summary>Scene</summary>
@@ -264,7 +257,7 @@
          governor, a volumetric toggle and a normal-map switch in order to answer "make it look
          better" — and two of the three were named after their implementation. Quality is now a
          single ladder, and the individual switches remain reachable from the console (raysOn,
-         surfTarget, STEP.shaN) for measuring. -->
+         STEP.shaN) for measuring. -->
     <div class="row"><label>Quality</label>
       <button id="qPreview" class="mini" title="Fast — half shadow samples, no shafts, coarser march. For scrubbing and setup.">Preview</button>
       <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
@@ -370,12 +363,6 @@ uniform float u_cc,u_ccRough,u_sssD;   // clearcoat weight/roughness; subsurface
 // why the holo preset never looked holographic. Real holo film shows many bands across a
 // curved surface; it is the band COUNT, not the saturation, that makes it read as foil.
 uniform float u_iridFreq,u_tintAmt;
-// SURFACE GATE, 1 = detail on, 0 = smooth. The fbm field 'av' feeds three separate terms and
-// only one of them (the albedo grain) was scaled by u_txRough, so switching surface detail off
-// still left noise modulating the colour sweep AND the thin-film phase. That is the cloudy
-// mottling that survived both the Smooth toggle and 2x supersampling — it is not aliasing and
-// not a texture, it is noise driving a COLOUR channel that nothing was turning down.
-uniform float u_surf;
 // SCENE-SIDE ABLATION. Companion to the DX{} switches on the post pass: x=AO, y=self-shadow,
 // z=the fbm geometry displacement, w=the two-tone colour sweep, each 1 = on, 0 = off. Reasoning
 // about which term produces a given artefact has been wrong here more often than it has been
@@ -389,7 +376,6 @@ uniform vec4 u_dxs;
 // "this material is lit too brightly", and those two have opposite fixes. Set DXS.furnace=1.
 uniform float u_furnace;
 uniform float u_spec,u_alb,u_absorb;
-uniform float u_txScale,u_txAmp,u_txAniso,u_txRough;   // per-material surface texture
 uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
@@ -403,9 +389,7 @@ uniform float u_volOn,u_volPad,u_nEps;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
 uniform float u_meshOn,u_stepK,u_stepFar;
 uniform int u_shaN;
-uniform sampler2D u_detail;          // RGB = tangent-space normal, A = roughness modulation
-uniform float u_detailOn,u_detailScale;
-uniform float u_diag;                // 0 off; 1 triplanar weights; 2 geometric normal; 3 detail deviation; 4 blend RMS
+uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
@@ -413,11 +397,8 @@ uniform float u_fill;                  // directional fill leg of the rig; 0 abl
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
 uniform vec3  u_f0Tint;                // metal reflectance colour: gold is not chrome lit yellow
 uniform float u_wear;                  // edge wear, 0..1; see the WEAR note in the shading
-uniform float u_hwlod;                 // 1 = hardware mip selection instead of the analytic one (A/B)
 uniform float u_nobound;               // 1 = march unbounded, as before the ray/sphere test (A/B)
 uniform float u_bmarg;                 // extra bounding radius, for testing whether the bound clips
-uniform float u_mipflat;               // 1 = let mip averaging flatten the normal; 0 = the old re-inflate (A/B)
-uniform float u_trivar;                // 1 = variance-normalise the triplanar blend (A/B)
 uniform float u_kal,u_kalPh;           // kaleidoscope: amount 0..1, and the mirror line's angle
 uniform float u_swirl;                 // third rotation axis (xy / about z); see formRot
 #define PI 3.14159265
@@ -443,36 +424,6 @@ float n3(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*f*(f*(f*6.-15.)+10.);
   float e=h31(i+vec3(0,0,1)),g=h31(i+vec3(1,0,1)),hh=h31(i+vec3(0,1,1)),k=h31(i+vec3(1,1,1));
   return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,g,f.x),mix(hh,k,f.x),f.y),f.z);}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<2;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}
-// TEXTURE NOISE — 5 octaves, normalised. A procedural material has no texel grid to raise, so
-// its resolution IS its octave count: 2 octaves can only ever produce soft blobs at one scale.
-// Five spanning ~32:1 in frequency give a surface that carries coarse variation, mid grain and
-// fine tooth simultaneously, which is what reads as a real, high-resolution material. The
-// offset per octave decorrelates them so the layers do not stack into visible lattice beats.
-// SURFACE-DETAIL NOISE. Two things were tried here to deliver "higher resolution" texture and
-// both were measured and reverted; the note is kept so they are not re-derived.
-//
-// 1. MORE OCTAVES (5 -> 7). Detail is amplitude x frequency, and this series has gain 0.42, so
-//    octave 6 carries 0.42^5 and octave 7 carries 0.42^6 of the base — together about 4% of the
-//    total amplitude for 40% more noise evaluations. Octave count is simply not the lever.
-// 2. PROCEDURAL MIPMAPPING — fading each octave as its period approaches the pixel footprint,
-//    via fwidth of the object-space position. Correct in principle, and it would matter for a
-//    flat-gain series, but measured against a frozen frame it moved pixel-scale energy inside the
-//    silhouette by 1.5-3.1% across four materials, with one material NEGATIVE. That is noise.
-//    It has nothing to filter for the same reason as above: the octaves fine enough to alias are
-//    the ones already carrying almost no amplitude.
-//
-// The lever that does work is the BASE frequency, tscale, which is per-material and was raised
-// by roughly half. Detail lives in the first two or three octaves; everything past that is tooth.
-float fbmT(vec3 p){
-  float v=0., a=0.5, s=0.0;
-  // GAIN MUST BE BELOW 1/LACUNARITY. This noise drives a NORMAL, so what matters is the
-  // gradient, and octave k contributes gradient ~ (gain*lacunarity)^k. At gain 0.55 with
-  // lacunarity 2.13 that is 1.17^k — RISING, so the finest octave dominated the normal and
-  // every material read as sandblasted whatever the amplitude. At 0.42 it is 0.89^k: the
-  // coarse form leads, and the fine octaves add tooth underneath it instead of burying it.
-  for(int i=0;i<5;i++){ v+=a*n3(p); s+=a; p=p*2.13+17.3; a*=0.42; }
-  return v/s;
-}
 /* ============ COMPLEX GEOMETRIC FORMS ============
    Hard-surface constructions: rounded and chamfered primitives combined with booleans,
    polar/grid arrays and smooth blends — the language of product design, not fractals.
@@ -929,116 +880,13 @@ vec2 map(vec3 wp){
    normal that breaks up the specular, and a roughness field that stops every highlight
    reading as one flat plastic sheen. u_txAniso stretches the noise for brushed metal. */
 vec3 objP(vec3 p){ return formRot(p); }
-/* ---- SURFACE DETAIL ----
-   An IMAGE, triplanar-projected, rather than procedural fbm.
-
-   fbm can only make cloudy blobs. Real surfaces have STRUCTURE — brushing runs one way,
-   scratches are discrete lines, tooth is even and fine — and none of that is expressible as a
-   sum of octaves of value noise. That is why the old surface read as a stain on plaster rather
-   than as a material, and no amount of amplitude tuning was going to change it.
-
-   It is also better behaved. fbm was evaluated five octaves deep and then differenced three
-   times to get a normal, which both costs and aliases: the difference amplifies exactly the
-   highest frequencies that are already undersampled. A texture is mip-mapped by the hardware,
-   so it filters correctly at every distance and every scale for three fetches.
-
-   Triplanar because these forms have no UVs — there is nothing to unwrap an implicit surface
-   or a bored shell onto. Blend weights are the normal raised to a power, which keeps the
-   seams between the three projections tight. */
-// ONE fetch set, not two. texNormal() and detailRough() were sampling the SAME three texels at
-// the SAME coordinates and each discarding the other's channels -- six fetches and two
-// pow(abs(n),6) triplanar blends where three and one do. The roughness rides in alpha and
-// arrives with the RGB for free. Returns the shading normal; writes the roughness modulation.
-vec3 DIAGW=vec3(0.0); float DIAGD=0.0, DIAGF=1.0, DIAGL=0.0;   // diagnostic taps, written by texDetail
-/* ANALYTIC RAY DIFFERENTIALS, not the hardware's derivatives. The mip level texture() picks comes
-   from dFdx/dFdy of the coordinate across the pixel quad, and in a raymarcher that derivative is
-   not trustworthy: the quad straddling a silhouette has one lane on the near face and its
-   neighbour on a side band a long way off, and lanes that missed the surface entirely still
-   contribute their garbage op to the difference. So exactly at the silhouette -- where the
-   footprint is largest and the right mip matters most -- the selected level is noise. That is the
-   speckled fringe along the grazing edges, and it is why turning mipmapping off outright CLEANED
-   those edges rather than aliasing them further: no mip at all beats the wrong mip.
-
-   The footprint is available in closed form and needs no derivatives at all. One pixel moves the
-   ray by u_rt/(res.y*f); projected onto the tangent plane at distance t that is
-       dp = t * (dr - rd * dot(dr,n)/dot(rd,n))
-   which is the real elliptical footprint, not a scalar. Passing both axes to textureGrad keeps
-   anisotropic filtering doing its job -- a scalar textureLod would throw the anisotropy away and
-   measurably softened the INTERIOR by 37% as well, which is detail loss, not de-aliasing.
-
-   dot(rd,n) is floored in magnitude so the footprint cannot run away to a flat grey on the last
-   pixel of the silhouette, where that dot product passes through zero. */
-vec3 texDetail(vec3 op,vec3 n,vec3 dox,vec3 doy,out float rghOut){
-  rghOut=0.5;
-  if(u_detailOn<0.5) return n;
-  float s=u_detailScale*u_txScale*0.01;
-  vec3 w=pow(abs(n),vec3(6.0)); w/=(w.x+w.y+w.z+1e-6);
-  DIAGW=w;
-  vec2 cx=op.zy*s, cy=op.xz*vec2(s*u_txAniso,s), cz=op.xy*s;
-  vec2 ax=vec2(s*u_txAniso,s);
-  // u_hwlod restores the hardware's own mip selection, for A/B. It is a uniform, so the branch is
-  // coherent across the draw and costs nothing; keeping both paths in ONE shader is the only way
-  // to compare them on the same frame. Comparing across page loads does not work in this viewer:
-  // the variant re-rolls, and the morph and the framing both depend on wall-clock time since
-  // load, so two loads are two different scenes even with POSE and VARPIN pinned.
-  vec4 sx,sy,sz;
-  if(u_hwlod>0.5){
-    sx=texture(u_detail,cx); sy=texture(u_detail,cy); sz=texture(u_detail,cz);
-  } else {
-    sx=textureGrad(u_detail,cx, dox.zy*s,   doy.zy*s);
-    sy=textureGrad(u_detail,cy, dox.xz*ax,  doy.xz*ax);
-    sz=textureGrad(u_detail,cz, dox.xy*s,   doy.xy*s);
-  }
-  rghOut=sx.a*w.x+sy.a*w.y+sz.a*w.z;
-  if(u_txAmp<0.0005) return n;                 // normal perturbation off; roughness still valid
-  vec3 tx=sx.xyz*2.0-1.0;
-  vec3 ty=sy.xyz*2.0-1.0;
-  vec3 tz=sz.xyz*2.0-1.0;
-  // Whiteout blend: perturb the geometric normal inside each projection frame, then combine.
-  // Blending the SAMPLED normals first and perturbing once flattens anything facing a corner.
-  vec3 bx=vec3(tx.xy+n.zy, abs(tx.z)*n.x);
-  vec3 by=vec3(ty.xy+n.xz, abs(ty.z)*n.y);
-  vec3 bz=vec3(tz.xy+n.xy, abs(tz.z)*n.z);
-  vec3 pn=normalize(bx.zyx*w.x + by.xzy*w.y + bz.xyz*w.z);
-  // MIP FLATTENING, put back. A mip level is the AVERAGE of the normals under it, and averaging
-  // unit vectors that point different ways gives a vector SHORTER than one. That shortening is
-  // the whole signal: it is how much of the map's tilt has been averaged out at this footprint,
-  // and the correct limit for a surface whose detail no longer resolves is the flat geometric
-  // normal. Every normalize() on the path above throws that signal away and re-inflates the
-  // averaged normal back to full tilt -- so the map stayed at full strength no matter how far
-  // the mip chain had already flattened it.
-  //
-  // That is what the long streaks on a face seen edge-on were. At grazing the footprint stretches
-  // by 1/NoV, the fetch lands several mips up, and the hardware duly returns a nearly-flat normal
-  // -- which this function then renormalised back to a full-tilt one and smeared along the axis
-  // the projection had compressed. Filtering was working; the shader was undoing it.
-  //
-  // Recovering it costs three lengths. The bake writes unit normals, so length is 1 at level 0
-  // and falls from there; using it as the blend weight is Toksvig's argument applied to the
-  // amplitude instead of to roughness, and it composes with the Toksvig term already in the
-  // caller rather than replacing it.
-  float mipFlat=mix(1.0, length(tx)*w.x + length(ty)*w.y + length(tz)*w.z, u_mipflat);
-  DIAGF=length(tx)*w.x + length(ty)*w.y + length(tz)*w.z;
-  DIAGL=0.5*log2(max(dot(dox.xy*s,dox.xy*s), dot(doy.xy*s,doy.xy*s))*float(textureSize(u_detail,0).x)*float(textureSize(u_detail,0).x));
-  // u_txAmp stays the material's tilt in radians, so every preset keeps its relative weighting.
-  // VARIANCE OF THE TRIPLANAR BLEND. The three projections read DECORRELATED parts of the map, so
-  // combining them with weights w gives a perturbation whose standard deviation is sqrt(dot(w,w))
-  // -- 1.0 where one projection owns the pixel, 0.577 where all three share it. The detail
-  // therefore fades in and out purely as a function of the NORMAL, and on an extruded form the
-  // normal is constant along the extrusion: the fade runs as a stripe down the whole side wall.
-  // That is the streaking, and it is why it survived the map being isotropic (verified at one
-  // texel per pixel), the mip chain being irrelevant here (mipFlat is a flat 0.87 across the
-  // form) and every lighting term being ablated one at a time.
-  // Dividing by sqrt(dot(w,w)) restores constant amplitude across the blend.
-  float vnorm=mix(1.0, inversesqrt(max(dot(w,w),1e-4)), u_trivar);
-  vec3 outN=normalize(mix(n, pn, clamp(u_txAmp*26.0*vnorm,0.0,1.0)*clamp(mipFlat,0.0,1.0)));
-  DIAGD=length(outN-n);
-  return outN;
-}
-float texRough(float v,float base){
-  if(u_txRough<0.001) return base;
-  return clamp(mix(base, base*(0.45+1.5*v), u_txRough), 0.02, 1.0);
-}
+/* SURFACE DETAIL IS GONE. What stood here was a triplanar detail-map sampler (texDetail) and
+   the roughness modulation it fed (texRough), plus the analytic ray differentials that picked
+   its mip level and four diagnostic taps that existed to debug the blend. All of it served a
+   microstructure the renderer no longer has: the Surface control that switched it off already
+   zeroed the amplitude it was multiplied by, so "Smooth" made every one of these a no-op that
+   still cost three textureGrad fetches per shaded point. The shading normal is now the
+   geometric normal and roughness is the material's own. */
 // Normal sampling radius. It must straddle a CELL BOUNDARY of whatever field is being read, or
 // the gradient comes back constant across each cell and the surface lights as flat facets. For
 // the analytic forms 0.0018 is right. The baked mesh is a grid whose cells are 0.0138 across —
@@ -1419,18 +1267,6 @@ vec3 bg(vec3 rd, vec2 sv){
 
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
-  // DIAG 6/7: the detail map itself, screen-mapped, with no triplanar and no lighting in the way.
-  // The only honest way to ask whether a structure is IN the map or is being made by the read.
-  if(u_diag>5.5 && u_diag<7.5){
-    // DIAG 6 shows the map ONE TEXEL PER PIXEL, which is the only view that can answer whether a
-    // structure is in the map. Fitting a whole tile on screen minifies an 8192 map 10x and the
-    // mip chain then shows a blurred average of exactly the detail in question.
-    vec2 t6=u_diag>6.5 ? gl_FragCoord.xy/u_res.y
-                       : gl_FragCoord.xy/float(textureSize(u_detail,0).x);
-    vec4 s6=texture(u_detail,t6);
-    vec4 sm6=textureLod(u_detail,t6,0.0);
-    o=vec4(u_diag>6.5? vec3(s6.a) : sm6.xyz, 99.0); return;
-  }
   float f=0.5/tan(u_fov*0.5);        // uv.y spans +/-0.5, so the 0.5 is required or the FOV halves
   vec3 rd=normalize(uv.x*u_rt+uv.y*u_up+f*u_fw), ro=u_ro;
   float dth=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
@@ -1568,29 +1404,21 @@ void main(){
     // Ray differentials for the detail fetch. f, t and rd are the frame's own numbers, so this
     // tracks render scale and FOV with no uniform of its own. objP is a pure rotation, so it
     // transforms these direction vectors exactly as it transforms the position.
-    float ndv=dot(rd,gn); ndv=(abs(ndv)<0.08)?(ndv<0.0?-0.08:0.08):ndv;
-    vec3 rdx=u_rt/(u_res.y*f), rdy=u_up/(u_res.y*f);
-    vec3 dox=objP(t*(rdx-rd*(dot(rdx,gn)/ndv)));
-    vec3 doy=objP(t*(rdy-rd*(dot(rdy,gn)/ndv)));
-    float dRgh; vec3 n=texDetail(op,gn,dox,doy,dRgh); // textured shading normal + roughness, one pass
-    // DIAGNOSTIC. Shows the triplanar machinery directly instead of its effect on the lighting,
-    // which is the only way to tell a blend artefact from a shading one. Costs nothing when off.
+    // THE SHADING NORMAL IS THE GEOMETRIC ONE. There is no surface microstructure any more, so
+    // there is nothing to perturb it with -- and the ray differentials that existed only to pick
+    // a mip level for the detail map went with it.
+    vec3 n=gn;
+    // DIAGNOSTIC. What survives of it: the geometric normal and AO. The rest of the modes read
+    // the triplanar detail machinery, which no longer exists.
     if(u_diag>0.5){
       int dm=int(u_diag+0.5);
       vec3 dc=vec3(0.);
-      if(dm==1) dc=DIAGW;                              // blend weights as RGB
       if(dm==2) dc=gn*0.5+0.5;                         // geometric normal
-      if(dm==3) dc=vec3(DIAGD*8.0);                    // how far detail bent the normal
-      if(dm==4) dc=vec3(sqrt(dot(DIAGW,DIAGW)));       // amplitude the blend actually passes
-      if(dm==5) dc=vec3(fract(dRgh*16.0));             // roughness field, contoured
       if(dm==8) dc=vec3(calcAO(p,gn));                 // ambient occlusion, alone
       if(dm==9) dc=vec3(fract(calcAO(p,gn)*24.0));     // ...contoured, so terracing is unmissable
-      if(dm==10) dc=vec3(DIAGF);                       // 1 = normal at full tilt, <1 = mip has flattened it
-      if(dm==11) dc=vec3(clamp(DIAGL/8.0,0.0,1.0));    // selected mip level / 8
-      if(dm==12) dc=vec3(sqrt(dot(DIAGW,DIAGW)));      // amplitude the triplanar blend passes
       o=vec4(dc,t); return;
     }
-    float rgh=texRough(dRgh,u_rough);                 // spatially varying roughness
+    float rgh=u_rough;                                // the material's own, uniform over the form
     // GEOMETRIC SPECULAR AA. A narrow GGX lobe over a high-frequency normal map aliases into
     // crawling white sparkle along every silhouette — one pixel catches the lobe, its neighbour
     // misses it entirely. Widen roughness by how fast the shading normal turns across this
@@ -1613,19 +1441,17 @@ void main(){
        specular-AA term above already computes. It is screen-space, so a fillet reads as an edge
        at any zoom rather than at one authored scale, and it costs nothing new. Broken up by the
        surface grain so it is a worn edge and not an outline drawn around the form. */
-    float wear=u_wear*clamp(sqrt(nturn)*7.0,0.0,1.0)*(0.55+0.45*dRgh);
+    float wear=u_wear*clamp(sqrt(nturn)*7.0,0.0,1.0);
     rgh=mix(rgh, max(rgh,0.62), wear);
     float NoV=clamp(dot(n,v),1e-4,1.);
     float fr=pow(1.-NoV,2.6);
-    // albedo carries the same grain, so the body is not one flat colour
-    float av=fbmT(op*u_txScale*0.30);
     // TWO-TONE. A single u_mood makes the whole form one hue, which is why a frame reads
     // flatter than the reference — those get their life from several colourways at once.
-    // Sweep in OBJECT space (so the split belongs to the form and turns with it) between the
-    // section's mood and the palette accent, with the surface grain breaking up the boundary
-    // so it reads as material rather than a gradient laid over the top.
+    // Sweep in OBJECT space, so the split belongs to the form and turns with it, between the
+    // section's mood and the palette accent. The grain that used to break up the boundary went
+    // with the surface detail; the split is a clean gradient now, which is what these forms want.
     vec3 pA,pB; palAB(pA,pB);
-    float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30)+(av-0.5)*0.55*u_surf, 0., 1.);
+    float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30), 0., 1.);
     vec3 tint=mix(u_mood, clamp(pB*1.12,0.,1.), smoothstep(0.18,0.82,sweep)*u_twoTone*u_dxs.w);
     // u_alb is a per-material albedo scale. The shared 0.9 base is right for pearl and frosted,
     // which are near-white by nature, but it left clay blowing out to paper white across every lit
@@ -1637,7 +1463,7 @@ void main(){
     // goes dark no matter how good the environment is. Dielectrics want the palette (it is how
     // the section's mood reaches the surface); metals want to stay near-white and take their
     // colour from the thin film instead.
-    vec3 base=mix(vec3(0.9), tint, u_tintAmt)*u_alb*(1.0+(av-0.5)*u_txRough*0.16);
+    vec3 base=mix(vec3(0.9), tint, u_tintAmt)*u_alb;
     // The furnace test needs a WHITE, lossless albedo or it measures the paint rather than the
     // BRDF: a lavender base returns 0.83 under a unit environment simply because it is lavender.
     base=mix(base, vec3(1.0), u_furnace);
@@ -1680,8 +1506,10 @@ void main(){
     vec3 Favg=f0+(1.0-f0)/21.0;                 // average Fresnel over the hemisphere
     vec3 Fms=FssEss*Favg/(1.0-Ems*Favg);        // ...returned as additional diffuse-like bounce
     vec3 kD=base*(1.0-u_metal)*(1.0-FssEss-Fms*Ems);   // what is left over to scatter diffusely
-    // thin-film colour, shifted by the micro surface so it mottles like real pearl
-    vec3 irid=0.5+0.5*cos(6.2831*(fr*u_iridFreq+n.y*0.5+av*0.7*u_surf+u_time*0.03+u_iridHue+u_hAir*0.25)
+    // Thin-film colour. It used to be shifted by the micro surface so it mottled like real pearl;
+    // with the surface gone the film runs as clean bands across the form, which is the reference's
+    // reading of it anyway -- the mottle was what made holographic read as scratched.
+    vec3 irid=0.5+0.5*cos(6.2831*(fr*u_iridFreq+n.y*0.5+u_time*0.03+u_iridHue+u_hAir*0.25)
                           + vec3(0.,2.1,4.2));
     // EMOTIONAL LIGHT: tension swings the key round to a harder angle, warmth tints it,
     // valence colours the rim. The scene is lit by how the music feels.
@@ -2743,7 +2571,7 @@ const TIERS={
      This was tried before, reverted as "stop rendering below native", and the revert was right
      for HIGH -- where a soft frame is the whole product. It was wrong for Preview, whose tooltip
      already promises a coarser image. */
-  preview:{label:'Preview', scale:0, dpr:0.72, scaleMin:0.60, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, bake:2048, shutter:0, sss:0,
+  preview:{label:'Preview', scale:0, dpr:0.72, scaleMin:0.60, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, shutter:0, sss:0,
            note:'Preview — fast'},
   /* HIGH AND ULTRA GET A FLOOR BELOW NATIVE. Both used to bottom out at 1.00 -- High because the
      governor's floor was hard-coded there, Ultra because its band started at 1.15 -- so on a
@@ -2761,7 +2589,7 @@ const TIERS={
         rscale 1.15  edge RMSE 4.31     rscale 1.60  edge RMSE 3.06
      0.82 is below the bottom of that table and will be visibly softer. It is a floor, not a
      target: it exists for the case where the alternative is 15 fps. */
-  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, bake:8192, shutter:0,
+  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, shutter:0,
            note:'High — shadows, shafts, adaptive scale'},
   /* ULTRA IS A BAND, NOT A PIN. It used to fix rscale at 1.35 and switch the governor off
      entirely -- its own tooltip promised "no adaptation, will drop frames", and it delivered:
@@ -2786,7 +2614,7 @@ const TIERS={
      unambiguously the best tier (it never drops to where High's governor lives) while letting it
      climb to 1.60, which is BETTER than it ever reached before, on hardware that can hold it. */
   ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.00, scaleMax:1.60,
-           dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, bake:8192, shutter:0,
+           dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, shutter:0,
            note:'Ultra — supersampled, adapts between 1.00x and 1.60x'},
 };
 const KVAR_CAP=0.030;   // see the GEOMETRIC SPECULAR AA note in the shader
@@ -2804,11 +2632,6 @@ function applyTier(name){
   if(t.scale>0){ rscale=t.scale; dprScale=t.dpr; }
   else { rscale=1.0; dprScale=t.dpr; }
   resize();
-  // Re-bake only when the size actually changes: the bake is 170-230ms at 8192 and running it on
-  // every tier press would stall the frame for no reason.
-  if(window.DETAILN!==t.bake && detailName && detailName!=='off'){
-    window.DETAILN=t.bake; dbakeSize=0; bakeDetail(detailName);
-  }
   for(const k of Object.keys(TIERS)){
     const b=$('q'+k[0].toUpperCase()+k.slice(1));
     if(b) b.classList.toggle('on', k===name);
@@ -3288,7 +3111,6 @@ const WEAR={amt:0.0};  window.WEAR=WEAR;
    preset so the material could not be restored. Eased on its own so switching is a dissolve,
    not a cut. Scaling u_txRough also removes the albedo grain, which is scaled by that same
    uniform: that is what makes the body one flat colour rather than a mottled one. */
-let surfT=1, surfTarget=1;
 /* FINISH — how polished the surface is, independent of WHICH material it is.
    A modifier rather than more presets: matte is a property of the finish, not of pearl vs glass,
    so folding it into the material list would mean duplicating every entry.
@@ -3883,7 +3705,6 @@ function frame(){
   for(const k in SH) SH[k]=sm(SH[k],compTarget[k],1.1,dt);
   for(const k in VAR) VAR[k]=sm(VAR[k],VART[k],1.0,dt);
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
-  surfT=sm(surfT,surfTarget,2.5,dt);
   for(const k in FIN) FIN[k]=sm(FIN[k],FINT[k],2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
   for(let i=0;i<3;i++) MO[i]=sm(MO[i],moodTarget[i],1.6,dt);
@@ -4238,8 +4059,6 @@ function frame(){
   gl.uniform1i(US('u_svg'),3);
   gl.uniform1i(US('u_vol'),4);
   gl.uniform1i(US('u_bvhNodes'),5); gl.uniform1i(US('u_bvhTris'),6);
-  gl.uniform1i(US('u_detail'),7);
-  gl.uniform1f(US('u_detailOn'),detailTex?1:0); gl.uniform1f(US('u_detailScale'),detailScale*(window.DSCL||1));
   gl.uniform1f(US('u_diag'),window.DIAG||0);
   gl.uniform1f(US('u_kvar'),(window.KVAR!==undefined)?window.KVAR:KVAR_CAP);
   // f0 is per material and defaults to white (a dielectric's f0 comes from the 0.04 side of the
@@ -4248,11 +4067,8 @@ function frame(){
   const _f0=(MATS[matName]&&MATS[matName].f0)||[1,1,1];
   gl.uniform3f(US('u_f0Tint'),_f0[0],_f0[1],_f0[2]);
   gl.uniform1f(US('u_wear'),WEAR.amt);
-  gl.uniform1f(US('u_hwlod'),window.HWLOD?1:0);
   gl.uniform1f(US('u_nobound'),window.NOBOUND?1:0);
   gl.uniform1f(US('u_bmarg'),window.BMARG||0);
-  gl.uniform1f(US('u_mipflat'),(window.MIPFLAT!==undefined)?window.MIPFLAT:1);
-  gl.uniform1f(US('u_trivar'),(window.TRIVAR!==undefined)?window.TRIVAR:1);
   gl.uniform1f(US('u_meshOn'), (meshOn&&bvhNodeTex&&bvhTriTex)?1:0);
   // Sphere-tracing step, as a multiple of the HALF-scaled field. 2.0 would be exactly the true
   // distance — the theoretical maximum for a 1-Lipschitz field, which these forms are (measured
@@ -4279,7 +4095,6 @@ function frame(){
   if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
   if(bvhNodeTex){ gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D,bvhNodeTex); gl.activeTexture(gl.TEXTURE0); }
   if(bvhTriTex){ gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D,bvhTriTex); gl.activeTexture(gl.TEXTURE0); }
-  if(detailTex){ gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D,detailTex); gl.activeTexture(gl.TEXTURE0); }
   gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
   // depth and bevel breathe with the music like every other form here
   gl.uniform1f(US('u_svgDepth'),0.17+energy*0.05+HITS.low*0.04);
@@ -4319,20 +4134,6 @@ function frame(){
   gl.uniform1f(US('u_trans'),MAT.trans);
   gl.uniform1f(US('u_spec'),MAT.spec*FIN.spec*flatK);
   gl.uniform1f(US('u_alb'),MAT.alb); gl.uniform1f(US('u_absorb'),MAT.absorb);
-  gl.uniform1f(US('u_txScale'),MAT.tscale);
-  // DENSITY -> surface micro-activity. A busy passage puts more tooth on the form, a sparse one
-  // smooths it toward the material's authored value. Bounded to +/-15% of the preset: past that
-  // it stops reading as the surface responding and starts reading as the material changing.
-  // +/-15% measured as 0.00% of pixels moved at the default framing — at this distance the
-  // detail map is mip-filtered down to almost nothing (Detail off vs on is itself only 1.26%),
-  // so a sixth of that is genuinely invisible. Widened, and given a second lever in the grain
-  // below, because a mapping that moves nothing is not restraint, it is absence.
-  // LK.flatTex fades everything out with the look rather than switching it, so moving to
-  // Hard surface and back is the same 3.0/s ease as every other look parameter.
-  const texK=flatK;
-  gl.uniform1f(US('u_txAmp'),MAT.tamp*surfT*(0.70+density*0.65)*texK);
-  gl.uniform1f(US('u_txAniso'),MAT.taniso); gl.uniform1f(US('u_txRough'),MAT.trough*surfT*texK);
-  gl.uniform1f(US('u_surf'),surfT);
   // TWO-TONE goes with the rest of it. It paints a colour ramp ACROSS the form -- deliberately,
   // it is what stops a frame reading as one hue -- and a ramp across the form is a ramp across
   // every face on it. Measured as the luminance spread over four points inside one flat face:
@@ -4758,308 +4559,6 @@ let volTex=null, volOn=false, volLoading=false;
    resolution ceiling — the silhouette stays exact at any zoom and the vertex normals give
    smooth shading the grid cannot reconstruct. */
 const BVH={w:256, nodes:'./assets/mesh_nodes.f32', tris:'./assets/mesh_tris.f32'};
-/* ======================= SURFACE DETAIL MAP =======================
-   BAKED ON THE GPU at load, into a 2048^2 RGBA16F texture, rather than loaded as a PNG.
-
-   The PNGs it replaces were 512^2 and 8-bit, and both facts showed. MEASURED on a locked frame
-   with the object filling 1474 canvas px: the detail uv spans 2.21 tiles across the form, so one
-   tile covers 667 px and a 512-texel map is being MAGNIFIED 1.30x. Past 1:1 the mip chain cannot
-   help — the hardware is bilinearly stretching texels, which is the "low res" read directly.
-   A 2048 map at the same tile size sits at 3.07x MINIFICATION instead, which is the regime mips
-   and anisotropic filtering are built for.
-
-   8-bit was the other half. A normal packed in 8 bits steps in 2/255 = 0.0078 units, i.e. 0.45
-   degrees of tilt per code. On a rough=0.35 specular lobe that is roughly a tenth of the lobe
-   width, so the quantisation lands as terracing in the highlight rather than as noise below it.
-   Half-float has no such floor. Where EXT_color_buffer_float is missing the bake falls back to
-   RGBA8 at the same resolution — still the 4x linear win — and where the bake fails outright the
-   PNG loader below is still the fallback, so nothing depends on this path succeeding.
-
-   The content changed too, and that was the point. Measured on the shipped PNGs:
-       machined   nx std 0.056  ny std 0.126  ratio 2.27   mean tilt  6.8deg  p99 19.3deg
-       micro      nx std 0.186  ny std 0.186  ratio 1.00   mean tilt 13.9deg  p99 31.3deg
-   A 31-degree microfacet is not microstructure, it is gravel, and a 2.27 anisotropy ratio is
-   what put corduroy on the flat extruded faces. The baked presets target a few degrees of mean
-   tilt and a much gentler brush. Alpha (the roughness modulation) was mean 0.49 std 0.28 in the
-   PNGs, and texRough() maps it through 0.45+1.5v — so the old maps both biased roughness up 19%
-   and strobed it +/-42%. The bake centres alpha on 0.367 instead, the value that makes that
-   mapping return the material's own roughness unchanged, and swings it a third as far.
-
-   Frequencies are chosen against the same locked frame. base cells span one tile, so the
-   coarsest octave of `micro` (14 cells) is a 48px feature and the finest (14*8 = 112 cells) is
-   6px — right at the screen's Nyquist, which is exactly where it should be: mip selection
-   filters it away at this distance and it resolves when you push the camera in. That is what
-   the resolution is FOR. */
-const DBAKE_FS=`#version 300 es
-precision highp float;
-out vec4 o;
-uniform vec2 u_size;
-uniform vec2 u_base;        // lattice cells across one tile, coarsest octave (x may differ -> brush)
-uniform float u_gain;       // per-octave amplitude falloff
-uniform float u_gscale;     // gradient -> tilt scale, solved for by the calibration pass
-uniform float u_rvar;       // roughness swing around neutral
-uniform float u_warp;       // domain-warp amount, in cells
-uniform int u_oct;
-
-// PERIODIC hash: the lattice index is wrapped to the octave's period before hashing, so the
-// field tiles exactly. Without the wrap the map has a seam, and a seam on a repeat-wrapped
-// detail texture draws a visible grid over every face of the form.
-//
-// INTEGER hash, not fract(sin(dot(i,k))). The sin-hash projects the 2D lattice onto ONE axis
-// before hashing, so every cell lying on a line of constant dot(i,k) gets a correlated value —
-// and with periods this small (9..112 cells) there are few enough distinct dot products that the
-// correlation is not subtle. It baked as long axis-aligned ridges, which showed on the form as
-// streaking that survived the map being statistically isotropic: per-channel nx/ny variance came
-// out at 1.04, because variance cannot see structure that is lined up rather than stretched.
-// Confirmed by scaling the tiling 4x coarser and watching the streaks scale with it.
-// A bit-mixing hash decorrelates neighbours in both axes and has no preferred direction.
-float dh(vec2 i,vec2 P){
-  uvec2 u=uvec2(mod(i,P));
-  uint h=u.x*374761393u+u.y*668265263u;
-  h=(h^(h>>13u))*1274126177u;
-  return float(h^(h>>16u))*(1.0/4294967296.0);
-}
-// QUINTIC interpolant, not the usual cubic smoothstep. What gets sampled is the DERIVATIVE of
-// this field, so the field needs a continuous SECOND derivative or the normal is only C0 and
-// every lattice cell boundary shows up as a crease. 3t^2-2t^3 has a discontinuous second
-// derivative; 6t^5-15t^4+10t^3 does not. This one line is most of "smooth".
-// GRADIENT noise, not value noise — and this is where the residual anisotropy lived.
-//
-// Value noise interpolates a SCALAR per lattice point, so between two cells the field can only
-// ramp along the grid axes: the interpolant itself is separable, and separable means axis-biased
-// no matter how good the hash or how strong the warp. Measured over the map, the tilt-orientation
-// histogram kept peaks at exactly 0 and 90 degrees at 1.44:1.
-//
-// An integer SHEAR was tried first, on the reasoning that it maps the lattice onto itself and so
-// preserves tiling where the period is square. It does tile — and it measured 9.83:1, far worse,
-// because a shear is not a rotation: it stretches as it turns, and the stretch is itself a
-// direction. Rotation proper is unavailable here, since the only integer orthogonal matrices are
-// the eight signed permutations.
-//
-// Gradient noise removes the cause instead of fighting it. Each lattice point carries a random
-// DIRECTION and contributes dot(gradient, offset), so the field's variation at a cell is oriented
-// by the hash rather than by the grid. Same periodic hash, so the map tiles exactly as before.
-vec2 dg(vec2 i,vec2 P){ float a=dh(i,P)*6.28318530718; return vec2(cos(a),sin(a)); }
-float dvn(vec2 x,vec2 P){
-  vec2 i=floor(x),f=fract(x);
-  vec2 u=f*f*f*(f*(f*6.0-15.0)+10.0);
-  float n00=dot(dg(i,P),            f);
-  float n10=dot(dg(i+vec2(1,0),P),  f-vec2(1,0));
-  float n01=dot(dg(i+vec2(0,1),P),  f-vec2(0,1));
-  float n11=dot(dg(i+vec2(1,1),P),  f-vec2(1,1));
-  // to 0..1 to keep dvn's contract with the warp and the calibration pass unchanged
-  return mix(mix(n00,n10,u.x), mix(n01,n11,u.x), u.y)*0.70710678+0.5;
-}
-float dheight(vec2 uv){
-  float h=0.0,a=1.0,w=0.0;
-  vec2 P=max(u_base,vec2(2.0));
-  for(int i=0;i<8;i++){
-    if(i>=u_oct) break;
-    // DOMAIN WARP, per octave, and TILEABLE. Value noise on a square lattice leaves its axes in
-    // the result no matter how good the hash is: measured over the whole 2048 map, the tilt
-    // orientation came out 1.53:1 with peaks at exactly 0 and 90 degrees — a four-fold pattern
-    // that is the lattice showing through, and on the form it reads as fine straight streaking.
-    // (A per-channel nx/ny variance ratio cannot see this at all; that measured 1.04. Structure
-    // that is lined up rather than stretched needs an ORIENTATION histogram to detect.)
-    // Displacing the sample point by a coarser copy of the same field bends the ridges off the
-    // axes. The warp is built from the same periodic hash, so shifting uv by one tile shifts the
-    // warp by exactly one period and the map still tiles; the offset added inside dvn is an
-    // integer lattice shift, which the mod() wrap likewise preserves.
-    vec2 Pw=max(floor(P*0.5+0.5),vec2(2.0));
-    vec2 wq=vec2(dvn(uv*Pw,Pw), dvn(uv*Pw+vec2(19.0,7.0),Pw))-0.5;
-    // The warp bends ridges off the axes but cannot remove the lattice itself; see dvn().
-    h+=a*dvn((uv+wq*(u_warp/P.x))*P, P);
-    w+=a; a*=u_gain; P=floor(P*2.0+0.5);   // integer periods keep every octave tileable
-  }
-  return h/max(w,1e-6);
-}
-void main(){
-  vec2 uv=gl_FragCoord.xy/u_size;
-  vec2 e=1.0/u_size;
-  float h =dheight(uv);
-  // Central differences at one texel. The height field is band-limited well above this spacing
-  // (the finest octave is ~18 texels per cell at 2048), so differencing is sampling a smooth
-  // function, not amplifying the top octave the way differencing per-pixel fbm used to.
-  float hx=dheight(uv+vec2(e.x,0.0))-dheight(uv-vec2(e.x,0.0));
-  float hy=dheight(uv+vec2(0.0,e.y))-dheight(uv-vec2(0.0,e.y));
-  vec2 g=vec2(hx,hy)/(2.0*e);            // gradient in TILE units, resolution-independent
-  vec3 n=normalize(vec3(-g*u_gscale,1.0));
-  // 0.367 is not arbitrary: texRough() computes base*(0.45+1.5*a), so a=0.367 returns the
-  // material's roughness unchanged and the map only modulates around it.
-  float a=clamp(0.367+(h-0.5)*u_rvar*2.0,0.0,1.0);
-  o=vec4(n*0.5+0.5,a);
-}`;
-/* Preset shape of each map. tilt is a TARGET in degrees, not a gain — the bake runs once with
-   unit scale, reads the gradient back, and solves for the scale that hits it. Hard-coding a gain
-   instead would silently drift the moment the octave mix changed, which is how the PNGs ended up
-   at 14 degrees without anyone deciding on 14 degrees. */
-const DPRESET={
-  // Isotropic — the fine speckle a smooth material actually has.
-  //
-  // TILT: 4.0 -> 2.4 -> 4.0 -> 2.4. Back where it started, and the round trip is the point.
-  //
-  // The cut to 2.4 was originally made to suppress striations. I raised it to 4.0 on finding that
-  // those striations were the diffuse irradiance lookup (fixed in cb5d4a0), reasoning that the
-  // tilt had been paying for someone else's bug. Half right: the tilt was suppressing TWO
-  // artefacts, and only one of them was that lookup. The other is the map at grazing incidence on
-  // a dark face, which is not a bug at all -- an isotropic perturbation entering diffuse through
-  // dot(dn, L) is projected onto ONE direction, so it elongates perpendicular to the key, and on
-  // an extruded form the side wall holds a near-constant normal down its whole length. Fine
-  // parallel streaks are what that looks like. Every normal map does it; it just must not be
-  // loud enough to see.
-  //
-  // Isolated on one frozen frame with the tilt as the only variable, Pearl/Matte, side wall in
-  // shadow: at 4.0 the streaks are plainly visible, at 2.4 they are at the edge of detection.
-  // Ruled out first, each on that same frame, each alone: the fill leg, the reflection trace,
-  // the clearcoat, the iridescence, the roughness channel of the map, and the map's own content
-  // (inspected at ONE TEXEL PER PIXEL via DIAG 6 -- isotropic, no streaks in it).
-  //
-  // Raising the bake to 8192 made it worse rather than better, which is the part worth recording:
-  // the finer octaves that 2048 was mip-filtering away are now resolved, so the streaking that was
-  // always in the map became visible. More resolution faithfully reproduces a flaw that lower
-  // resolution was hiding.
-  micro:    {base:[14,14], oct:4, gain:0.55, tilt:2.4, rvar:0.42},
-  // brushed, but 1.6:1 rather than the PNG's 2.27:1 — enough to read as a direction, not enough
-  // to read as corduroy across a flat face
-  machined: {base:[9,14],  oct:4, gain:0.60, tilt:3.2, rvar:0.35},
-};
-const DETAILS={machined:'./assets/detail_machined.png', micro:'./assets/detail_micro.png'};
-let detailTex=null, detailName='micro', detailScale=1.0;
-let dbakeP=null, dbakeF=null, dbakeA=-1, dbakeSize=0;
-// Set by the bake so a defect can be traced to what was actually uploaded rather than to what
-// the preset asked for. Read it from the console.
-window.__DBAKE=null;
-/* BAKE RESOLUTION. 2048 was measured against a form filling 1474 canvas px, where one detail
-   tile covers 667 px — 3.07x minification, comfortably inside what mips and anisotropy handle.
-   The target is now 8192, and it is worth being precise about what that buys: at the SAME
-   framing it buys nothing visible, because the mip chain discards the extra levels. It buys
-   headroom for the camera pushing in, which is where 2048 ran out — at 4x the linear detail
-   the tile stays above 1:1 until the form fills roughly four times the frame width it does now.
-
-   The cost is memory and it is not small: 8192^2 RGBA16F is 537 MB, 683 MB once the mip chain
-   is built, against 43 MB at 2048. So the size is NEGOTIATED rather than assumed. A too-large
-   texImage2D does not throw — it raises a GL error and leaves the texture incomplete, which
-   would surface later as a black surface rather than as a failed bake — so the error queue is
-   drained first, checked after, and the framebuffer tested for completeness before anything is
-   drawn into it. Anything the driver refuses is halved and retried, down to 512. Set
-   window.DETAILN before a Detail change to pin a size by hand. */
-// 8192 -> 4096. The case for 8192 was headroom for close framing, and the close framing is
-// exactly where it was compared: at the zoom clamp the two are visually indistinguishable, while
-// 8192 costs 683MB against 171MB and 344ms of bake against 104ms. A quarter of the memory for no
-// visible difference is not a trade worth defending. The +5.2% high-frequency figure that
-// justified 8192 still stands as a measurement; it simply does not survive being looked at.
-const DETAIL_TARGET = 4096;
-function bakeDetail(name){
-  const P=DPRESET[name]; if(!P) return false;
-  const maxDim=gl.getParameter(gl.MAX_TEXTURE_SIZE)||2048;
-  const t0=performance.now();
-  try{
-    if(!dbakeP){ dbakeP=prog(VERT,DBAKE_FS); dbakeA=gl.getAttribLocation(dbakeP,'p'); }
-    if(!detailTex) detailTex=gl.createTexture();
-    if(!dbakeF) dbakeF=gl.createFramebuffer();
-    gl.bindTexture(gl.TEXTURE_2D,detailTex);
-    // Negotiate once; later bakes (micro <-> machined) reuse the size already agreed.
-    let N=dbakeSize;
-    if(!N){
-      for(let want=Math.min(window.DETAILN||DETAIL_TARGET,maxDim); want>=512; want>>=1){
-        while(gl.getError()!==gl.NO_ERROR){}          // drain, so the check below is ours
-        if(floatOK) gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,want,want,0,gl.RGBA,gl.HALF_FLOAT,null);
-        else        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8 ,want,want,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
-        if(gl.getError()!==gl.NO_ERROR) continue;     // driver refused this size — halve and retry
-        gl.bindFramebuffer(gl.FRAMEBUFFER,dbakeF);
-        gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,detailTex,0);
-        const ok=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
-        gl.bindFramebuffer(gl.FRAMEBUFFER,null);
-        if(ok){ N=want; break; }
-      }
-      if(!N) throw new Error('no bakeable size');     // the PNG fallback below still covers this
-      dbakeSize=N;
-    }
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
-    gl.bindFramebuffer(gl.FRAMEBUFFER,dbakeF);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,detailTex,0);
-    if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE) throw new Error('bake FBO incomplete');
-    gl.viewport(0,0,N,N);   // every render pass sets its own viewport, so this needs no restoring
-    gl.useProgram(dbakeP);
-    const U=n=>gl.getUniformLocation(dbakeP,n);
-    gl.uniform2f(U('u_size'),N,N);
-    gl.uniform2f(U('u_base'),P.base[0],P.base[1]);
-    gl.uniform1f(U('u_gain'),P.gain); gl.uniform1f(U('u_rvar'),P.rvar);
-    gl.uniform1f(U('u_warp'), (window.DWARP!==undefined)?window.DWARP:(P.warp!==undefined?P.warp:0.95));
-    gl.uniform1i(U('u_oct'),P.oct);
-
-    // PASS 1 — calibration. Bake at unit gradient scale, read a 128^2 patch back, and recover
-    // the raw gradient from the encoded normal (g = -n.xy/n.z). One number comes out of it: the
-    // scale that turns this octave mix into the requested mean tilt.
-    gl.uniform1f(U('u_gscale'),1.0);
-    drawFS(dbakeA);
-    const S=128, px=floatOK?new Float32Array(S*S*4):new Uint8Array(S*S*4);
-    gl.readPixels((N>>1)-(S>>1),(N>>1)-(S>>1),S,S,gl.RGBA,floatOK?gl.FLOAT:gl.UNSIGNED_BYTE,px);
-    let sg=0,ng=0;
-    for(let i=0;i<S*S;i++){
-      const k=i*4, sc=floatOK?1:1/255;
-      const nx=px[k]*sc*2-1, ny=px[k+1]*sc*2-1, nz=px[k+2]*sc*2-1;
-      if(nz>1e-3){ sg+=Math.hypot(nx/nz,ny/nz); ng++; }
-    }
-    const meanG=ng?sg/ng:1;
-    // atan is linear to within 0.3% at these angles, so one correction lands the target; there is
-    // no reason to iterate.
-    const tiltDeg=(window.DTILT!==undefined)?window.DTILT:P.tilt;   // console override, for tuning
-    const gscale=Math.tan(tiltDeg*Math.PI/180)/Math.max(1e-6,meanG);
-
-    // PASS 2 — the real bake.
-    gl.uniform1f(U('u_gscale'),gscale);
-    drawFS(dbakeA);
-    gl.bindFramebuffer(gl.FRAMEBUFFER,null);
-    gl.bindTexture(gl.TEXTURE_2D,detailTex);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    const ext=gl.getExtension('EXT_texture_filter_anisotropic');
-    if(ext) gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,
-                             Math.min(16,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
-    gl.bindTexture(gl.TEXTURE_2D,null);
-    const err=gl.getError();
-    if(err!==gl.NO_ERROR) throw new Error('GL '+err);
-    detailName=name;
-    window.__DBAKE={name,size:N,fmt:floatOK?'RGBA16F':'RGBA8',tiltDeg,gscale:+gscale.toFixed(4),
-                    mb:+((N*N*(floatOK?8:4)*4/3)/1048576).toFixed(0),ms:+(performance.now()-t0).toFixed(0)};
-    return true;
-  }catch(e){
-    console.warn('detail bake failed, falling back to the PNG maps:',e.message);
-    gl.bindFramebuffer(gl.FRAMEBUFFER,null);
-    return false;
-  }
-}
-/* PNG fallback. Kept, not deleted: the bake needs a render target and a working readPixels, and
-   on a context that has neither this is the difference between a plain-looking surface and no
-   surface at all. */
-function loadDetail(name){
-  const url=DETAILS[name]||DETAILS.micro;
-  return new Promise((ok,err)=>{
-    const im=new Image();
-    im.onload=()=>{
-      if(!detailTex) detailTex=gl.createTexture();
-      dbakeSize=0;      // this texture is no longer the bake's; force a realloc if one runs later
-      gl.bindTexture(gl.TEXTURE_2D,detailTex);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,gl.RGBA,gl.UNSIGNED_BYTE,im);
-      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
-      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);
-      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
-      gl.generateMipmap(gl.TEXTURE_2D);
-      const ext=gl.getExtension('EXT_texture_filter_anisotropic');
-      if(ext) gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,
-                               Math.min(16,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
-      gl.bindTexture(gl.TEXTURE_2D,null);
-      detailName=name; ok(detailTex);
-    };
-    im.onerror=()=>err(new Error('could not load '+url));
-    im.src=url;
-  });
-}
 /* ---- PREFILTERED HDRI ----
    assets/env_studio.bin is brown_photostudio_02 (CC0, Poly Haven) run through pmrem.py: eight
    equirect levels, each a GGX convolution of the room at that level's roughness, with the last
@@ -5206,7 +4705,6 @@ async function loadSVGShape(text, name) {
     showStat(err.message || 'Could not read that SVG', true); hideStat(3600);
   }
 }
-
 /* ======================= CAMERA INPUT ======================= */
 /* Pointer Events rather than mouse+touch pairs: one code path covers mouse, trackpad and touch,
    and setPointerCapture keeps the drag alive when the pointer leaves the canvas — without it a
@@ -5311,12 +4809,6 @@ $('selKal').addEventListener('change',e=>{
   showStat(kalMode==='auto'?'Kaleidoscope follows the Director'
           :kalMode==='on'?'Kaleidoscope held on':'Kaleidoscope off'); hideStat(1600);
 });
-$('surf').addEventListener('click',()=>{
-  surfTarget=surfTarget>0.5?0:1;
-  $('surf').classList.toggle('on',surfTarget>0.5);
-  $('surf').textContent=surfTarget>0.5?'Textured':'Smooth';
-  showStat(surfTarget>0.5?'Surface detail on':'Smooth — micro detail off'); hideStat(1500);
-});
 $('reset').addEventListener('click',()=>{
   userAz=0; userEl=0; userZoom=1; userAzV=0; userElV=0;
   showStat('View reset'); hideStat(1100);
@@ -5381,13 +4873,6 @@ $('selEnv').addEventListener('change',e=>{ const v=e.target.value;
   ENV.map=1;
   loadEnvMap(v).then(ok=>{ showStat(ok?'Lighting - '+e.target.selectedOptions[0].textContent
                                      :'Could not load that environment',!ok); hideStat(1600); }); });
-$('selDetail').addEventListener('change',e=>{ const v=e.target.value;
-  // detailName MUST be updated here. Without it the name stayed 'micro', and applyTier's guard
-  // (detailName && detailName!=='off') then re-baked on the next quality-tier click — surface
-  // detail came back on its own while this control still read None, with no way to clear it.
-  if(v==='off'){ if(detailTex) gl.deleteTexture(detailTex); detailTex=null; dbakeSize=0; detailName='off'; return; }
-  if(bakeDetail(v)) return;
-  loadDetail(v).catch(err=>showStat('Detail map failed — '+err.message,true)); });
 /* LOOK IS NO LONGER A CONTROL. It was a menu of eight print-and-finish presets from before the
    Filter pass existed, and the Filter pass does that job better and on the finished frame: Riso,
    Xerox and Halftone were all approximations of a screen, and there is a real one now. Everything
@@ -5563,7 +5048,6 @@ const ROLL_RECIPES=[
     setCtl('selScene', r()<0.35?'studio':'field');
     setCtl('selMat',   pick(r,['pearl','pearl','clay','frosted']));
     setCtl('selFinish',pick(r,['satin','gloss','matte']));
-    setCtl('selDetail',pick(r,['micro','micro','machined']));
   }},
   // ---- PRINT: the two-colour families. Flat looks only -- a halftone of a glossy specular is a
   // screen of a highlight, which reads as a blown-out hole.
@@ -5598,7 +5082,6 @@ const ROLL_RECIPES=[
     setCtl('selScene', r()<0.5?'studio':'field');
     setCtl('selMat',  pick(r,['glass','frosted','holo']));
     setCtl('selFinish','gloss');
-    setCtl('selDetail', r()<0.6?'off':'micro');
   }},
 ];
 function pick(r,a){ return a[Math.min(a.length-1, Math.floor(r()*a.length))]; }
@@ -5611,7 +5094,6 @@ function rollAll(seedStr){
   for(const x of ROLL_RECIPES){ if((k-=x.w)<=0){ rec=x; break; } }
   // ---- things every family gets, rolled BEFORE the recipe so the recipe can override them
   setCtl('selPal', pick(r,['auto','auto','auto','blood','acid','ultra','cyber','solar','mono']));
-  setCtl('selDetail', pick(r,['micro','micro','machined','off']));
   /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count and only two of the six
      profiles use it (p2Tris and p2Clover -- see the note above kalMirror); on the others the
      slider is inert, so rolling a high count there is a roll that did nothing. And the Arc is a
@@ -5633,9 +5115,6 @@ function rollAll(seedStr){
   setCtl('filtAmt', Math.round(72+r()*28));
   rec.f(r);
   filtRow();
-  // Surface is a button, not a select.
-  const wantTex = r()<0.8;
-  if((surfTarget>0.5)!==wantTex) $('surf').click();
   /* THE ROUTING GOES WITH THE LOOK. A roll that changes everything about the picture and leaves
      the reactivity alone is half a roll. It writes real rows and switches to Manual, because the
      Director rewiring on the next track would silently throw the roll away -- which is the same
@@ -5697,17 +5176,15 @@ setInterval(()=>{
   const el=(performance.now()-PERF.t0)/1000;
   PERF.fps=PERF.n/Math.max(el,1e-3); PERF.n=0; PERF.t0=performance.now();
   const mpxMarch=(RW*RH)/1e6, mpxCanvas=(glc.width*glc.height)/1e6;
-  const bake=window.__DBAKE||{};
   $('perf').innerHTML=
     '<b>'+PERF.fps.toFixed(1)+' fps</b>  ('+(1000/Math.max(PERF.fps,1e-3)).toFixed(1)+' ms)<br>'+
     'tier '+TIER+'   rscale '+rscale.toFixed(2)+'   dpr '+dpr.toFixed(2)+'<br>'+
     'march '+RW+'x'+RH+'  ('+mpxMarch.toFixed(1)+' Mpx)<br>'+
     'canvas '+glc.width+'x'+glc.height+'  ('+mpxCanvas.toFixed(1)+' Mpx)<br>'+
-    'shadow N '+STEP.shaN+'   detail '+(bake.size||'-')+'  ('+(bake.mb||0)+' MB)<br>'+
+    'shadow N '+STEP.shaN+'<br>'+
     'look '+lookName+'   governor avg '+frameAvg.toFixed(1)+' ms';
 },500);
 
 loadEnvMap('studio');
-if(!bakeDetail('micro')) loadDetail('micro').catch(e=>__showErr('detail map: '+e.message));
 frame();
 </script>
