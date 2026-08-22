@@ -206,15 +206,17 @@ raymarch creases.
   because the shared near-white base blew out across every lit face.
 
 
-- **Detail** — the surface normal map: `Micro tooth` (default, isotropic) or `Machined`
-  (brushed). **Baked on the GPU at load** into an 8192² RGBA16F texture, not loaded from disk;
-  `assets/detail_*.png` remain only as the fallback for a context without float render targets.
-  See *Surface detail* below for why. Sampled
-  **triplanar**, since a raymarched SDF has no UVs: three projections along the object axes,
-  weighted by `pow(abs(n), 6)`. The three are combined with a **whiteout blend** — the geometric
-  normal is perturbed inside each projection frame and the results are then mixed, because
-  blending the sampled normals first and perturbing once flattens anything facing a corner.
-  `u_txAmp` stays the material's tilt in radians, so every preset keeps its relative weighting.
+- **Surface detail is gone**, and with it the `Detail` selector and the `Surface` toggle. They
+  were one decision wearing two hats: Surface off zeroed `u_txAmp` and `u_txRough`, the amplitudes
+  the map was multiplied by, so `Smooth` already made `Detail` inert while still baking and
+  sampling it. The look decided it — a triplanar tooth map on the large flat faces of an extruded
+  profile reads as orange peel and breaks the specular into mush where the reference holds one
+  clean sweep along the bevel. The shading normal is now the geometric normal.
+  Removed with it: the GPU bake (4096² RGBA16F, 171 MB resident and ~104 ms at load), the PNG
+  fallbacks, the analytic ray differentials that picked its mip level, `fbmT`'s five procedural
+  octaves, 12 uniforms and 7 diagnostic modes. The measurement notes below are kept as a record
+  of what was learned, not as a description of what runs.
+
 - **Finish** — gloss/iridescence multiplier layered over the material preset.
 - **Wear** — edge abrasion, and the opposite of the cavity mask: the cavity mask darkens
   recesses (dirt collects), wear roughens and thins the coating on the **high points** (they rub
@@ -239,7 +241,10 @@ nothing to filter because the octaves fine enough to alias were the ones already
 no amplitude. A sampled map sidesteps that ceiling entirely: its detail is band-limited by the
 image and filtered by the hardware.
 
-### Surface detail: why it is baked, not shipped
+### Surface detail: why it was baked, and why it is gone
+
+*Kept as a record of what was measured. The detail map itself was removed — see the Surface
+note under the controls above.*
 
 The 512² 8-bit PNGs that preceded this were wrong in three separate ways, each measured on a
 locked frame with the form filling 1474 canvas px.
@@ -431,17 +436,19 @@ to answer "make it look better", and two of the three were named after their imp
 tier is now a complete point on the cost/quality curve, so the axes move together and cannot be
 left in a nonsensical combination — supersampled, with the shadow budget of a preview.
 
-| | render scale | shadow samples | march step | shafts | detail bake | measured |
-|---|---|---|---|---|---|---|
-| Preview | governor capped at 0.72 | 40 | 1.70 | off | 2048 (43 MB) | 5.2 Mpx, **59.3 fps** |
-| High | governor to 1.0 | 128 | 1.45 | on | 8192 (683 MB) | 5.3 Mpx, **41.2 fps** |
-| Ultra | 1.35 fixed, no adaptation | 200 | 1.25 | on | 8192 (683 MB) | 8.6 Mpx, **26.0 fps** |
+| | render scale | shadow samples | march step | shafts | measured |
+|---|---|---|---|---|---|
+| Preview | governor capped at 0.72 | 40 | 1.70 | off | 5.2 Mpx, **59.3 fps** |
+| High | governor to 1.0 | 128 | 1.45 | on | 5.3 Mpx, **41.2 fps** |
+| Ultra | 1.35 fixed, no adaptation | 200 | 1.25 | on | 8.6 Mpx, **26.0 fps** |
+
+The fps figures predate the removal of the detail map and are therefore conservative. The
+per-tier bake column is gone because there is no bake.
 
 Every knob is one with measured cost behind it: 40 → 128 shadow samples was 12.6 → 15.1 ms for a
 3.1× error cut, so Preview takes it back and Ultra spends 200 where the 1/N curve is still paying;
 the march step was measured at 1.45 → 20 fps against 1.70 → 24 fps at native, so Preview buys real
-time there. The detail bake is re-run only when the size actually changes — it is 170–230 ms at
-8192, and running it on every press would stall the frame for nothing.
+time there.
 
 **A tier binds the governor rather than suggesting to it.** Preview's render scale was handed
 straight back on the first build: the governor saw the headroom Preview had just bought, spent it
@@ -527,9 +534,9 @@ identical frame. `DBGMASK = 1` outputs the depth-derived silhouette instead of t
 `DX = {bloom, chroma, sharpen, thr}` ablates individual post-pass terms and
 `DXS = {ao, shadow, disp, twoTone}` does the same for the scene pass — set `DXS.shadow = 0` and
 the contour banding above vanishes in one step, which is how it was pinned on `calcSha()` rather
-than on the detail map it was sitting under. `window.__DBAKE` reports what the detail bake
-actually uploaded (size, format, solved gradient scale). All of it exists because reasoning about
-render defects instead of measuring them has cost several wrong fixes here.
+than on the detail map it was sitting under. `KEYG` / `FILLG` / `AMBG` override the three IBL rig
+gains for sweeping the key-to-ambient ratio. All of it exists because reasoning about render
+defects instead of measuring them has cost several wrong fixes here.
 
 ## Next
 Camera + world evolution driven further by the Director State (per-section framing,

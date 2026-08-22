@@ -2914,6 +2914,31 @@ let kalMode='auto';                                   // 'auto' | 'on' | 'off'
 let kalAmt=0, kalDrive=0, kalBoost=0;
 let kalRef=1;                                         // the track's own peak section energy
 let kalPhase=1.0;                                     // mirror angle, in units of PI/seg
+/* THE MIRROR TURNS WITH THE TRACK. kalPhase used to be latched once per section AND only while
+   the form was unfolded -- which meant the one parameter you can actually SEE was frozen for
+   exactly as long as it was visible. A bloom held one rosette until it faded out, so the effect
+   read as running on its own clock rather than on the music's, which is what it was doing.
+
+   Three parts now, summed at upload:
+     kalBase   the section's hash, as before -- consecutive blooms are still different rosettes
+               and a replay is still identical
+     kalSpin   a TEMPO-LOCKED advance: one full mirror turn every KAL_BEATS beats, scaled by the
+               section's energy. Tempo-locked for the same reason the form's own spin is (see
+               SPIN_BEATS) -- a rate in degrees per second throws away the lock that makes the
+               turn land with the track.
+     kalKick   a decaying nudge on low and mid onsets, so individual hits show in the rosette
+
+   A CONTINUOUS advance is safe where a re-latch was not. The old note is right that moving the
+   mirror line under a folded form throws the twin across it -- but that is a JUMP. Sweeping it
+   at a musical rate is the twin orbiting the form, which is the reference's actual behaviour:
+   its rosette turns and re-forms continuously rather than cutting between arrangements. */
+/* BEATS PER UNIT OF MIRROR ANGLE. One unit is PI/seg, so on a 3-segment form it is 60 degrees --
+   and since a reflection line repeats every 180, three units is a full cycle of distinct rosettes.
+   At 8 beats per unit that cycle takes two bars at full energy, which is the scale the reference
+   changes on. The first value tried was 24 beats per unit: a full cycle then took 16 seconds and
+   read as drift rather than as the music, which is the fault this whole change exists to fix. */
+const KAL_BEATS=8;
+let kalBase=1.0, kalSpin=0, kalKick=0;
 const KAL_SECS=1.2;
 const KAL_LO=0.66, KAL_HI=0.92;                       // fractions of kalRef: off below, full above
 function kalCalibrate(){
@@ -3712,7 +3737,13 @@ function frame(){
       let kd=(Math.max(0,energy)/kalRef - KAL_LO)/(KAL_HI-KAL_LO);
       kd=Math.min(1,Math.max(0,kd)); kd=kd*kd*(3-2*kd);
       kd=Math.min(1, Math.max(kd, kalBoost) + epic*0.22);
-      kalDrive = kd<0.12 ? 0 : (kd-0.12)/0.88; }
+      kalDrive = kd<0.12 ? 0 : (kd-0.12)/0.88;
+      /* THE BEAT SHOWS IN THE AMOUNT TOO, but only once the fold is already open. The deadzone
+         above exists because map() takes the two-evaluation path for ANY u_kal over 0.002, so a
+         drive that idles just above zero costs a full bloom and shows nothing; letting a kick
+         push it over that line would spend the quiet two thirds of a track on the expensive path.
+         Inside a bloom the path is already paid for and the swell is free. */
+      if(kalDrive>0) kalDrive=Math.min(1, kalDrive + pulseS*0.16 + HITS.low*0.12); }
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
     moodTarget=s.palette||MO;
@@ -3720,9 +3751,11 @@ function frame(){
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
       sectRand=Math.random();                       // the matrix's 'Section step' source
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
-      // only while the form is unfolded: swinging the mirror line under a folded shape throws
-      // the twin across it in one frame
-      if(kalAmt<0.02) kalPhase=kalPhaseFor(s.t0);
+      // The section's hash is the STARTING angle now, not the whole story: kalSpin carries it on
+      // from there every frame. Still gated on the form being unfolded, because re-seeding the
+      // base mid-bloom is the jump the old note warns about -- what is safe is the sweep, not a
+      // new starting point under a form that is already folded.
+      if(kalAmt<0.02) kalBase=kalPhaseFor(s.t0);
       const want=2+Math.round(Math.max(0,Math.min(1,s.energy))*2);   // 2..4 twists, per SECTION
       if(want!==twA && twMix===0){ twB=want; twMix=1e-4; } }
     // predictive anticipation: ramp before a drop
@@ -3852,6 +3885,20 @@ function frame(){
   // live curve safe to steer with; nothing here can snap.
   const kalT=Math.max(0,Math.min(1,((kalMode==='on')?1:(kalMode==='off')?0:kalDrive)+MV('kal')));
   { const st=dt/KAL_SECS; kalAmt=Math.max(0,Math.min(1, kalAmt+Math.max(-st,Math.min(st,kalT-kalAmt)))); }
+  /* THE MIRROR'S OWN MOTION. Advanced every frame on the beat grid rather than latched per
+     section -- see the note above kalBase. Scaled by energy so a quiet passage turns slowly and a
+     loud one churns, and gated on the fold being at least partly open: with kalAmt at 0 there is
+     no twin on screen to turn, and advancing anyway would land the next bloom at an arbitrary
+     angle instead of the one its section hash chose. */
+  if(kalAmt>0.002){
+    // NOT scaled by MOT.spin. The mirror angle is a form parameter, not a fourth rotation axis:
+    // Freeze holds the form still so you can look at it, and the whole point of this change is
+    // that the rosette keeps answering the music while you do.
+    kalSpin += (bpm/60)/KAL_BEATS*dt*(0.55+energy*1.20);
+    kalKick += (HITS.low*0.16+HITS.mid*0.10)*dt*8.0;
+  } else { kalSpin=0; kalKick=0; }        // a closed fold resets, so each bloom starts on its hash
+  kalKick *= Math.exp(-2.6*dt);
+  kalPhase = kalBase + kalSpin + kalKick;
   // spinKick is gone. Feeding onsets into the rotation at all — as velocity OR as a decaying
   // offset — is what read as jiggle: something in the mix hits on almost every frame, so the
   // form sat permanently trembling around its own axis instead of turning. The beat still
