@@ -404,6 +404,7 @@ uniform float u_kal,u_kalPh;           // kaleidoscope: amount 0..1, and the mir
 uniform float u_swirl;                 // third rotation axis (xy / about z); see formRot
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
 float h31(vec3 p){p=fract(p*.1031);p+=dot(p,p.zyx+31.32);return fract((p.x+p.y)*p.z);}
 // QUINTIC interpolant, not cubic smoothstep — and this is the "low poly" faceting.
 //
@@ -814,39 +815,9 @@ float evalForm(vec3 p){
    step through. Mixing a folded POSITION into an unfolded one — the obvious way to blend this —
    has no such guarantee: a domain map whose derivative passes through zero compresses space and
    the field then overestimates in the compressed direction. */
-/* THE DOMAIN FOLD. Polar, about Z, into a wedge of half-angle PI/N with the mirror plane at
-   u_kalPh -- so the whole kaleidoscope is ONE isometry applied to the sample position, and the
-   form is then evaluated once at the folded point.
-
-   WHY THIS IS NOT THE FOLD THAT FAILED. The first attempt folded xz, about Y, and these profiles
-   have no structure on that axis at all: they are drawn in xy and extruded along z. It also
-   folded to a wedge unrelated to the form's own repeat, so the wedge covered a gap and the arms
-   -- which is where the mass is -- fell outside it and were discarded. Hence the half-size
-   six-pointed star with no relationship to its source.
-
-   N IS THE FORM'S OWN SEGMENT COUNT, and that is what makes this mass-preserving. The profiles
-   are already C_N about z (p2Tris and the rest rotate by i*2PI/u_segN), so folding by 2PI/N is a
-   no-op on the rotational part -- it maps every arm onto the arm that was already there. What the
-   abs() adds is the mirror, promoting C_N to the full dihedral D_N. That is the SAME group the
-   union produced, reached by moving the sample instead of evaluating a second copy.
-
-   Nothing can be discarded by it: every point in the plane maps into the wedge, and the wedge
-   contains a whole arm rather than a gap because u_kalPh places the mirror plane and the drive
-   sweeps it. A form with no N-fold symmetry (p2Wave is C2 at best) is folded onto itself rather
-   than cut down -- the worst case is that an asymmetric arm becomes symmetric, not that it goes.
-
-   THE FIELD STAYS EXACTLY AS VALID AS IT WAS. A rotation composed with a reflection is an
-   ISOMETRY: |fold(a)-fold(b)| == |a-b| everywhere except on the fold planes themselves, so
-   f(fold(p)) is 1-Lipschitz wherever f is. The union needed smin to keep that guarantee and the
-   old note had to argue for it; here it is free. */
-vec3 kalFold(vec3 p){
-  float N=clamp(floor(u_segN+0.5),2.0,8.0);
-  float w=PI/N;                                    // half-wedge; the pattern repeats every 2w
-  float a=atan(p.y,p.x)-u_kalPh;
-  a-=2.0*w*floor((a+w)/(2.0*w));                   // wrap into [-w, w)
-  a=abs(a)+u_kalPh;                                // mirror about the plane at u_kalPh
-  float r=length(p.xy);
-  p.xy=vec2(cos(a),sin(a))*r;
+vec3 kalMirror(vec3 p){
+  float c=cos(2.0*u_kalPh), sn=sin(2.0*u_kalPh);   // reflection about the line at angle u_kalPh
+  p.xy=vec2(c*p.x+sn*p.y, sn*p.x-c*p.y);
   return p;
 }
 vec2 map(vec3 wp){
@@ -882,22 +853,12 @@ vec2 map(vec3 wp){
   float dObj;
   if(br>mix(0.10,0.85,u_scene)) dObj=br*s*0.5;
   else{
-  /* KALEIDOSCOPE, as a domain fold. THREE PATHS, and the top one is the reason for the rewrite:
-     at a fully open fold the form is evaluated ONCE, at the folded position, so the effect costs
-     the same as not having it. The union it replaces always cost two evaluations while it was on,
-     which is what the render-scale note below is paying for.
-     The middle path is the fade, and it is the only place two evaluations are still needed --
-     blending the two FIELDS rather than the two positions, because a domain map blended toward
-     the identity compresses space and stops being an isometry, and then the field overestimates
-     in the compressed direction and the march steps through the surface. */
-  float d;
-  if(u_kal>0.998){
-    d=evalForm(kalFold(p));
-  } else if(u_kal>0.002){
+  // KALEIDOSCOPE: the form softly unioned with its own reflection, faded in by u_kal. Off costs
+  // one evalForm and skips the second entirely; on costs two, for as long as it is on.
+  float d=evalForm(p);
+  if(u_kal>0.002){
     float kk=clamp(u_kal,0.,1.); kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
-    d=mix(evalForm(p), evalForm(kalFold(p)), kk);
-  } else {
-    d=evalForm(p);
+    d=mix(d, smin(d, evalForm(kalMirror(p)), 0.08), kk);
   }
   // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
   // surface chatter. Amplitude is divided back down by the frequency: displacement gradient
@@ -4128,7 +4089,7 @@ function frame(){
   gl.uniform1f(US('u_swirl'),formSwirl);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
      have segments (p2Tris, p2Clover) and just a reasonable angle on the four that do not. See
-     the note above kalFold() for why that is fine and why this is a dial to look at rather
+     the note above kalMirror() for why that is fine and why this is a dial to look at rather
      than a lattice to compute. window.KAL={phase} to try others. */
   const KALO=window.KAL||{};
   gl.uniform1f(US('u_kal'),kalAmt);
@@ -5238,7 +5199,7 @@ function rollAll(seedStr){
   // ---- things every family gets, rolled BEFORE the recipe so the recipe can override them
   setCtl('selPal', pick(r,['auto','auto','auto','blood','acid','ultra','cyber','solar','mono']));
   /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count and only two of the six
-     profiles use it (p2Tris and p2Clover -- see the note above kalFold); on the others the
+     profiles use it (p2Tris and p2Clover -- see the note above kalMirror); on the others the
      slider is inert, so rolling a high count there is a roll that did nothing. And the Arc is a
      broken ring: repeated eight times it stops reading as a single stroke. */
   const shape=pick(r,['0','1','2','3','4','5','6','7','8','6','7','8']);   // the complex three, twice as often
