@@ -190,30 +190,6 @@ raymarch creases.
 - **Shape** — `Auto · Director` lets the Director pick, or lock one of Shell / Ovoid / Cross /
   Lattice / Column / Disc, plus `Reference mesh` (a BVH over a 4,608-triangle mesh packed into
   textures, `assets/mesh_*.f32`) and `Custom SVG…`.
-- **Kaleido** — `Auto · Director` (default), `Always on`, `Off`. A **domain fold**, not a mirrored
-  copy: the sample point is folded about Z into a wedge of half-angle π/N and the form is then
-  evaluated **once**, at the folded position. N is `u_segN`, the form's own segment count, and
-  that is what makes the fold mass-preserving — the profiles are already C_N about z, so folding
-  by 2π/N maps every arm onto an arm that was already there, and the `abs()` only adds the mirror,
-  promoting C_N to the full dihedral D_N.
-
-  This replaced a mirror **union**, `min(f, f∘mirror)`, which creased: two surfaces meeting along
-  an intersection curve produce a ridge, and on an N-fold form those ridges radiate. Widening the
-  `smin` made them deeper while inflating the shape; capping the fold amount made them sharper
-  still, because a blend of two distance *fields* has a level set with far higher curvature than
-  either endpoint. Both were measured and reverted — the geometry had to change, not its tuning.
-
-  It is also **free**. With the render scale pinned, kaleidoscope off against on: the union cost
-  **+64%** (17.9 → 29.4 ms), the fold costs **−12%** (22.8 → 20.0 ms). At a fully open fold the
-  shader runs one `evalForm` exactly as it does with the effect off, and the folded form is
-  smaller, so rays terminate sooner. Only the *fade* still needs two evaluations, and it blends
-  the two fields rather than the two positions: a domain map blended toward the identity stops
-  being an isometry, and a compressed domain makes the field overestimate and the march step
-  through the surface.
-
-  The mirror plane's angle is swept on the beat grid — one unit of angle per 32 beats, scaled by
-  the section's energy, nudged by low and mid onsets. An earlier 8 beats per unit dragged the fold
-  planes across the surface fast enough to read as lines crawling over the form.
 - **Material** — Chrome, Gold, Plastic, Matte, Pearl, Glass, Clay, Frosted, Holographic.
   Gold carries its own **`f0Tint`** (1.00, 0.77, 0.34), read off the preset rather than the eased
   value: metal reflectance is a discrete identity, and easing it would cross-fade a switch to
