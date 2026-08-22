@@ -1286,6 +1286,51 @@ vec3 env(vec3 d,float rough){
   e+=vec3(0.96,0.97,1.00)*strip*wall*smoothstep(-0.15,0.30,d.y)*0.42*u_room;
   return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
 }
+/* ---- IMAGE-BASED LIGHTING ----
+   env() above is an analytic room: four softboxes, a gradient, a horizon and a panel bank. It is
+   a good room and it is infinitely sharp, but it is a room somebody described, and it shows -- a
+   reflection in it has four highlights and no story. The reference this is matched against
+   (sticky.ui8.dev) lights with a photographed studio, and that is most of what separates their
+   surfaces from ours: real environments have clutter, falloff, and a hundred weak sources, and a
+   reflective object reads all of it.
+
+   So u_envMap is a real HDRI (brown_photostudio_02, CC0 from Poly Haven -- the same one the
+   reference loads), prefiltered OFFLINE into an equirect mip chain where level L is the room
+   convolved for roughness L/(LEVELS-1). The lookup is one textureLod with the level driven by
+   roughness, which is the whole point: a mirror gets the sharp room, a satin surface gets the
+   room blurred by exactly its own BRDF lobe, and the diffuse term gets the cosine-convolved
+   level, which is irradiance and nothing else.
+
+   Prefiltered offline, not at load: the convolution never changes, so paying for it per page
+   load buys nothing. It is 1.05MB for eight levels.
+
+   HARDWARE MIPS WERE TRIED FIRST AND ARE NOT THIS. Baking the analytic room to an equirect
+   texture and calling generateMipmap looked equivalent and measured much worse -- box-filtering
+   an equirect is far too wide a filter, and the render came out FLATTER than the analytic room
+   (91 levels of range across the form collapsing to 26). A mip here is a GGX lobe, not a box.
+
+   The Director still owns the LEVEL and the TINT: u_env rides darkness and u_warmth is an
+   emotion curve, and both are applied to the sample, so the room still reacts to the track. */
+uniform sampler2D u_envMap;
+uniform float u_envMapOn;      // 0 = fall back to the analytic env(), for A/B and for the
+                               // frames before the asset has finished loading
+#define ENV_LEVELS 8.0
+vec2 envDir(vec3 d){
+  // MUST match dirs_for() in pmrem.py: azimuth over [-pi,pi], and y as sin(elevation), which is
+  // an equal-area parameterisation -- every texel carries the same solid angle, which is why the
+  // offline convolution needs no sin(theta) weighting. Get this wrong and reflections point
+  // somewhere the bake never looked.
+  float phi=atan(d.z,d.x);
+  return vec2(phi*0.15915494309+0.5, clamp(d.y*0.5+0.5, 0.0, 1.0));
+}
+vec3 envL(vec3 d,float rough){
+  if(u_furnace>0.5) return vec3(1.0);
+  if(u_envMapOn<0.5) return env(d,rough);
+  // Level index is LINEAR in roughness because that is exactly how the chain was generated.
+  // A sqrt() curve here would be a guess that disagrees with the bake.
+  vec3 e=textureLod(u_envMap, envDir(d), clamp(rough,0.0,1.0)*(ENV_LEVELS-1.0)).rgb;
+  return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
+}
 // Four-stop colour ramp with overlapping smoothstep bands. The overlap matters: butted-up
 // segments put a visible crease at each stop, and on a field this smooth a crease reads as a
 // contour line rather than as a gradient.
@@ -1532,7 +1577,7 @@ void main(){
     vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
     float sha=calcSha(p,L,min(u_shaN,40));           // cast shadow: the floor never needed more
     float occ=calcAO(p,gn);                          // contact darkening
-    vec3 amb=env(gn,1.0)*0.95;
+    vec3 amb=envL(gn,1.0)*0.95;
     // Contact shadow has to be DARK right under the form or it reads as a grey smudge. Both
     // terms are driven near zero in full occlusion, and AO is sharpened so the darkest part sits
     // tight against the silhouette instead of spreading.
@@ -1684,7 +1729,7 @@ void main(){
     // so it has no business moving a hemispherical integral at all: micro detail belongs in the
     // specular lobe, where the narrow BRDF is what makes it visible, and in AO. n still drives
     // NoL, the specular and the reflection; the irradiance reads gn, which is what it means.
-    vec3 amb=env(gn,1.0);         // irradiance, not irradiance times a fudge — see ENERGY above
+    vec3 amb=envL(gn,1.0);         // irradiance, not irradiance times a fudge — see ENERGY above
     // FLAT AMBIENT for the hard-surface look. env(gn) is the physically right thing and it is why
     // a face carries a gradient: the irradiance genuinely changes as the normal turns. Flat-shaded
     // renders get their legibility by giving that up -- one ambient value for the whole object, so
@@ -1837,7 +1882,7 @@ void main(){
         rc += env(reflect(R,rn), min(1.0,rgh+0.22))*0.22*mix(0.3,1.0,rAO);
         refl = rc;
       } else {
-        refl = env(R,rgh)*mix(0.35,1.0,clamp(rocc,0.0,1.0));
+        refl = envL(R,rgh)*mix(0.35,1.0,clamp(rocc,0.0,1.0));
       }
     } else {
       // cheap path: short occlusion march only, as before
@@ -1846,7 +1891,7 @@ void main(){
         float hh=mapD(p+R*tr);
         if(hh<0.004){ rocc=0.0; break; }
         rocc=min(rocc,6.0*hh/tr); tr+=clamp(hh,0.03,0.35); if(tr>2.2) break; }
-      refl=env(R,rgh)*mix(0.30,1.0,clamp(rocc,0.0,1.0));
+      refl=envL(R,rgh)*mix(0.30,1.0,clamp(rocc,0.0,1.0));
     }
     // Schlick-with-roughness: the standard IBL Fresnel. The old pow(1-NoV,2.6) ramp ignored
     // roughness entirely, so a matte surface still lit a bright reflective rim and a polished
@@ -2630,7 +2675,8 @@ const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;
 // Strength of the reflected room structure. The panel bank exists so polished surfaces have
 // something with edges to reflect, but it is the one feature in env() that repeats angularly,
 // so it is also the one that can read as spokes. ENV.room=0 leaves a plain gradient.
-const ENV={room:0.45};  window.ENV=ENV;   // per-term ablation switches for measuring edge artefacts
+// map:0 falls back to the analytic env(), for A/B against the prefiltered HDRI.
+const ENV={room:0.45, map:1};  window.ENV=ENV;   // per-term ablation switches for measuring edge artefacts
 const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
@@ -4274,6 +4320,18 @@ function frame(){
   // cinematic look and the wrong one for this.
   gl.uniform4f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.disp*flatK,DXS.twoTone*flatK);
   gl.uniform1f(US('u_furnace'),DXS.furnace?1:0);
+  const envOn = envMapReady && ENV.map;
+  gl.uniform1f(US('u_envMapOn'), envOn?1:0);
+  /* UNCONDITIONAL, and that is the whole point. A sampler uniform that is never assigned reads
+     unit 0 -- and the bright pass below leaves hdrT bound to unit 0, which is the texture the
+     scene pass renders INTO. So on every frame before the asset finished loading, and on every
+     frame with ENV.map=0, the scene shader declared a sampler pointing at its own render target
+     and the driver refused the draw: "Feedback loop formed between Framebuffer and active
+     Texture", once per frame until the console gave up reporting it.
+     Binding null when there is no texture yet is what keeps unit 9 from inheriting hdrT, and
+     restoring unit 0 afterwards is the convention every sibling binding above follows. */
+  gl.activeTexture(gl.TEXTURE0+9); gl.bindTexture(gl.TEXTURE_2D, envMapTex||null);
+  gl.uniform1i(US('u_envMap'),9); gl.activeTexture(gl.TEXTURE0);
   // DYNAMICS DRIVES THE KEY:FILL RATIO. A dynamic passage gets less fill, so the form is modelled
   // harder and the shadow side falls away; a squashed, limited passage gets more, which flattens
   // it. That is the same thing a lighting cameraman does with a bounce card, and it is a far
@@ -4971,6 +5029,52 @@ function loadDetail(name){
     im.src=url;
   });
 }
+/* ---- PREFILTERED HDRI ----
+   assets/env_studio.bin is brown_photostudio_02 (CC0, Poly Haven) run through pmrem.py: eight
+   equirect levels, each a GGX convolution of the room at that level's roughness, with the last
+   one a cosine convolution for the diffuse term. Header is 'AENV', w, h, levels, channels; then
+   the levels back to back as float16 RGB.
+   texStorage2D with exactly LEVELS levels rather than texImage2D per level: it makes the texture
+   COMPLETE at eight levels instead of demanding a full chain down to 1x1, which is what a
+   half-built mip chain would otherwise be -- and an incomplete texture samples as black with no
+   error anywhere to explain it. */
+let envMapTex=null, envMapReady=false;
+async function loadEnvMap(){
+  try{
+    const r=await fetch('./assets/env_studio.bin',{cache:'force-cache'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const buf=await r.arrayBuffer();
+    const dv=new DataView(buf);
+    const magic=String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+    if(magic!=='AENV') throw new Error('bad magic '+magic);
+    const W=dv.getUint16(4,true), H=dv.getUint16(6,true),
+          L=dv.getUint16(8,true), C=dv.getUint16(10,true);
+    if(C!==3) throw new Error('expected RGB, got '+C+' channels');
+    envMapTex=gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D,envMapTex);
+    gl.texStorage2D(gl.TEXTURE_2D,L,gl.RGB16F,W,H);
+    let off=12;
+    for(let i=0;i<L;i++){
+      const w=Math.max(4,W>>i), h=Math.max(2,H>>i), n=w*h*3;
+      gl.texSubImage2D(gl.TEXTURE_2D,i,0,0,w,h,gl.RGB,gl.HALF_FLOAT,
+                       new Uint16Array(buf,off,n));
+      off+=n*2;
+    }
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    // REPEAT in azimuth so the +/-pi seam interpolates; CLAMP up the poles, where there is no
+    // wrap to make and a repeat would fold the ceiling onto the floor.
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D,null);
+    envMapReady=true;
+    return true;
+  }catch(e){
+    // Not fatal: envL() falls back to the analytic room, which is what shipped before this.
+    console.warn('env map unavailable, using the analytic room:',e.message);
+    envMapReady=false; return false;
+  }
+}
 let bvhNodeTex=null, bvhTriTex=null, meshOn=false, bvhLoading=false;
 async function loadBVH(){
   if((bvhNodeTex&&bvhTriTex)||bvhLoading) return bvhNodeTex;
@@ -5555,6 +5659,7 @@ setInterval(()=>{
     'look '+lookName+'   governor avg '+frameAvg.toFixed(1)+' ms';
 },500);
 
+loadEnvMap();
 if(!bakeDetail('micro')) loadDetail('micro').catch(e=>__showErr('detail map: '+e.message));
 frame();
 </script>
