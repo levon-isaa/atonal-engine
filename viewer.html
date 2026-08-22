@@ -394,6 +394,7 @@ uniform float u_svgOn,u_svgDepth,u_svgBevel;
 uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
 uniform float u_fill;                  // directional fill leg of the rig; 0 ablates it (DXS.fill)
+uniform float u_keyG,u_fillG,u_ambG;   // key/fill/ambient gains; their RATIO is the modelling
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
 uniform vec3  u_f0Tint;                // metal reflectance colour: gold is not chrome lit yellow
 uniform float u_wear;                  // edge wear, 0..1; see the WEAR note in the shading
@@ -1597,7 +1598,7 @@ void main(){
     // 10.9% — while the 95th percentile sits at 231.0 +/- 0.1 the whole way: the leg models the
     // turned-away side without touching a single highlight, which is the test for a fill. This
     // is the 5.4% point. DXS.fill scales it, so the sweep is reproducible from the console.
-    float ambK=mix(1.0,0.90,u_fill);
+    float ambK=mix(1.0,0.90,u_fill)*u_ambG;
     /* HARD-SURFACE RIG. Flattening the ambient alone is not enough and the first attempt proved
        it: with one ambient tone and the key still at 0.95, the ambient simply WON and the form
        came out a single flat silhouette -- the opposite failure to the one being fixed. Flat
@@ -1646,8 +1647,8 @@ void main(){
     // tone back into a gradient. So both floors rise steeply with the look.
     float aoF =mix(0.22,0.72,u_hardAmb);
     float shaF=mix(0.35,0.74,u_hardAmb);
-    vec3 c=kD*( keyC*(0.95*hk*u_keyPulse*NoL*mix(shaF,1.0,sha))*mix(shaF,1.0,occ)
-              + fillC*(0.68*hf*u_fill*NoF)*mix(mix(0.30,0.72,u_hardAmb),1.0,occ)
+    vec3 c=kD*( keyC*(0.95*u_keyG*hk*u_keyPulse*NoL*mix(shaF,1.0,sha))*mix(shaF,1.0,occ)
+              + fillC*(0.68*u_fillG*hf*u_fill*NoF)*mix(mix(0.30,0.72,u_hardAmb),1.0,occ)
               + amb*ambK*mix(aoF,1.0,occ) )
           + Fms*Ems*amb*ambK*mix(aoF,1.0,occ);
     // emotional rim: swells with epicness/arousal, colour from valence
@@ -2617,6 +2618,40 @@ const TIERS={
            dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, shutter:0,
            note:'Ultra — supersampled, adapts between 1.00x and 1.60x'},
 };
+/* THE IBL RIG. These three apply ONLY when a prefiltered HDRI is lighting the scene; the
+   analytic room is left exactly as it was tuned, and reads 1.0/1.0/1.0.
+
+   Swapping the analytic room for a real prefiltered environment flattened every dielectric, and
+   the cause is not a bug in the prefilter -- it is that the prefilter is CORRECT. The analytic
+   room's ambient was env(n,1.0), radiance sampled along the normal, which is dominated by a
+   vertical gradient plus a horizon step: a steep function of n.y, so it modelled the form hard.
+   Irradiance, which is what the diffuse term actually wants, is the cosine-weighted integral of
+   the whole hemisphere -- band-limited to about two SH bands, and in a photo studio (a room
+   built to be EVEN) very nearly constant. Physically right, and on its own, dead flat.
+
+   So the modelling has to come from the direct rig instead, which is how a real product shot is
+   lit anyway: a big key does the shaping and the room only fills. Measured on a frozen pose with
+   the form isolated by DBGMASK, as shadow-side p5 over lit-side p95 -- the reference sits near
+   45%, and the engine shipped at 80%:
+
+       amb    key   fill    pearl sd   shadow/lit   mean
+       1.00   1.00  1.00        12.4       80%       193   <- what the HDRI shipped as
+       0.30   1.00  1.00        28.3       50%       148   ambient alone: correct ratio, too dark
+       0.30   1.80  1.00        34.5       47%       163
+       0.45   1.60  1.00        26.4       57%       165
+       0.35   1.70  1.60        34.1       50%       172
+       0.35   1.70  2.20        37.3       48%       177   <- shipped
+
+   THE FILL IS THE TERM THAT MAKES IT AFFORDABLE, and it is why the answer is not simply "less
+   ambient". Cutting ambient to 0.30 alone hits clay and matte hardest, because they carry
+   reflect 0.00 and 0.12 -- ambient is very nearly the only light they get, so the ratio comes
+   right while the object goes dark (clay mean 121). The fill is DIRECTIONAL, so raising it puts
+   light back on the turned-away side while still shaping it, where ambient only lifts everything
+   at once. At 2.2 clay sits at mean 146 with sd 45.3 and pearl keeps its 48%.
+
+   Metals barely move under any of this: they mirror the map through envL(R,rgh), which none of
+   these three gains touch. */
+let KEY_G=1.70, FILL_G=2.20, AMB_G_IBL=0.35;
 const KVAR_CAP=0.030;   // see the GEOMETRIC SPECULAR AA note in the shader
 let TIER='high';
 // Last frame's camera and spin, for the reprojection in motionBlur(). Seeded on first use so the
@@ -4146,6 +4181,9 @@ function frame(){
   gl.uniform1f(US('u_furnace'),DXS.furnace?1:0);
   const envOn = envMapReady && ENV.map;
   gl.uniform1f(US('u_envMapOn'), envOn?1:0);
+  gl.uniform1f(US('u_keyG'), (window.KEYG !==undefined)?window.KEYG :(envOn?KEY_G    :1.0));
+  gl.uniform1f(US('u_fillG'),(window.FILLG!==undefined)?window.FILLG:(envOn?FILL_G   :1.0));
+  gl.uniform1f(US('u_ambG'), (window.AMBG !==undefined)?window.AMBG :(envOn?AMB_G_IBL:1.0));
   /* UNCONDITIONAL, and that is the whole point. A sampler uniform that is never assigned reads
      unit 0 -- and the bright pass below leaves hdrT bound to unit 0, which is the texture the
      scene pass renders INTO. So on every frame before the asset finished loading, and on every
