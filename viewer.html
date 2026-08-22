@@ -173,6 +173,8 @@
 
   <details id="gMat"><summary>Material</summary>
     <div class="row"><label>Material</label><select id="selMat">
+      <option value="chrome">Chrome</option><option value="gold">Gold</option>
+      <option value="plastic">Plastic</option><option value="matte">Matte</option>
       <option value="pearl" selected>Pearl</option><option value="glass">Glass</option>
       <option value="clay">Clay</option>
       <option value="frosted">Frosted</option><option value="holo">Holographic</option></select></div>
@@ -180,6 +182,16 @@
       <option value="satin" selected>Satin</option>
       <option value="matte">Matte</option>
       <option value="gloss">Gloss</option></select></div>
+    <!-- WEAR is a property of the object's history, not of what it is made of, so it sits beside
+         the material rather than inside it: chrome and plastic can both be worn. -->
+    <div class="row"><label>Wear</label>
+      <input type="range" id="matWear" min="0" max="100" value="0"><span class="val" id="matWearV">0</span></div>
+    <div class="row"><label>Lighting</label><select id="selEnv">
+      <option value="studio" selected>Studio &middot; daylight</option>
+      <option value="studio_small">Studio &middot; small</option>
+      <option value="dawn">Dawn</option>
+      <option value="city">City</option>
+      <option value="analytic">Analytic room</option></select></div>
     <!-- Default is the ISOTROPIC map. Machined is still here, and it is now a mild 1.6:1 brush
          rather than the 2.27:1 the PNG had, but any directional map reads as streaking on the
          large flat faces of an extruded profile — which is not what these forms want by default. -->
@@ -400,6 +412,8 @@ uniform float u_valence,u_warmth,u_epic;
 uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
 uniform float u_fill;                  // directional fill leg of the rig; 0 ablates it (DXS.fill)
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
+uniform vec3  u_f0Tint;                // metal reflectance colour: gold is not chrome lit yellow
+uniform float u_wear;                  // edge wear, 0..1; see the WEAR note in the shading
 uniform float u_hwlod;                 // 1 = hardware mip selection instead of the analytic one (A/B)
 uniform float u_nobound;               // 1 = march unbounded, as before the ray/sphere test (A/B)
 uniform float u_bmarg;                 // extra bounding radius, for testing whether the bound clips
@@ -1624,8 +1638,19 @@ void main(){
     // WORSE, not better — but the metric (frame-to-frame pixel change) cannot separate genuine
     // shimmer from sharp reflections legitimately sweeping across a rotating chrome surface, so
     // it could not justify the change either way. Keeping the value that was tuned by eye.
-    float kvar=min(u_kvar, 0.5*(dot(dnx,dnx)+dot(dny,dny)));
+    float nturn=0.5*(dot(dnx,dnx)+dot(dny,dny));   // how fast the shading normal turns per pixel
+    float kvar=min(u_kvar, nturn);
     rgh=min(1.0, sqrt(rgh*rgh+kvar));
+    /* WEAR. On a real object the HIGH points rub against everything else, so edges lose their
+       coating first: they go rough and the colour thins toward the substrate while the recesses
+       stay pristine. That is the opposite of the cavity mask, which darkens recesses, and both
+       are needed -- one is dirt, this is abrasion.
+       The edge signal is nturn, the rate the shading normal turns across a pixel, which the
+       specular-AA term above already computes. It is screen-space, so a fillet reads as an edge
+       at any zoom rather than at one authored scale, and it costs nothing new. Broken up by the
+       surface grain so it is a worn edge and not an outline drawn around the form. */
+    float wear=u_wear*clamp(sqrt(nturn)*7.0,0.0,1.0)*(0.55+0.45*dRgh);
+    rgh=mix(rgh, max(rgh,0.62), wear);
     float NoV=clamp(dot(n,v),1e-4,1.);
     float fr=pow(1.-NoV,2.6);
     // albedo carries the same grain, so the body is not one flat colour
@@ -1652,7 +1677,10 @@ void main(){
     // The furnace test needs a WHITE, lossless albedo or it measures the paint rather than the
     // BRDF: a lavender base returns 0.83 under a unit environment simply because it is lavender.
     base=mix(base, vec3(1.0), u_furnace);
-    vec3 f0=mix(vec3(0.04), base, u_metal);
+    // A metal's base colour IS its f0, so gold needs its own reflectance rather than a yellow
+    // light on chrome. Wear lifts it back toward bare metal: worn gold shows the alloy under it.
+    vec3 f0=mix(vec3(0.04), base*mix(u_f0Tint, vec3(0.92), wear*0.6), u_metal);
+    base=mix(base, base*0.80+0.12, wear*0.55);
     /* ---- ENERGY ----
        White furnace test before this block: a WHITE, lossless dielectric under a uniform unit
        environment returned 1.245 (clay, which has no reflection or specular at all, returned
@@ -3239,6 +3267,23 @@ const MATS={
   // alb = albedo scale; the shared base is tuned for near-white materials, clay is a mid-tone,
   // absorb = Beer-Lambert absorption per unit of path length through the interior (glass).
   // Calibrated by eye against both ends: 0.016 rad was invisible, 0.10 read as rough stone.
+  /* THE REFERENCE'S SET (sticky.ui8.dev offers chrome / gold / glass / plastic / matte).
+     Ours had no plain metal at all: holo is metal:1 but its whole character is a thin film, so
+     asking for "chrome" got iridescence. These four are what a product configurator is expected
+     to have, and each is a physical description rather than a look:
+       chrome   metal, near-mirror. reflect 1 and rough 0.08, so it shows the room and little
+                else. tintw 0.10 because a metal's base colour IS its f0 -- tinting it with a
+                dark palette makes a black mirror, which is the note already on holo.
+       gold     the same, with f0 at gold's measured reflectance and a touch more roughness;
+                gold is not chrome with a yellow light on it.
+       plastic  dielectric, mid roughness, strong clearcoat. The clearcoat is what separates
+                plastic from clay: a bright specular sitting ON a coloured body rather than in it.
+       matte    the reference's "matte": a dielectric with essentially no specular return, but
+                NOT clay -- it keeps a little reflect so it still picks the room up at grazing. */
+  chrome:  {cc:0.00,ccr:0.10,sssd:0.0,tintw:0.10,iridf:1.0,alb:1.00,absorb:0.00,metal:1.0,rough:0.08,reflect:1.00,irid:0.00,transl:0.00,emis:0.00,trans:0.00,spec:1.00, tscale:220,tamp:0.006,taniso:1.00,trough:0.20},
+  gold:    {cc:0.00,ccr:0.10,sssd:0.0,tintw:0.06,iridf:1.0,alb:1.00,absorb:0.00,metal:1.0,rough:0.22,reflect:1.00,irid:0.00,transl:0.00,emis:0.00,trans:0.00,spec:1.00, tscale:200,tamp:0.010,taniso:1.00,trough:0.26,f0:[1.00,0.77,0.34]},
+  plastic: {cc:0.85,ccr:0.06,sssd:0.6,tintw:0.80,iridf:1.4,alb:0.92,absorb:0.00,metal:0.0,rough:0.34,reflect:0.55,irid:0.05,transl:0.10,emis:0.00,trans:0.00,spec:1.00, tscale:170,tamp:0.008,taniso:1.00,trough:0.22},
+  matte:   {cc:0.00,ccr:0.30,sssd:1.2,tintw:0.78,iridf:1.0,alb:0.80,absorb:0.00,metal:0.0,rough:0.88,reflect:0.12,irid:0.00,transl:0.12,emis:0.00,trans:0.00,spec:0.30, tscale:60, tamp:0.020,taniso:1.00,trough:0.30},
   pearl:   {cc:0.35,ccr:0.15,sssd:2.4,tintw:0.68,iridf:1.7,alb:1.00,absorb:0.00,metal:0.0,rough:0.35,reflect:0.40,irid:0.5,transl:0.35,emis:0.00,trans:0.00,spec:1.00, tscale:96, tamp:0.020,taniso:1.00,trough:0.36},
   // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
   // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
@@ -3261,6 +3306,14 @@ const MATS={
   holo:    {cc:0.45,ccr:0.08,sssd:0.0,tintw:0.15,iridf:14.0,alb:1.00,absorb:0.00,metal:1.0,rough:0.34,reflect:1.00,irid:1.60,transl:0.00,emis:0.00,trans:0.00,spec:1.00, tscale:300,tamp:0.016,taniso:0.06,trough:0.34},
 };
 const MAT =Object.assign({},MATS.pearl), MATT=Object.assign({},MATS.pearl);
+// Which preset is SELECTED, not the eased values. f0 is a discrete identity (gold's reflectance
+// is not a level to cross-fade through white on the way to chrome), so it is read off the preset
+// by name rather than out of MAT.
+let matName='pearl';
+// Edge wear, the reference's fourth Finish control. Kept out of the material presets on purpose:
+// wear is a property of the OBJECT's history, not of what it is made of, so chrome and plastic
+// should be able to carry the same amount of it.
+const WEAR={amt:0.0};  window.WEAR=WEAR;
 /* SURFACE DETAIL, as a global scale on the two channels that produce it.
    Applied at upload rather than by editing MAT, because MAT is continuously eased toward MATT —
    writing into it would be overwritten every frame, and writing into MATT would destroy the
@@ -4225,6 +4278,12 @@ function frame(){
   gl.uniform1f(US('u_detailOn'),detailTex?1:0); gl.uniform1f(US('u_detailScale'),detailScale*(window.DSCL||1));
   gl.uniform1f(US('u_diag'),window.DIAG||0);
   gl.uniform1f(US('u_kvar'),(window.KVAR!==undefined)?window.KVAR:KVAR_CAP);
+  // f0 is per material and defaults to white (a dielectric's f0 comes from the 0.04 side of the
+  // mix, so the value is only read when metal>0). MAT is eased toward MATT every frame, but f0
+  // is a discrete identity rather than a level, so it is read straight off the preset.
+  const _f0=(MATS[matName]&&MATS[matName].f0)||[1,1,1];
+  gl.uniform3f(US('u_f0Tint'),_f0[0],_f0[1],_f0[2]);
+  gl.uniform1f(US('u_wear'),WEAR.amt);
   gl.uniform1f(US('u_hwlod'),window.HWLOD?1:0);
   gl.uniform1f(US('u_nobound'),window.NOBOUND?1:0);
   gl.uniform1f(US('u_bmarg'),window.BMARG||0);
@@ -5039,9 +5098,16 @@ function loadDetail(name){
    half-built mip chain would otherwise be -- and an incomplete texture samples as black with no
    error anywhere to explain it. */
 let envMapTex=null, envMapReady=false;
-async function loadEnvMap(){
+// SWITCHABLE. The reference offers four environments and they change the render completely --
+// a dawn sky and a photo studio are different lights, not different tints -- so the name is a
+// parameter. Each is its own prefiltered chain built by tools_pmrem.py.
+const ENVS={studio:'Studio - daylight', studio_small:'Studio - small',
+            dawn:'Dawn', city:'City'};
+let envMapName='studio';
+async function loadEnvMap(name){
+  name = ENVS[name] ? name : 'studio';
   try{
-    const r=await fetch('./assets/env_studio.bin',{cache:'force-cache'});
+    const r=await fetch('./assets/env_'+name+'.bin',{cache:'force-cache'});
     if(!r.ok) throw new Error('HTTP '+r.status);
     const buf=await r.arrayBuffer();
     const dv=new DataView(buf);
@@ -5050,6 +5116,10 @@ async function loadEnvMap(){
     const W=dv.getUint16(4,true), H=dv.getUint16(6,true),
           L=dv.getUint16(8,true), C=dv.getUint16(10,true);
     if(C!==3) throw new Error('expected RGB, got '+C+' channels');
+    // texStorage2D is IMMUTABLE, so a texture cannot be re-specified -- switching environments
+    // has to allocate a new one and drop the old, or the second selection silently keeps showing
+    // the first.
+    if(envMapTex) gl.deleteTexture(envMapTex);
     envMapTex=gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D,envMapTex);
     gl.texStorage2D(gl.TEXTURE_2D,L,gl.RGB16F,W,H);
@@ -5067,7 +5137,7 @@ async function loadEnvMap(){
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
     gl.bindTexture(gl.TEXTURE_2D,null);
-    envMapReady=true;
+    envMapReady=true; envMapName=name;
     return true;
   }catch(e){
     // Not fatal: envL() falls back to the analytic room, which is what shipped before this.
@@ -5331,8 +5401,14 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); }
   segRow(); });
 segRow();
-$('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m) Object.assign(MATT,m); });
+$('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m){ Object.assign(MATT,m); matName=e.target.value; } });
 $('selFinish').addEventListener('change',e=>{ const f=FINISHES[e.target.value]; if(f) Object.assign(FINT,f); });
+$('matWear').addEventListener('input',e=>{ WEAR.amt=+e.target.value/100; $('matWearV').textContent=e.target.value; });
+$('selEnv').addEventListener('change',e=>{ const v=e.target.value;
+  if(v==='analytic'){ ENV.map=0; showStat('Lighting - analytic room'); hideStat(1400); return; }
+  ENV.map=1;
+  loadEnvMap(v).then(ok=>{ showStat(ok?'Lighting - '+e.target.selectedOptions[0].textContent
+                                     :'Could not load that environment',!ok); hideStat(1600); }); });
 $('selDetail').addEventListener('change',e=>{ const v=e.target.value;
   // detailName MUST be updated here. Without it the name stayed 'micro', and applyTier's guard
   // (detailName && detailName!=='off') then re-baked on the next quality-tier click — surface
@@ -5659,7 +5735,7 @@ setInterval(()=>{
     'look '+lookName+'   governor avg '+frameAvg.toFixed(1)+' ms';
 },500);
 
-loadEnvMap();
+loadEnvMap('studio');
 if(!bakeDetail('micro')) loadDetail('micro').catch(e=>__showErr('detail map: '+e.message));
 frame();
 </script>
