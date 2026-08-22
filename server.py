@@ -128,13 +128,10 @@ class H(BaseHTTPRequestHandler):
         if self.path.startswith("/health"):
             self._json(200, {"ok": True, "panns": tagger.available()})
             return
-        # Static serving, same-origin so the viewer and the studio can both call /analyze.
-        # "/" stays the ATONAL viewer; the studio is an ADDITIONAL page, not a replacement.
+        # Static serving, same-origin so the viewer can call /analyze without a preflight.
         path = unquote(self.path.split("?")[0])
         if path in ("/", "/viewer.html"):
             rel = "viewer.html"
-        elif path == "/studio":
-            rel = "studio.html"
         else:
             rel = path.lstrip("/")
         served = self._serve_static(rel)
@@ -146,19 +143,22 @@ class H(BaseHTTPRequestHandler):
         # decodeAudioData to fail on for reasons that pointed nowhere near the real cause.
         if path in ("/", ""):
             return self._json(200, {"service": "atonal-director", "post": "/analyze",
-                                    "pages": ["/", "/studio"]})
+                                    "pages": ["/"]})
         self._json(404, {"error": "not found", "path": path})
 
-    # Only these roots are reachable. The studio needs to load ES modules and the vendored
-    # three.js, which means real static serving — so the surface is restricted by prefix rather
-    # than left open over the whole working directory (which holds out/cache, the venv and .git).
+    # Only these roots are reachable. The viewer loads its SDF fields, detail maps and prefiltered
+    # environments from assets/, which means real static serving — so the surface is restricted by
+    # prefix rather than left open over the whole working directory (which holds out/cache, the
+    # venv and .git).
     # SPLIT INTO FILES AND DIRECTORIES, because one startswith() over both cannot tell them
     # apart. "viewer.html" as a prefix also matches viewer.html.bak, viewer.html~, viewer.html.orig
     # and viewer.html.rej -- the editor backups and merge leftovers that collect beside exactly
     # this file -- and each was served in full, verified with a canary. Directory entries keep
     # their trailing slash and stay a prefix test; file entries are now matched exactly.
-    _STATIC_FILES = ("viewer.html", "studio.html")
-    _STATIC_DIRS = ("studio/", "vendor/", "assets/")
+    # BOTH TUPLES KEEP THEIR TRAILING COMMA. Without it these are plain strings, and then
+    # `rel_posix not in _STATIC_FILES` becomes a SUBSTRING test -- "ew.htm" would pass it.
+    _STATIC_FILES = ("viewer.html",)
+    _STATIC_DIRS = ("assets/",)
     _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
              ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
              ".json": "application/json", ".svg": "image/svg+xml", ".wasm": "application/wasm",
@@ -170,11 +170,11 @@ class H(BaseHTTPRequestHandler):
         root = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
         fp = os.path.realpath(os.path.join(root, rel))
         # NORMALISE FIRST, THEN CHECK THE ALLOWLIST — in that order, and on the resolved path.
-        # Testing the raw request instead is a directory traversal: "vendor/../server.py" starts
+        # Testing the raw request instead is a directory traversal: "assets/../server.py" starts
         # with an allowed prefix AND still resolves inside the project root, so a prefix test on
         # the request plus a containment test on the result both pass while the path has left the
         # prefix entirely. That served every source file in the repo. realpath also collapses
-        # symlinks, so a link planted inside studio/ cannot redirect out either.
+        # symlinks, so a link planted inside assets/ cannot redirect out either.
         try:
             inside = os.path.relpath(fp, root)
         except ValueError:                       # different drive on Windows
@@ -195,9 +195,10 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self._cors()
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        # The vendored library is immutable for a given file; the app code is edited constantly,
-        # so only the former is allowed to sit in the browser cache.
-        self.send_header("Cache-Control", "public, max-age=86400" if rel_posix.startswith("vendor/") else "no-cache")
+        # Nothing served here is allowed to sit in the browser cache. The viewer is edited
+        # constantly, and assets/ is REGENERATED -- tools_pmrem.py rewrites env_*.bin in place,
+        # under the same name, so a cached copy would be silently stale rather than merely old.
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers(); self.wfile.write(body)
         return True
 
@@ -265,17 +266,14 @@ class H(BaseHTTPRequestHandler):
                 try: os.remove(tmp)
                 except OSError: pass
 
-    # Off by default (the studio pulls ~40 vendored module files per load, which drowns the
-    # interesting lines). ATONAL_LOG=1 turns it on — the first question when a browser says
+    # Off by default: the per-request lines drown the [analyze]/[done]/[cache] ones that are
+    # actually being read. ATONAL_LOG=1 turns it on — the first question when a browser says
     # "unreachable" is whether the request arrives at all, and silence cannot answer it.
     _LOG = bool(os.environ.get("ATONAL_LOG"))
 
     def log_message(self, fmt, *a):
         if self._LOG:
             print(f"  {self.command} {self.path} -> {a[1] if len(a) > 1 else ''}", flush=True)
-
-    def _unused_log_message(self, *a):  # quieter
-        pass
 
 class _V6(ThreadingHTTPServer):
     address_family = socket.AF_INET6
