@@ -2934,10 +2934,25 @@ let kalPhase=1.0;                                     // mirror angle, in units 
    its rosette turns and re-forms continuously rather than cutting between arrangements. */
 /* BEATS PER UNIT OF MIRROR ANGLE. One unit is PI/seg, so on a 3-segment form it is 60 degrees --
    and since a reflection line repeats every 180, three units is a full cycle of distinct rosettes.
-   At 8 beats per unit that cycle takes two bars at full energy, which is the scale the reference
-   changes on. The first value tried was 24 beats per unit: a full cycle then took 16 seconds and
-   read as drift rather than as the music, which is the fault this whole change exists to fix. */
-const KAL_BEATS=8;
+
+   SLOWED FROM 8 TO 32, and the reason is a defect the first value exposed rather than a change of
+   taste. The kaleidoscope is a UNION of the form with its own reflection, and a union's
+   intersection curve is a CREASE: wherever the twin passes through the original there is a ridge,
+   and because the profile is N-fold symmetric about the mirror axis those ridges radiate from the
+   centre. They have always been there. What sweeping the mirror at two bars per cycle did was
+   drag them across the surface continuously, which is what turned a static feature of the form
+   into radial lines crawling over it.
+
+   Widening the union's blend radius does NOT fix that -- swept from 0.08 to 0.45 and rendered at
+   each: the seams get DEEPER, not shallower, and the form inflates from a triskelion into a blob.
+   The intersection of two surfaces is a crease; smin moves it and fattens the object rather than
+   removing it. So the lever is the RATE, not the geometry.
+
+   At 32 beats per unit a full cycle takes about a minute at 143bpm, so the rosette still changes
+   with the track and still speeds up with the section's energy -- it simply drifts rather than
+   churns, and the seams read as part of the form again. The beat itself is carried by kalKick
+   below, which is transient and therefore reads as the music landing rather than as motion. */
+const KAL_BEATS=32;
 let kalBase=1.0, kalSpin=0, kalKick=0;
 const KAL_SECS=1.2;
 const KAL_LO=0.66, KAL_HI=0.92;                       // fractions of kalRef: off below, full above
@@ -3895,7 +3910,11 @@ function frame(){
     // Freeze holds the form still so you can look at it, and the whole point of this change is
     // that the rosette keeps answering the music while you do.
     kalSpin += (bpm/60)/KAL_BEATS*dt*(0.55+energy*1.20);
-    kalKick += (HITS.low*0.16+HITS.mid*0.10)*dt*8.0;
+    /* THE KICK CARRIES THE BEAT NOW that the sweep underneath it is slow, so it is deliberately
+       small: at the old 0.16 a full-strength low hit swung the mirror about 29 degrees, which
+       against a near-static base whipped the seams across the form on every kick. 0.06 puts it
+       near 11 degrees -- a nudge on the beat rather than a jump. */
+    kalKick += (HITS.low*0.06+HITS.mid*0.04)*dt*8.0;
   } else { kalSpin=0; kalKick=0; }        // a closed fold resets, so each bloom starts on its hash
   kalKick *= Math.exp(-2.6*dt);
   kalPhase = kalBase + kalSpin + kalKick;
