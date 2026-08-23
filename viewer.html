@@ -232,6 +232,10 @@
       <input type="range" id="filtAmt" min="0" max="100" value="100"><span class="val" id="filtAmtV">100</span></div>
     <div class="row" id="rowCell" style="display:none"><label id="labCell">Cell</label>
       <input type="range" id="filtCell" min="3" max="60" value="3"><span class="val" id="filtCellV">3</span></div>
+    <!-- Grain sits OUTSIDE the filter select on purpose: it is not one of the looks, it applies to
+         whatever the frame already is. Drag to 0 to turn it off. -->
+    <div class="row"><label title="Film grain over the finished frame, in every look. 0 turns it off.">Grain</label>
+      <input type="range" id="grainAmt" min="0" max="200" value="100"><span class="val" id="grainAmtV">100</span></div>
   </details>
 
   <!-- ROUTING MATRIX. See MODSRC / MODTGT in the script for what each end of a route is and why
@@ -256,10 +260,10 @@
     <!-- One axis, not three. Auto / Rays / Surface asked the viewer to understand a render-scale
          governor, a volumetric toggle and a normal-map switch in order to answer "make it look
          better" — and two of the three were named after their implementation. Quality is now a
-         single ladder, and the individual switches remain reachable from the console (raysOn,
-         STEP.shaN) for measuring. -->
+         single ladder, and the individual switches remain reachable from the console
+         (STEP.shaN) for measuring. -->
     <div class="row"><label>Quality</label>
-      <button id="qPreview" class="mini" title="Fast — half shadow samples, no shafts, coarser march. For scrubbing and setup.">Preview</button>
+      <button id="qPreview" class="mini" title="Fast — half shadow samples, coarser march. For scrubbing and setup.">Preview</button>
       <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
       <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.00x and 1.60x to stay usable">Ultra</button></div>
     <div class="row"><label>Capture</label>
@@ -368,7 +372,7 @@ uniform float u_iridFreq,u_tintAmt;
 // about which term produces a given artefact has been wrong here more often than it has been
 // right, so the terms are switchable at runtime and the question gets settled by turning them
 // off one at a time. Set from the console: DXS.ao=0.
-uniform vec4 u_dxs;
+uniform vec3 u_dxs;   // ao, shadow, twoTone -- the displacement slot went with the noise
 // WHITE FURNACE TEST. 1 = the environment returns exactly 1.0 in every direction and every
 // direct source is off. A lossless white dielectric lit by a uniform unit environment must
 // return exactly 1.0 at every pixel: anything above is energy the BRDF is inventing, anything
@@ -380,7 +384,7 @@ uniform float u_twoTone;                               // colourway separation a
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
-uniform float u_bLow,u_bHigh,u_bAir;
+uniform float u_bLow,u_bAir;   // u_bHigh drove the surface noise's frequency and has no other reader
 // emotion -> geometry: these drive the construction parameters of the forms
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
@@ -419,7 +423,11 @@ float smin3(float a,float b,float k){
   return min(a,b)-h*h*h*k*(1.0/6.0);
 }
 float h31(vec3 p){p=fract(p*.1031);p+=dot(p,p.zyx+31.32);return fract((p.x+p.y)*p.z);}
-// QUINTIC interpolant, not cubic smoothstep — and this is the "low poly" faceting.
+// QUINTIC interpolant, not cubic smoothstep. Written for a surface displacement that no longer
+// exists (see map(); the ripple it left was the reported radial lines and the whole term is gone),
+// and kept because the backdrop colour field calls fbm too and wants cells that join cleanly.
+// The reasoning below is why the quintic, and it is also a record of a fix that was correct about
+// its mechanism and still did not solve the complaint:
 //
 // This noise displaces the SDF, so what the shading reads is not the field but its GRADIENT, and
 // how the gradient VARIES across a pixel is the second derivative. 3t^2-2t^3 is C1 only: its
@@ -431,8 +439,8 @@ float h31(vec3 p){p=fract(p*.1031);p+=dot(p,p.zyx+31.32);return fract((p.x+p.y)*
 // 6t^5-15t^4+10t^3 has zero first AND second derivative at both ends, so the cells join with no
 // crease. The bake shader worked this out for the detail map and says so in its own comment; the
 // same argument applies with far more force here, where the field is the geometry rather than a
-// texture. Isolated by ablation: DXS.disp = 0 removed the faceting completely and nothing else
-// did.
+// texture. Isolated by ablation with the displacement's own switch, which removed the faceting
+// completely where nothing else did.
 float n3(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*f*(f*(f*6.-15.)+10.);
   float a=h31(i),b=h31(i+vec3(1,0,0)),c=h31(i+vec3(0,1,0)),d=h31(i+vec3(1,1,0));
   float e=h31(i+vec3(0,0,1)),g=h31(i+vec3(1,0,1)),hh=h31(i+vec3(0,1,1)),k=h31(i+vec3(1,1,1));
@@ -999,23 +1007,24 @@ vec2 map(vec3 wp){
   } else {
     d=evalForm(p);
   }
-  // living surface — the HIGH bands drive its frequency + speed, so hats/stabs read as
-  // surface chatter. Amplitude is divided back down by the frequency: displacement gradient
-  // (freq * amp) must stay bounded or the field stops being a valid SDF and the march creases.
-  // lighter than before: these forms carry their own detail, so the noise only breathes
-  float nf=2.0+u_bHigh*1.6+u_hHigh*1.2;                       // 2.0 .. 4.8
-  /* AMPLITUDE OFF THE TRANSIENTS. u_pulse, u_hHigh and u_hAir were modulating a DISPLACEMENT,
-     so every hat and stab moved the actual surface -- the second half of the jiggle, and the
-     half that survived the rotation being cleaned up. What is left is the section-level pair,
-     which breathes over bars. The reference has no surface animation at all. */
-  float na=u_energy*0.020+u_flux*0.010;
-  // The time term CRAWLS the noise through the form. At 0.15 (and 0.5 on air hits) the surface
-  // was boiling — detail sliding across geometry that is itself turning, which is most of what
-  // read as jiggle even after the rotation was cleaned up. Slowed hard so the detail rides WITH
-  // the form and the eye tracks the spin instead of the churn.
-  // ...and the crawl no longer accelerates on air hits: 0.09 per hit was the noise sliding across
-  // geometry that is itself turning, which the note above already identified as most of the churn.
-  d+=(fbm(p*nf+u_time*0.030)-0.5)*na*(2.0/nf)*u_dxs.z;
+  /* THE LIVING SURFACE IS GONE, AND IT WAS THE LINES.
+     A band-driven fbm used to displace the field here. It was cut back twice -- once off the
+     transients, once on its crawl rate -- and both times the note ended by admitting the thing
+     the third pass has to act on: "the reference has no surface animation at all".
+
+     It was the reported radial lines, and only ablation could show that. The normal buffer (DIAG 2)
+     is clean, the AO buffer (DIAG 8) is clean, the geometry is clean -- so nothing that looks at
+     one frame of geometry can find it. What isolated it was DXS.disp=0 with the clock RUNNING:
+     lines gone, nothing else changed; put the clock back and they return.
+
+     Why a C2 noise still drew lines. An earlier pass moved this from a cubic to a quintic
+     interpolant so the lattice cells would join without a crease, and that argument was right --
+     it removed the faceting. But the ripple itself remains a ripple: shading reads the GRADIENT,
+     whose size is amplitude x frequency, and at amp 0.02 over 4.8 cells per unit that is a normal
+     perturbation of order 0.6. Smooth is not the same as invisible. No interpolant fixes an
+     amplitude, so the term goes.
+
+     fbm/n3/h31 stay -- the backdrop colour field is their other caller. */
   dObj=d*s*0.5;
   }
   return vec2(dObj,1.0);
@@ -1598,7 +1607,7 @@ void main(){
     // with the surface detail; the split is a clean gradient now, which is what these forms want.
     vec3 pA,pB; palAB(pA,pB);
     float sweep=clamp(0.5+0.70*(op.y*0.85+op.x*0.30), 0., 1.);
-    vec3 tint=mix(u_mood, clamp(pB*1.12,0.,1.), smoothstep(0.18,0.82,sweep)*u_twoTone*u_dxs.w);
+    vec3 tint=mix(u_mood, clamp(pB*1.12,0.,1.), smoothstep(0.18,0.82,sweep)*u_twoTone*u_dxs.z);
     // u_alb is a per-material albedo scale. The shared 0.9 base is right for pearl and frosted,
     // which are near-white by nature, but it left clay blowing out to paper white across every lit
     // face — measured at 1.66% of the upper frame above 225/255, of which only a fifth came from
@@ -2052,8 +2061,6 @@ uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
 uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
 uniform float u_flat;     // 1 = flat-shaded look: no dither, no grain (see the dither line)
-uniform float u_rays; uniform vec2 u_rayPos;   // volumetric shafts: strength, light in screen uv
-uniform float u_rayThr;                        // the shafts' own knee — see godrays()
 uniform float u_dbg;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
@@ -2090,57 +2097,6 @@ vec3 bloom(vec2 uv,vec2 t){
     vec2 of=vec2(float(i),float(j)); float g=exp(-dot(of,of)*.22);
     sum+=texture(u_brt,uv+of*t*5.0).rgb*g; w+=g; }
   return sum/max(w,1e-4);
-}
-/* VOLUMETRIC SHAFTS (crepuscular rays).
-   Screen-space, gathered by marching from the pixel toward the key light's projected position
-   and accumulating with exponential decay — the standard occlusion-integral approximation.
-
-   It reads u_brt, the ALREADY-THRESHOLDED bright pass, which is what makes this work rather
-   than turning into a smear: only what genuinely clips casts a shaft, so the form occludes its
-   own rays and the negative space between them is what reads as volume. Sampling the full
-   colour buffer instead would let every mid-tone streak and the image would just look smeared.
-
-   Deliberately gathered from mip 2 of the half-res buffer. Shafts are low-frequency by nature,
-   so the detail is worthless here, and a blurred source hides the step pattern that would
-   otherwise show as banding along each ray at this few taps. That is what buys 20 taps instead
-   of the 60+ a sharp source would need. */
-const int RAY_N=20;
-vec3 godrays(vec2 uv){
-  // Level 2 only where the mip chain exists. u_mip is the runtime probe for "can this GPU
-  // mipmap a half-float target"; where it cannot, the bright buffer has a single level and
-  // asking for level 2 samples an incomplete texture, which is undefined — in practice black,
-  // so the shafts would silently vanish on exactly the machines that most need the cheap path.
-  float lod=u_mip>0.5?2.0:0.0;
-  vec2 delta=(uv-u_rayPos)*(0.62/float(RAY_N));
-  // SHAFTS NEED A LOWER GATE THAN BLOOM. Reading u_brt alone is what made this invisible even
-  // with the emitter in reach: that buffer is thresholded at u_thr ~2.59, raised deliberately to
-  // kill a ring around the silhouette, and MEASURED it leaves 0.082% of its pixels above 0.01
-  // with a mean of 0.00019 — averaging 20 taps of it returns nothing. Bloom wants that gate;
-  // shafts do not. So they take their own knee off the HDR buffer as well, and keep u_brt's
-  // contribution on top for genuinely blown speculars. Still a threshold and not the raw image:
-  // gathering every mid-tone is what turns shafts into a smear rather than into light.
-  // The start is jittered by a per-pixel hash so 20 taps do not print a step ladder along each
-  // ray — the same trick the dither uses, inlined because bayer() is declared further down.
-  float jit=fract(sin(dot(uv,vec2(12.9898,78.233)))*43758.5453);
-  vec2 c=uv-delta*jit; float illum=1.0; vec3 sum=vec3(0.);
-  for(int i=0;i<RAY_N;i++){
-    c-=delta; illum*=0.93;                       // decay per step
-    vec2 cc=clamp(c,vec2(0.),vec2(1.));
-    // CLAMPED. u_tex is full resolution with no mip chain, so this tap samples high-frequency
-    // specular detail sparsely along the ray — the exact thing the u_brt gather avoids by reading
-    // mip 2. A single blown pixel wandering in and out of a tap position is what sparkles frame
-    // to frame, so the HDR contribution is capped: it can still carry a shaft, it cannot carry a
-    // firefly. The jittered start above spreads what remains.
-    vec3 hc=min(texture(u_tex,cc).rgb, vec3(6.0));
-    float hl=smoothstep(u_rayThr,u_rayThr*2.2,dot(hc,vec3(0.2126,0.7152,0.0722)));
-    sum+=(textureLod(u_brt,cc,lod).rgb + hc*hl)*illum;
-  }
-  // Fade with distance from the source: without this the far corners of a wide frame collect a
-  // flat lift that reads as fog rather than as shafts.
-  float d=length((uv-u_rayPos)*vec2(u_res.x/u_res.y,1.0));
-  // 1-smoothstep, not a reversed-edge smoothstep: GLSL leaves edge0 >= edge1 UNDEFINED, and it
-  // happens to work on desktop drivers while being a real portability trap.
-  return sum*(1.0/float(RAY_N))*(1.0-smoothstep(0.10,1.15,d));
 }
 const float BAY[16]=float[16](0.,8.,2.,10.,12.,4.,14.,6.,3.,11.,1.,9.,15.,7.,13.,5.);
 float bayer(vec2 p){ivec2 i=ivec2(mod(p,4.0));return BAY[i.y*4+i.x]/16.0-0.46875;}
@@ -2275,10 +2231,9 @@ void main(){
     col=clamp(col+(col-(n+s+e+w)*0.25)*u_sharpen, min(col,mn), max(col,mx)); }
   vec2 c2=uv-.5;c2.x*=u_res.x/u_res.y;
   col+=bloom(uv,t)*u_bloom;
-  // Added BEFORE tonemapping, so shafts roll off through the same ACES curve as everything else.
-  // Added after it they sit on the graded image as flat paint and never clip, which is exactly
-  // what makes screen-space light look pasted on.
-  if(u_rays>0.001) col+=godrays(uv)*u_rays;
+  // Bloom is added BEFORE tonemapping, so it rolls off through the same ACES curve as everything
+  // else. Added after it, it sits on the graded image as flat paint and never clips, which is
+  // exactly what makes screen-space light look pasted on.
   col*=u_expo*(1.0+u_flash);
   mat3 ai=mat3(.59719,.07600,.02840,.35458,.90834,.13383,.04823,.01566,.83777);
   mat3 ao=mat3(1.60475,-.10208,-.00327,-.53108,1.10813,-.07276,-.07367,-.00605,1.07602);
@@ -2635,7 +2590,7 @@ addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
   gl.generateMipmap(gl.TEXTURE_2D); mipOK=(gl.getError()===gl.NO_ERROR); if(mipOK) applyScale(); }
-const DX={bloom:1,chroma:1,sharpen:1,thr:1,rays:1,mblur:1};
+const DX={bloom:1,chroma:1,sharpen:1,thr:1,mblur:1};
 // SHAPE REFINEMENT, live-tunable from the console: SHP.edge=0 restores the constant fillet,
 // SHP.thick=0 the constant slab, SHP.chamf=0 the pure round. All three are no-ops at 0, so the
 // old form is one line away for comparison.
@@ -2643,12 +2598,15 @@ const SHP={edge:1.0, thick:1.0, chamf:0.55};  window.SHP=SHP;
 // User shape parameters, from the sliders. Multipliers on the Director's own values, except
 // mass which is an offset because stroke weight is already an additive term in the profiles.
 const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;
+// Film grain, global across every look and filter. amt is a multiplier on the look's own
+// character; 0 is off. See the u_grain upload for why the look can no longer zero it.
+const GRAIN={amt:1.0};  window.GRAIN=GRAIN;
 // Strength of the reflected room structure. The panel bank exists so polished surfaces have
 // something with edges to reflect, but it is the one feature in env() that repeats angularly,
 // so it is also the one that can read as spokes. ENV.room=0 leaves a plain gradient.
 // map:0 falls back to the analytic env(), for A/B against the prefiltered HDRI.
 const ENV={room:0.45, map:1};  window.ENV=ENV;   // per-term ablation switches for measuring edge artefacts
-const DXS={ao:1,shadow:1,disp:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
+const DXS={ao:1,shadow:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
    The governor trades quality for frame rate, which is right for playback and wrong when the
@@ -2666,9 +2624,10 @@ window.DX=DX; window.DXS=DXS;
              Preview takes the 40 back, Ultra spends 200 where the 1/N curve is still paying.
      near/far  sphere-trace step as a multiple of the half-scaled field. Higher is fewer steps:
              measured 1.45 -> 20fps, 1.70 -> 24fps at native, so Preview buys real speed here.
-     rays    the volumetric shafts, the single most expensive post term.
      bake    detail map resolution — 8192 is 683MB, which a Preview session has no use for. */
-/* SHAFTS AND MOTION BLUR ARE OFF IN EVERY TIER, and the reason is worth keeping.
+/* THE SHAFTS ARE GONE AND MOTION BLUR IS OFF IN EVERY TIER. The shafts were removed outright
+   on request; this stays because it is the argument for not building them again the same way.
+
    Both were built on approximations that do not hold for this renderer.
 
    SHAFTS are a screen-space radial blur from the light's projected position. That technique needs
@@ -2689,7 +2648,10 @@ window.DX=DX; window.DXS=DXS;
    silhouette in both directions. A correct version needs a velocity buffer written by the scene
    pass, which is the only thing that knows about the deformation, plus depth-aware taps.
 
-   Set rays:1 or shutter:0.5 on a tier to bring either back for experimentation. */
+   Set shutter:0.5 on a tier to bring the blur back for experimentation. The volumetric shafts
+   are gone entirely -- removed on request, and they had been dead weight anyway: every tier
+   shipped rays:0 while raysOn defaulted to true, so which one won depended on whether a tier had
+   been applied yet. */
 const TIERS={
   // PREVIEW EARNS ITS SPEED BY DOING LESS, NOT BY DOING IT WORSE. The first version took back
   // three things this renderer had already measured, diagnosed and fixed, and every one returned
@@ -2717,7 +2679,7 @@ const TIERS={
      This was tried before, reverted as "stop rendering below native", and the revert was right
      for HIGH -- where a soft frame is the whole product. It was wrong for Preview, whose tooltip
      already promises a coarser image. */
-  preview:{label:'Preview', scale:0, dpr:0.72, scaleMin:0.60, ss:0.80, shaN:96, near:1.45, far:1.75, rays:0, shutter:0, sss:0,
+  preview:{label:'Preview', scale:0, dpr:0.72, scaleMin:0.60, ss:0.80, shaN:96, near:1.45, far:1.75, shutter:0, sss:0,
            note:'Preview — fast'},
   /* HIGH AND ULTRA GET A FLOOR BELOW NATIVE. Both used to bottom out at 1.00 -- High because the
      governor's floor was hard-coded there, Ultra because its band started at 1.15 -- so on a
@@ -2735,8 +2697,8 @@ const TIERS={
         rscale 1.15  edge RMSE 4.31     rscale 1.60  edge RMSE 3.06
      0.82 is below the bottom of that table and will be visibly softer. It is a floor, not a
      target: it exists for the case where the alternative is 15 fps. */
-  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, rays:0, shutter:0,
-           note:'High — shadows, shafts, adaptive scale'},
+  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, shutter:0,
+           note:'High — shadows, adaptive scale'},
   /* ULTRA IS A BAND, NOT A PIN. It used to fix rscale at 1.35 and switch the governor off
      entirely -- its own tooltip promised "no adaptation, will drop frames", and it delivered:
      measured with GPU timer queries on a frozen frame, 55-65 ms, i.e. 16-18 fps. That is the
@@ -2760,7 +2722,7 @@ const TIERS={
      unambiguously the best tier (it never drops to where High's governor lives) while letting it
      climb to 1.60, which is BETTER than it ever reached before, on hardware that can hold it. */
   ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.00, scaleMax:1.60,
-           dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, rays:0, shutter:0,
+           dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, shutter:0,
            note:'Ultra — supersampled, adapts between 1.00x and 1.60x'},
 };
 /* THE IBL RIG. These three apply ONLY when a prefiltered HDRI is lighting the scene; the
@@ -2806,7 +2768,6 @@ function applyTier(name){
   const t=TIERS[name]; if(!t) return;
   TIER=name;
   STEP.shaN=t.shaN; STEP.near=t.near; STEP.far=t.far;
-  raysOn=!!t.rays;
   // rscale BEFORE resize: resize() ends in applyScale(), so setting it after allocates the whole
   // target set twice — once at the old scale, once at the new.
   if(t.scale>0){ rscale=t.scale; dprScale=t.dpr; }
@@ -3121,7 +3082,7 @@ let scene=0;                                          // 0 colour field (default
 let groundY=-1.05;
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
 /* ---- USER CAMERA: drag to orbit, wheel to zoom, all composed ON TOP of the Director ---- */
-let autoRotate=true, dragging=false, raysOn=true;
+let autoRotate=true, dragging=false;
 let userAz=0, userEl=0, userZoom=1, userAzV=0, userElV=0;
 /* One full revolution per SPIN_BEATS beats, so angular velocity comes from the track's own BPM
    and a faster track visibly spins faster.
@@ -4469,7 +4430,7 @@ function frame(){
   gl.uniform1f(US('u_hMid'),HITS.mid); gl.uniform1f(US('u_hHigh'),HITS.high);
   gl.uniform1f(US('u_hAir'),HITS.air);
   gl.uniform1f(US('u_bLow'),BND.low);
-  gl.uniform1f(US('u_bHigh'),BND.high); gl.uniform1f(US('u_bAir'),BND.air);
+  gl.uniform1f(US('u_bAir'),BND.air);
   gl.uniform1f(US('u_valence'),valence); gl.uniform1f(US('u_warmth'),warmth); gl.uniform1f(US('u_epic'),epic);
   /* ---- EMOTION -> CONSTRUCTION: how each form is BUILT is the expression ---- */
   // twist/pitch of arrays and stacks — tension winds them up, arousal adds motion
@@ -4559,7 +4520,7 @@ function frame(){
   // face: it is a noise field added to the SDF, so it undulates the outline. The reference's edges
   // are dead straight because its geometry is boxes. A living surface is the right call for the
   // cinematic look and the wrong one for this.
-  gl.uniform4f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.disp*flatK,DXS.twoTone*flatK);
+  gl.uniform3f(US('u_dxs'),DXS.ao,DXS.shadow,DXS.twoTone*flatK);
   gl.uniform1f(US('u_furnace'),DXS.furnace?1:0);
   const envOn = envMapReady && ENV.map;
   gl.uniform1f(US('u_envMapOn'), envOn?1:0);
@@ -4662,73 +4623,22 @@ function frame(){
     gl.uniform1f(UP('u_expo'),0.82+energy*0.45+pulseS*0.12+HITS.low*0.10);
     // Contrast winds up with tension and eases back as it releases, so the grade breathes with
     // the track instead of sitting at one setting through a whole arrangement.
-    gl.uniform1f(UP('u_contrast'),0.45+tension*0.30-release*0.12+LK.contrast); // The route is ADDED OUTSIDE the look's gain, not inside it. Multiplied in, it was dead: the
-    // Hard surface look sets grain to 0.00, so a route on it was multiplied by zero and did
-    // nothing at all -- one of the two targets that made the matrix look like it was not wired up.
-    gl.uniform1f(UP('u_grain'),Math.max(0,(0.35+darkness*0.30+density*0.22)*LK.grain+MV('grain')*0.6));   // busier passage, grittier frame
+    gl.uniform1f(UP('u_contrast'),0.45+tension*0.30-release*0.12+LK.contrast);
+    /* GRAIN IS A CONTROL NOW, AND IT REACHES EVERY LOOK.
+       It used to be a per-look constant, so whether the frame had any grain at all depended on
+       which look happened to be selected -- Hard sets it to 0.00 and Clay inherits the default,
+       and nothing in the UI said so or could change it. GRAIN.amt is the global amount, 0 turns
+       it off outright, and the look's own value now only shapes the CHARACTER: it is floored at
+       the default so a look can add grit (riso 1.15, xerox 1.35) but cannot take the control away.
+
+       The route is ADDED OUTSIDE the gain, not multiplied into it. Multiplied in, it was dead:
+       the Hard look sets grain to 0.00, so a route on it was multiplied by zero and did nothing
+       at all -- one of the two targets that made the matrix look like it was not wired up. It is
+       inside the on/off, though, because off has to mean off. */
+    const grainLook=Math.max(LOOK_DEF.grain, LK.grain);
+    gl.uniform1f(UP('u_grain'), GRAIN.amt<=0.001 ? 0 :
+      Math.max(0, GRAIN.amt*(0.35+darkness*0.30+density*0.22)*grainLook + MV('grain')*0.6));   // busier passage, grittier frame
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
-    // ---- volumetric shafts ----
-    // The key is DIRECTIONAL, so it has no position to project — but a directional light is a
-    // point at infinity, and the pixel that sees it is the one whose ray direction IS L. Solving
-    // rd = normalize(uv.x*rt + uv.y*up + f*fw) for uv gives that pixel directly.
-    // L must mirror the shader's own expression or the shafts would emanate from a light that is
-    // not the one casting the shadows.
-    const kt=Math.min(1,Math.max(0,tension))*0.65;
-    let Lx=-0.40+0.98*kt, Ly=0.80-0.52*kt, Lz=0.40+0.34*kt;
-    const Ll=Math.hypot(Lx,Ly,Lz)||1; Lx/=Ll; Ly/=Ll; Lz/=Ll;
-    const LoF=Lx*fx+Ly*fy+Lz*fz;              // behind the camera -> no shafts at all
-    let rayX=0.5, rayY=0.5, rayVis=0;
-    if(LoF>0.05){
-      const s=LoF/(0.5/Math.tan(fovY*0.5));
-      rayX=((Lx*rx+Ly*ry+Lz*rz)/s)*(H/W)+0.5;   // uv.x is scaled by res.y, hence H/W here
-      rayY=((Lx*ux+Ly*uy+Lz*uz)/s)+0.5;
-      rayVis=Math.min(1,(LoF-0.05)/0.35);       // ease in as it swings into frame, never a pop
-      // CLAMP THE SOURCE TO THE FRAME EDGE. The key sits high above the camera's view direction,
-      // so its projected position lands 2-3 frame heights above the top of frame at EVERY
-      // azimuth — measured 1.79 to 2.32 from the nearest on-screen pixel, against a falloff that
-      // is exactly zero past 1.15. So every shaft was being gathered and then multiplied by
-      // nothing: the toggle moved 0.02% of pixels against a 0.03% noise floor. Clamping the
-      // emitter to just outside the frame is what screen-space god rays do when the source
-      // leaves view — it preserves the DIRECTION the shafts run, which is the whole read, while
-      // putting them back inside the reach of the falloff. Strength eases down with how far the
-      // true light is from where it is being drawn, so nothing pops as it swings away.
-      // MARGIN IS NOT FREE. At 0.55 the emitter sits at uv.y 1.55, and the falloff (zero past
-      // 1.15) then excludes every pixel below uv.y ~0.45 — which is exactly the set whose march
-      // upward would cross the form. What survived was the top strip, marching into empty
-      // backdrop. Measured HDR luma at the peak frame: p50 0.67, p99 1.40, max 3.36, so the
-      // light to gather IS there; the geometry was simply keeping the two apart. 0.15 puts the
-      // emitter within reach of the pixels that can actually see the form.
-      const MG=0.15;
-      const cx=Math.max(-MG,Math.min(1+MG,rayX)), cy=Math.max(-MG,Math.min(1+MG,rayY));
-      const off=Math.hypot(rayX-cx,rayY-cy);
-      rayVis*=1/(1+off*off*0.6);
-      rayX=cx; rayY=cy;
-    }
-    gl.uniform2f(UP('u_rayPos'),rayX,rayY);
-    // Well below bloom's 2.59: high enough to exclude the backdrop and the form's mid-tones,
-    // low enough that the lit edge of the form actually casts something.
-    gl.uniform1f(UP('u_rayThr'),0.85);
-    // Air and epicness drive it: shafts are the "big moment" effect, and the high band is what
-    // reads as light in the air. Kept low — this sits on top of a bloom that already lifts the
-    // same pixels, and doubling up there is how a render turns milky.
-    gl.uniform1f(UP('u_rays'), raysOn
-      // GAIN, MEASURED. These coefficients were tuned against the old bright pass, before its
-      // threshold was raised to 2.59 to kill a bloom ring — which left the shafts gathering from
-      // a buffer with 0.082% of its pixels above 0.01. They have been stale by roughly two orders
-      // of magnitude ever since. Swept on a frozen peak-energy frame (position pinned via
-      // startedAt so the curves keep feeding while the clock is stopped, noise floor 0):
-      //   gain    20     40     80    160    320
-      //   moved  1.22%  3.39%  7.10%  9.66%  11.38%
-      //   lift    0.5    0.88   1.49   2.37   3.49   (mean display levels)
-      // Past 160 the coverage saturates while the lift keeps climbing, which is the wash. 80 is
-      // the knee: shafts that read, 1.5 levels of lift. Every term is scaled by the same 80, so
-      // the relative weighting between energy, epicness and the air/high bands is untouched.
-      // ATMOSPHERE gates the whole term. A shaft is only visible because there is something in
-      // the air to scatter off; on a dry, transient passage there is nothing for the light to
-      // catch and the beam should not be there at all. This is the signal the effect was always
-      // missing — before it, shafts were driven by loudness alone and appeared over percussive
-      // material that should have read as clean air.
-      ? rayVis*(0.45+atmos*0.85)*(4.0+energy*12.8+epic*16.0+HITS.air*16.0+HITS.high*8.0)*DX.rays : 0);
     // press grade
     gl.uniform1f(UP('u_sharpen'),LK.sharp*DX.sharpen); gl.uniform1f(UP('u_chroma'),LK.chroma*DX.chroma);
     gl.uniform1f(UP('u_ink'),LK.ink); gl.uniform1f(UP('u_poster'),LK.poster);
@@ -5336,6 +5246,10 @@ $('selFilt').addEventListener('change',e=>{
   hideStat(1400);
 });
 $('filtAmt').addEventListener('input',e=>{ FILT.amt=+e.target.value/100; $('filtAmtV').textContent=e.target.value; });
+$('grainAmt').addEventListener('input',e=>{
+  GRAIN.amt=+e.target.value/100; $('grainAmtV').textContent=e.target.value;
+  if(+e.target.value===0){ showStat('Grain off'); hideStat(1200); }
+});
 $('filtCell').addEventListener('input',e=>{
   const v=+e.target.value;
   if(FILT.mode===4) filtBands=v; else FCELL[FILT.mode]=v;
