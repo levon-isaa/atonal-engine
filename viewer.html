@@ -404,7 +404,20 @@ uniform float u_kal,u_kalPh;           // kaleidoscope: amount 0..1, and the mir
 uniform float u_swirl;                 // third rotation axis (xy / about z); see formRot
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
-float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
+/* THE SMOOTH UNION, AND WHY IT IS CUBIC. The usual quadratic form -- which this file carried twice
+   under two names, smin and sMin2, with byte-identical bodies -- is C1: at the edge of the blend
+   region its value and its gradient both match min(), but its SECOND derivative jumps. Curvature is
+   precisely what a
+   specular surface displays, so that jump draws a faint line tracing the outer boundary of every
+   fillet -- a Mach band on a surface with no crease in it. Widening the fillet cannot remove that
+   line, it only moves it, which is why the earlier attempts to cure the kaleidoscope seam by
+   raising k made the form blobbier without making it cleaner.
+   h^3 sends the second derivative to zero there as well, so the fillet has no visible edge.
+   Depression at a==b is k/6 rather than k/4, so an equivalent fillet asks for 1.5x the k. */
+float smin3(float a,float b,float k){
+  float h=max(k-abs(a-b),0.0)/k;
+  return min(a,b)-h*h*h*k*(1.0/6.0);
+}
 float h31(vec3 p){p=fract(p*.1031);p+=dot(p,p.zyx+31.32);return fract((p.x+p.y)*p.z);}
 // QUINTIC interpolant, not cubic smoothstep — and this is the "low poly" faceting.
 //
@@ -461,7 +474,6 @@ float s2Seg(vec2 p,vec2 a,vec2 b,float r){
 }
 float s2Disc(vec2 p,float r){ return length(p)-r; }
 float s2Box(vec2 p,vec2 b,float r){ vec2 d=abs(p)-b+r; return min(max(d.x,d.y),0.0)+length(max(d,0.0))-r; }
-float sMin2(float a,float b,float k){ float h=clamp(0.5+0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)-k*h*(1.0-h); }
 float sMax2(float a,float b,float k){ float h=clamp(0.5-0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)+k*h*(1.0-h); }
 mat2 rr2(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
 
@@ -550,6 +562,29 @@ float exDepth(){ return (0.30 + u_gThick*0.05)*u_pDepth; }
 float exBevel(){ return (0.055 + u_gCut*0.012)*u_pEdge*u_bevK; }
 
 // ---- profiles ----
+/* WHY THE UNIONS BELOW ARE SMOOTH ONES, AND WHERE THE RADIAL LINES CAME FROM.
+   min(a,b) of two overlapping fields is continuous but its GRADIENT is not: it jumps across the
+   set where a==b. Normals are that gradient, so every such set renders as a hard crease. In these
+   profiles the repeated elements are placed by rr2(i*2PI/N), which puts their equidistant sets on
+   radii -- so the crease is a RADIAL LINE, one per junction, N of them around the form. That is
+   the artefact, and it is arithmetic rather than a shading or marching problem.
+
+   It hides on the flat faces, which is why it survived several passes looking for it there: extr()
+   gives the form a flat top and bottom whose surface does not depend on the profile at all. The
+   crease only reaches the surface where the bevel rolls over, so it reads as short radial marks
+   crossing the rounded edge, repeating around the rim.
+
+   smin3 removes it by construction -- it is smooth where min is not. The radius is a fraction of the
+   stroke weight rather than a constant, so a junction fillet stays in proportion on a heavy profile
+   and a fine one alike, and follows the Mass control instead of fighting it.
+
+   THE FIELD STAYS SAFE. smin3 <= min everywhere, so the result is still a conservative
+   underestimate of the true distance and the march cannot step through the surface. The fillet
+   compounds where several elements are mutually equidistant, but that only happens deep inside the
+   solid (the hub, where every arm meets), and inflating the interior of a solid moves no surface. */
+// Junction fillet radius as a fraction of stroke weight. 0.48 at the cubic's k/6 depression
+// is the same fillet 0.32 gave at the quadratic's k/4.
+const float FILLET = 0.48;
 // TRISKELION — three arms, each running out from the centre then hooking a quarter turn. The
 // reference's own shape; the hook is what makes the silhouette read differently from every angle.
 float p2Tris(vec2 p){
@@ -561,7 +596,8 @@ float p2Tris(vec2 p){
     vec2 q=rr2(float(i)*6.2831853/float(N)+u_gTwist*0.25)*p;
     float a=s2Seg(q,vec2(0.02,0.0),vec2(0.66,0.0),w);
     float b=s2Seg(q,vec2(0.66,0.0),vec2(0.66,0.70),w);
-    d=min(d, sMin2(a,b,0.16));
+    d=smin3(d, smin3(a,b,0.24), FILLET*w);   // arm-to-arm, was min() -- the radial crease
+
   }
   return d;
 }
@@ -571,7 +607,7 @@ float p2Clover(vec2 p){
   int N=int(clamp(u_segN,2.0,8.0));
   for(int i=0;i<N;i++){
     vec2 q=rr2(float(i)*6.2831853/float(N)+1.5707963)*p;
-    d=sMin2(d, s2Disc(q-vec2(0.0,0.62),0.40+u_gDense*0.04), 0.22);
+    d=smin3(d, s2Disc(q-vec2(0.0,0.62),0.40+u_gDense*0.04), 0.33);
   }
   return d;
 }
@@ -602,7 +638,7 @@ float p2Chev(vec2 p){
     vec2 q=p+vec2(0.0,0.30);
     float a=s2Seg(q,vec2(-0.74,o-0.34),vec2(0.0,o+0.18),w);
     float b=s2Seg(q,vec2( 0.74,o-0.34),vec2(0.0,o+0.18),w);
-    d=min(d, sMin2(a,b,0.09));
+    d=smin3(d, smin3(a,b,0.135), FILLET*w);  // V-to-V
   }
   return d;
 }
@@ -610,8 +646,8 @@ float p2Chev(vec2 p){
 float p2Wave(vec2 p){
   float w=0.20+u_gDense*0.03, d=1e9;
   d=min(d, s2Seg(p,vec2(-0.80, 0.34),vec2(-0.26, 0.34),w));
-  d=sMin2(d, s2Seg(p,vec2(-0.26, 0.34),vec2( 0.26,-0.34),w), 0.26);
-  d=sMin2(d, s2Seg(p,vec2( 0.26,-0.34),vec2( 0.80,-0.34),w), 0.26);
+  d=smin3(d, s2Seg(p,vec2(-0.26, 0.34),vec2( 0.26,-0.34),w), 0.39);
+  d=smin3(d, s2Seg(p,vec2( 0.26,-0.34),vec2( 0.80,-0.34),w), 0.39);
   return d;
 }
 // PLATE — a rounded slab with three bores. Closest to the old set, kept so the family has a
@@ -649,7 +685,8 @@ float p2Gear(vec2 p){
   for(int i=0;i<16;i++){
     if(i>=N) break;
     vec2 q=rr2(float(i)*6.2831853/float(N)+u_gTwist*0.10)*p;
-    d=min(d, s2Seg(q, vec2(0.42,0.0), vec2(0.70,0.0), w));  // one tooth
+    // Tooth into rim. A real gear has a root fillet here; min() gave it a crease instead.
+    d=smin3(d, s2Seg(q, vec2(0.42,0.0), vec2(0.70,0.0), w), FILLET*w);
   }
   return max(d, -(length(p)-(0.16+u_gCut*0.03)));           // and the bore
 }
@@ -663,7 +700,7 @@ float p2Knot(vec2 p){
   for(int i=0;i<6;i++){
     if(i>=N) break;
     vec2 c=rr2(float(i)*6.2831853/float(N))*vec2(off,0.0);
-    d=min(d, abs(length(p-c)-R)-w);
+    d=smin3(d, abs(length(p-c)-R)-w, FILLET*w);   // ring crossings get a fillet, not a crease
   }
   return d;
 }
@@ -679,8 +716,8 @@ float p2Lattice(vec2 p){
   for(int i=0;i<5;i++){
     if(i>=N) break;
     float o=(float(i)-float(N-1)*0.5)*st;
-    d=min(d, abs(q.y-o)-w);
-    d=min(d, abs(q.x-o)-w);
+    d=smin3(d, abs(q.y-o)-w, FILLET*w);           // bar crossings, same reason
+    d=smin3(d, abs(q.x-o)-w, FILLET*w);
   }
   return max(d, length(p)-(0.74+u_gThick*0.04));           // clipped, or the bars run forever
 }
@@ -955,7 +992,9 @@ vec2 map(vec3 wp){
       d=mix(evalForm(p), evalForm(kalFold(p,kalN)), kk);
     } else {
       d=evalForm(p);
-      d=mix(d, smin(d, evalForm(kalMirror(p)), 0.08), kk);
+      // 0.12 = the old 0.08 carried over at the cubic's 1.5x, so the fillet is the same size it
+      // always was. What changes is that its boundary no longer draws itself.
+      d=mix(d, smin3(d, evalForm(kalMirror(p)), 0.12), kk);
     }
   } else {
     d=evalForm(p);
