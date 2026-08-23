@@ -508,8 +508,17 @@ const float EXR = 1.15;                    // the radius every profile is normal
 
    Both sides are scaled by the same 0.5, so the net halves wherever it is measured -- the numbers
    above are a confirmation, not a target. ~2Hz at 8% is a throb; at 4% it is an accent. */
+/* THE FORM NO LONGER PUNCHES ITS OWN SIZE. This carried u_pulse*0.05 + u_hLow*0.065 +
+   u_hSub*0.045, so the whole object grew and shrank on every kick and sub hit -- and something
+   in a mix lands on almost every frame, so it never settled. That is the jiggle. It is also the
+   same fault, in a different variable, that spinKick was removed for: an onset driving a
+   CONTINUOUS property of the body reads as trembling, not as rhythm.
+   u_energy stays: it is a section-level curve, it moves over bars rather than beats, and a
+   louder passage having a slightly larger form is scale, not jitter. The beat is still visible --
+   it drives the light (u_keyPulse), the density and the count, which is where the reference puts
+   it too: its rosette holds absolutely steady while its blades change. */
 float formScale(){
-  return max(u_reform,0.2)*(1.0+u_energy*0.10+u_pulse*0.05+u_hLow*0.065+u_hSub*0.045)*0.95;
+  return max(u_reform,0.2)*(1.0+u_energy*0.10)*0.95;
 }
 float extr(float d2,vec3 p,float halfD,float bev){
   float r = clamp(length(p.xy)/EXR, 0.0, 1.0);
@@ -956,12 +965,18 @@ vec2 map(vec3 wp){
   // (freq * amp) must stay bounded or the field stops being a valid SDF and the march creases.
   // lighter than before: these forms carry their own detail, so the noise only breathes
   float nf=2.0+u_bHigh*1.6+u_hHigh*1.2;                       // 2.0 .. 4.8
-  float na=u_energy*0.030+u_pulse*0.030+u_flux*0.014+u_wob*0.010+u_hHigh*0.012+u_hAir*0.009;
+  /* AMPLITUDE OFF THE TRANSIENTS. u_pulse, u_hHigh and u_hAir were modulating a DISPLACEMENT,
+     so every hat and stab moved the actual surface -- the second half of the jiggle, and the
+     half that survived the rotation being cleaned up. What is left is the section-level pair,
+     which breathes over bars. The reference has no surface animation at all. */
+  float na=u_energy*0.020+u_flux*0.010;
   // The time term CRAWLS the noise through the form. At 0.15 (and 0.5 on air hits) the surface
   // was boiling — detail sliding across geometry that is itself turning, which is most of what
   // read as jiggle even after the rotation was cleaned up. Slowed hard so the detail rides WITH
   // the form and the eye tracks the spin instead of the churn.
-  d+=(fbm(p*nf+u_time*(0.030+u_hAir*0.09))-0.5)*na*(2.0/nf)*u_dxs.z;
+  // ...and the crawl no longer accelerates on air hits: 0.09 per hit was the noise sliding across
+  // geometry that is itself turning, which the note above already identified as most of the churn.
+  d+=(fbm(p*nf+u_time*0.030)-0.5)*na*(2.0/nf)*u_dxs.z;
   dObj=d*s*0.5;
   }
   return vec2(dObj,1.0);
@@ -3104,6 +3119,70 @@ const TUMBLE_BEATS=SPIN_BEATS*3;                     // 48 beats, about X
 // windmilling in their own plane rather than the body leaning. 24 against 16 and 48 makes all
 // three rates distinct and still commensurate: the orientation recurs every 48 beats.
 const SWIRL_BEATS=SPIN_BEATS*1.5;                    // 24 beats, about Z
+/* ---- THE THREE PERIODS ARE NOW RE-DERIVED PER SECTION ----
+   The constants above are the STARTING values and the fallback for a track with no director;
+   from here they are targets that each section rewrites from its own analysis.
+
+   WHAT THIS DOES NOT THROW AWAY. The note above argues that whole-number ratios are the point --
+   at 3:1 the pair returns to its starting orientation every 48 beats and that recurrence is what
+   the eye anchors to, where an irrational ratio reads as drift. That still holds and is preserved:
+   every period below stays an integer multiple of the same base, so within a section the
+   orientation still recurs on a musical boundary. What changes is WHICH ratio a section gets.
+   So the motion is unpredictable across a track and across tracks, and legible inside a section
+   -- which is the only place the anchor was ever doing any work.
+
+   IT IS SEEDED, NOT RANDOM. The choice comes from a hash of the section's start time, so a track
+   plays the same way every time and two different tracks never agree. Math.random() here would
+   make the visual unrepeatable, and an unrepeatable visual cannot be judged or debugged.
+
+   AND IT READS THE ANALYSIS THAT WAS ALREADY BEING COMPUTED AND THROWN AWAY. Audited against the
+   contract, the renderer was ignoring: section.motion (an arousal-derived 0..1 the Director emits
+   for exactly this purpose), tempo.stability, crest_db, stereo_width, the whole instruments{}
+   block, and the danceability / percussive / harmonic / density / dynamics / release / atmosphere
+   curves. The ones that bear on how a thing should MOVE are used here. */
+const SPIN_LADDER=[8,12,16,24,32];                   // beats per revolution, slow -> fast
+const RATIO_PAIRS=[[3,1.5],[2,1.5],[3,2],[4,2],[4,3],[2,4]];   // [tumble, swirl] as multiples
+const MOTP ={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // live, eased
+const MOTPT={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // target
+function hashAt(x){ return Math.abs(Math.sin(x*127.1+311.7)*43758.5453)%1; }
+/* Derive a section's three periods. Percussive material spins; harmonic and atmospheric material
+   tumbles and swirls instead -- a pad has no reason to windmill and a drum break has every reason
+   to. Stereo width decides how far apart the two off-axes are allowed to sit, because a wide mix
+   is the one that can carry two independent motions without reading as noise. */
+function motionPeriodsFor(s){
+  const T=(director&&director.tempo)||{};
+  const mid=(s.t0+s.t1)*0.5;
+  const mot = (s.motion!==undefined) ? s.motion : (0.25+(s.energy||0)*0.70);
+  const perc = cv('percussive',mid,0.5), harm = cv('harmonic',mid,0.5);
+  const dance= cv('danceability',mid,0.5), dens = cv('density',mid,0.4);
+  const drums=((director&&director.instruments)||{}).drums;
+  let drive = Math.max(0,Math.min(1,
+      mot*0.45 + dance*0.20 + dens*0.15 + (drums!==undefined?drums:perc)*0.20));
+  /* A DROP TAKES THE TOP OF THE LADDER. The Director already labels it, and a drop is precisely
+     the moment the motion is expected to answer -- so it is not left to the blend above, which
+     can average a drop down to the middle of the ladder if its arousal happens to be moderate.
+     A build leans the same way but less far, since its job is to arrive rather than to land. */
+  if(s.label==='drop')  drive=Math.max(drive,0.92);
+  else if(s.label==='build') drive=Math.max(drive,0.66);
+  // A high drive picks a SHORT period, i.e. a fast revolution: index runs down the ladder.
+  let i = Math.round((1-drive)*(SPIN_LADDER.length-1));
+  // Tempo stability widens the choice: a track whose tempo wanders is one where a neighbouring
+  // period will not read as a mistake, so it is allowed to step off the drive's pick.
+  const stab = (T.stability!==undefined)?T.stability:0.8;
+  if(stab<0.75 && hashAt(s.t0)>0.5) i += (hashAt(s.t0*3.1)>0.5?1:-1);
+  i = Math.max(0,Math.min(SPIN_LADDER.length-1,i));
+  const base = SPIN_LADDER[i];
+  // Ratio pair from the section's own hash, biased by what the material is made of: percussive
+  // sections take the tighter pairs (the body leads), harmonic ones the wider (the plane leads).
+  const bias = Math.max(0,Math.min(1, 0.5 + (harm-perc)*0.6));
+  const w = (T.stereo_width!==undefined)?Math.max(0,Math.min(1,T.stereo_width)):0.5;
+  let k = Math.floor(hashAt(s.t0*7.3)*RATIO_PAIRS.length);
+  k = Math.max(0,Math.min(RATIO_PAIRS.length-1, Math.round(k*(1-bias*0.5)+bias*(RATIO_PAIRS.length-1)*0.5)));
+  const [mT,mS]=RATIO_PAIRS[k];
+  // A narrow mix pulls the two off-axes toward each other so they read as one gesture.
+  const nT = mT, nS = mS + (1-w)*(mT-mS)*0.35;
+  return {spin:base, tumble:base*nT, swirl:base*Math.max(1.2,nS)};
+}
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
 const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
 const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
@@ -3124,6 +3203,29 @@ function rerollVariant(){
   VART.hue=R();
   VART.countMul=0.8+R()*0.7;
   VART.thickMul=0.85+R()*0.5;
+}
+/* SEGMENT COUNT, ON SECTION BOUNDARIES, FROM THE MUSIC.
+   The reference's most visible motion is not its rotation, it is its DENSITY: over eight seconds
+   its rosette runs from six broad petals to about twenty fine spikes and back. Here u_segN was
+   the panel slider and nothing else -- the one shape parameter the music never touched -- while
+   countMul was rolled every section and never read by anything.
+
+   STEPPED, NOT EASED, and that is deliberate. The profiles take N through int(clamp(u_segN,...)),
+   so a value sliding from 3 to 6 pops through 4 and 5 wherever the ease happens to put them --
+   three arbitrary jumps mid-phrase. Landing the whole change on the section boundary makes it one
+   cut in the place the ear is already expecting one.
+
+   The slider stays the BASE: the music multiplies it, so turning it down still gives a sparser
+   form and the Director bends that rather than replacing it. */
+let segNow=3;
+function segForSection(s){
+  const mid=(s.t0+s.t1)*0.5;
+  const dens=cv('density',mid,0.4), e=Math.max(0,Math.min(1,s.energy||0));
+  const air=cv('air',mid,0.3);
+  // Fine, many-bladed on dense/bright material; broad and few on sparse. air carries the hats,
+  // which is what actually reads as "finer" in the reference.
+  const k=Math.max(0,Math.min(1, dens*0.45+e*0.35+air*0.20));
+  return Math.max(2,Math.min(8, Math.round(PRM.seg*(0.65+k*0.95))));
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
@@ -3857,6 +3959,8 @@ function frame(){
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
       sectRand=Math.random();                       // the matrix's 'Section step' source
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
+      { const mp=motionPeriodsFor(s); MOTPT.spin=mp.spin; MOTPT.tumble=mp.tumble; MOTPT.swirl=mp.swirl; }
+      segNow=segForSection(s);                        // one step, on the boundary
       // The section's hash is the STARTING angle now, not the whole story: kalSpin carries it on
       // from there every frame. Still gated on the form being unfolded, because re-seeding the
       // base mid-bloom is the jump the old note warns about -- what is safe is the sweep, not a
@@ -3971,7 +4075,12 @@ function frame(){
   // own BPM and a faster track visibly spins faster.
   //     rad/s = 2*PI * (bpm/60) / SPIN_BEATS
   const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
-  const spinRate=2*Math.PI*(bpm/60)/SPIN_BEATS;
+  /* THE PERIODS EASE, they do not cut. Changing a period changes an angular RATE, not an angle,
+     so a hard switch cannot jump the form's position -- but it can visibly kick its speed, and a
+     section boundary is exactly where the eye is already looking. 0.7/s puts the change across
+     about two seconds, under the section it belongs to. */
+  for(const k in MOTP) MOTP[k]=sm(MOTP[k],MOTPT[k],0.7,dt);
+  const spinRate=2*Math.PI*(bpm/60)/MOTP.spin;
   /* ROUTED. Each rate takes its own route as a multiplier, floored at zero -- a route pushed deep
      negative would run the form BACKWARDS, and a reversing rotation is the exact fault the
      bar-locked camera sway was removed for. Ceiling at 3x so one route cannot make it a blur. */
@@ -3984,8 +4093,8 @@ function frame(){
   const rTum =Math.max(0,Math.min(4,MOT.tumble*(1+MV('tumble')*1.2)));
   const rSwi =Math.max(0,Math.min(4,MOT.swirl *(1+MV('swirl') *1.2)));
   formSpin   += spinRate*dt*rSpin;
-  formTumble += 2*Math.PI*(bpm/60)/TUMBLE_BEATS*dt*rTum;  // second axis, about X
-  formSwirl  += 2*Math.PI*(bpm/60)/SWIRL_BEATS *dt*rSwi;  // third axis, about Z
+  formTumble += 2*Math.PI*(bpm/60)/MOTP.tumble*dt*rTum;  // second axis, about X
+  formSwirl  += 2*Math.PI*(bpm/60)/MOTP.swirl *dt*rSwi;  // third axis, about Z
   // SLEW, not a spring: at most one full scale per KAL_SECS in either direction, so the drive
   // can move as fast as it likes and the shape still takes 1.2s to travel. This is what makes a
   // live curve safe to steer with; nothing here can snap.
@@ -4040,7 +4149,12 @@ function frame(){
   // all three -- tumble is a second axis now, so pinning the first two no longer pins the pose.
   if(window.POSE){ formSpin=window.POSE.spin; camAng=window.POSE.cam;
                    formTumble=window.POSE.tumble||0; formSwirl=window.POSE.swirl||0; }
-  camKick  += ((HITS.low*0.014 + HITS.sub*0.010) - camKick)*(1-Math.exp(-4.0*dt));
+  /* CAMERA KICK OFF. A decaying angular offset on the camera from every low and sub onset is the
+     same trembling as the scale punch, applied to the frame instead of the form -- and a shaking
+     CAMERA is worse, because it moves the background too, so the whole image judders. Left at 0
+     rather than deleted: ca still reads it, and the note above it is the record of why velocity
+     was wrong here before offset was. */
+  camKick = 0;
   // Drag inertia: the grab ends but the orbit keeps carrying and settles, which is what makes a
   // camera feel like it has weight instead of stopping dead with the pointer.
   if(!dragging){ userAzV *= Math.exp(-3.2*dt); userElV *= Math.exp(-3.2*dt);
@@ -4186,7 +4300,7 @@ function frame(){
   gl.uniform1f(US('u_kal'),kalAmt);
   gl.uniform1f(US('u_kalPh'),(Math.PI/Math.max(1,PRM.seg))*(KALO.phase!==undefined?KALO.phase:kalPhase));
   gl.uniform1f(US('u_room'),ENV.room);
-  gl.uniform1f(US('u_segN'),PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
+  gl.uniform1f(US('u_segN'), director?segNow:PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
   gl.uniform1f(US('u_pDepth'),PRM.depth);
   gl.uniform1f(US('u_bevK'),(window.BEVK!==undefined)?window.BEVK:LK.bevK); gl.uniform1f(US('u_hardAmb'),LK.hardAmb);
   gl.uniform1f(US('u_hardWrap'),LK.hardWrap);
@@ -4996,6 +5110,13 @@ function motSet(v){ for(const k of ['spin','tumble','swirl','orbit']){
 $('motStop').addEventListener('click',()=>{ motSet(0); showStat('Motion frozen'); hideStat(1300); });
 $('motReset').addEventListener('click',()=>{ motSet(1); showStat('Motion 1.00'); hideStat(1300); });
 bindPrm('pSeg','seg',1,v=>v.toFixed(0));
+/* The slider is the BASE the music multiplies, and segNow only re-derives on a section boundary --
+   so without this, dragging Segments mid-section does nothing until the next one and the control
+   reads as broken. Recompute against the section that is playing right now. */
+$('pSeg').addEventListener('input',()=>{
+  const s=director?currentSection(pos()):null;
+  segNow = s ? segForSection(s) : PRM.seg;
+});
 bindPrm('pEdge','edge',0.01,v=>v.toFixed(2));
 bindPrm('pMass','mass',0.01,v=>v.toFixed(2));
 bindPrm('pDepth','depth',0.01,v=>v.toFixed(2));
