@@ -3217,15 +3217,48 @@ function rerollVariant(){
 
    The slider stays the BASE: the music multiplies it, so turning it down still gives a sparser
    form and the Director bends that rather than replacing it. */
-let segNow=3;
-function segForSection(s){
+let segNow=3, segLo=0, segHi=1;
+/* The raw drive for one section. Kept separate from the mapping so the calibration below can run
+   it over every section before a note is played. */
+function segDriveOf(s){
   const mid=(s.t0+s.t1)*0.5;
   const dens=cv('density',mid,0.4), e=Math.max(0,Math.min(1,s.energy||0));
-  const air=cv('air',mid,0.3);
-  // Fine, many-bladed on dense/bright material; broad and few on sparse. air carries the hats,
-  // which is what actually reads as "finer" in the reference.
-  const k=Math.max(0,Math.min(1, dens*0.45+e*0.35+air*0.20));
-  return Math.max(2,Math.min(8, Math.round(PRM.seg*(0.65+k*0.95))));
+  return dens*0.55+e*0.45;
+}
+/* CALIBRATED PER TRACK, against its own sections, exactly as kalCalibrate does for the fold --
+   and for the same reason, learned the same way. The first mapping treated these curves as if
+   they spanned 0..1. Logged over a real track they do not come close: density ran 0.11..0.34,
+   energy 0.59..0.81, and the combined drive occupied 0.27..0.45 -- under a fifth of the range it
+   was being mapped through. The count consequently sat on one value for nineteen consecutive
+   samples and never stepped more than once, which is not the reference's gesture at all.
+
+   'air' was in that blend and is now out: it measured 0.061..0.067 across the whole track, so it
+   was contributing a constant 0.013 and no variation. A term that cannot move is not a driver.
+
+   Mapping each track onto its OWN span is what guarantees the full range gets used whatever the
+   material is, rather than tuning constants against one file. */
+function segCalibrate(){
+  segLo=1; segHi=0;
+  for(const s of director.sections){ const d=segDriveOf(s); if(d<segLo)segLo=d; if(d>segHi)segHi=d; }
+  if(segHi-segLo<0.05){ const m=(segHi+segLo)*0.5; segLo=m-0.025; segHi=m+0.025; }  // flat track
+}
+function segForSection(s){
+  const k=Math.max(0,Math.min(1,(segDriveOf(s)-segLo)/Math.max(1e-6,segHi-segLo)));
+  /* SPAN THE RANGE THE PROFILES ACTUALLY ALLOW, which is 2..8, and let the slider SHIFT that band
+     rather than scale it. Multiplying the slider was the first version and it barely moved: at the
+     default 3 the music could only reach 2..5, and logging the uploaded uniform through a real
+     track showed it sitting on 4 for nineteen consecutive samples and never stepping more than
+     once. The reference's whole gesture is its density running from a few broad blades to many
+     fine ones, and a one-step wobble is not that.
+     The slider still decides where the band sits -- turn it down and the whole range comes down
+     with it -- it just no longer squeezes the range to nothing. */
+  const out=Math.max(2,Math.min(8, Math.round(2 + k*6 + (PRM.seg-5)*0.6)));
+  // Calibration tap. The mapping is only as good as the span the drive actually occupies on real
+  // material, and that has to be measured rather than assumed -- it already caught one mapping
+  // that looked reasonable and moved almost nothing. window.__SEG from the console.
+  window.__SEG={seg:out, k:+k.toFixed(3), drive:+segDriveOf(s).toFixed(3),
+                lo:+segLo.toFixed(3), hi:+segHi.toFixed(3), label:s.label};
+  return out;
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
@@ -3690,6 +3723,7 @@ async function loadFile(file){
   if(poll) clearInterval(poll);
   setProg(1,'Analysed'); setProg(null);
   kalCalibrate();                 // the kaleidoscope's threshold is relative to THIS track
+  segCalibrate();                 // ...and so is the segment count's span
   autoMap(false);                 // and the routing matrix is wired from THIS track
   $('hGenre').textContent=director.genre.primary+'  ('+(director.genre.confidence)+')';
   $('hBpm').textContent=director.tempo.bpm+' BPM';
