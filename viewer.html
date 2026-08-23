@@ -3217,7 +3217,7 @@ function rerollVariant(){
 
    The slider stays the BASE: the music multiplies it, so turning it down still gives a sparser
    form and the Director bends that rather than replacing it. */
-let segNow=3, segLo=0, segHi=1;
+let segNow=3, segLo=0, segHi=1, segSorted=[];
 /* The raw drive for one section. Kept separate from the mapping so the calibration below can run
    it over every section before a note is played. */
 function segDriveOf(s){
@@ -3236,14 +3236,52 @@ function segDriveOf(s){
    was contributing a constant 0.013 and no variation. A term that cannot move is not a driver.
 
    Mapping each track onto its OWN span is what guarantees the full range gets used whatever the
-   material is, rather than tuning constants against one file. */
+   material is, rather than tuning constants against one file.
+
+   SPAN IS NOT SPREAD, which the span alone hid. Run over all nine analysed tracks -- 203 sections
+   -- min/max normalisation does reach both 2 and 8 on every one of them, and still puts 74% of
+   sections on 7 or 8: one quiet intro sets the floor and everything else piles up against the
+   ceiling. One track spent 21 of its 26 sections pinned at 8 with occasional collapses to 2, which
+   is a flicker between sparse and dense rather than the reference's morph through the middle.
+
+   The fix is to weigh WHERE a section sits in the track's distribution as well as how far it sits
+   from the extremes, because min/max is dominated by outliers and rank is not. Half and half,
+   chosen by measurement rather than taste -- over the same 203 sections:
+
+       scheme      2  3  4  5  6  7  8    at an extreme   spread (entropy of 2.81 max)
+       min/max    18  6  9  6 13 73 78         47%              2.12
+       half+half  19 10 13 26 53 52 30         24%              2.58
+       pure rank  19 34 33 31 32 35 19         19%              2.77
+
+   Pure rank looks best in that table and is wrong, which is why the two checks below decided it
+   instead. Rank throws away magnitude: it splits 16% of consecutive near-identical sections
+   (drives within 0.05) by two blades or more -- the form visibly changes where the music did not
+   -- and it FAILS to move 23% of the pairs whose drive changes by more than 0.30, flattening the
+   contrasts that matter most. Half and half splits 3% and misses none. */
 function segCalibrate(){
-  segLo=1; segHi=0;
-  for(const s of director.sections){ const d=segDriveOf(s); if(d<segLo)segLo=d; if(d>segHi)segHi=d; }
+  segLo=1; segHi=0; segSorted=[];
+  for(const s of director.sections){
+    const d=segDriveOf(s); segSorted.push(d);
+    if(d<segLo)segLo=d; if(d>segHi)segHi=d;
+  }
+  segSorted.sort((a,b)=>a-b);
   if(segHi-segLo<0.05){ const m=(segHi+segLo)*0.5; segLo=m-0.025; segHi=m+0.025; }  // flat track
 }
+/* Where this drive sits among the track's own sections, 0 at the quietest and 1 at the densest.
+   Ties are AVERAGED rather than ordered: two sections the analyser reads identically have to come
+   out on the same count, or a repeated chorus grows blades the second time round for no reason
+   the ear can hear. */
+function segRank(d){
+  const n=segSorted.length;
+  if(n<2) return 0.5;
+  let below=0, atOrBelow=0;
+  for(const x of segSorted){ if(x<d) below++; if(x<=d) atOrBelow++; }
+  return (below+atOrBelow-1)/(2*(n-1));
+}
 function segForSection(s){
-  const k=Math.max(0,Math.min(1,(segDriveOf(s)-segLo)/Math.max(1e-6,segHi-segLo)));
+  const drive=segDriveOf(s);
+  const lin=Math.max(0,Math.min(1,(drive-segLo)/Math.max(1e-6,segHi-segLo)));
+  const k=lin*0.5+segRank(drive)*0.5;                    // see the note above for the weighting
   /* SPAN THE RANGE THE PROFILES ACTUALLY ALLOW, which is 2..8, and let the slider SHIFT that band
      rather than scale it. Multiplying the slider was the first version and it barely moved: at the
      default 3 the music could only reach 2..5, and logging the uploaded uniform through a real
@@ -3256,8 +3294,8 @@ function segForSection(s){
   // Calibration tap. The mapping is only as good as the span the drive actually occupies on real
   // material, and that has to be measured rather than assumed -- it already caught one mapping
   // that looked reasonable and moved almost nothing. window.__SEG from the console.
-  window.__SEG={seg:out, k:+k.toFixed(3), drive:+segDriveOf(s).toFixed(3),
-                lo:+segLo.toFixed(3), hi:+segHi.toFixed(3), label:s.label};
+  window.__SEG={seg:out, k:+k.toFixed(3), lin:+lin.toFixed(3), rank:+segRank(drive).toFixed(3),
+                drive:+drive.toFixed(3), lo:+segLo.toFixed(3), hi:+segHi.toFixed(3), label:s.label};
   return out;
 }
 rerollVariant();
