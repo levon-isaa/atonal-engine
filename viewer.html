@@ -913,21 +913,44 @@ float evalForm(vec3 p){
 
    The imported mesh and the uploaded SVG replace the generated set outright in evalMode() and
    have no symmetry at all, so they are excluded first. */
+/* WHAT TO HAND kalFold: it cuts 2N sectors, so N is the number of MIRROR LINES.
+     n   the profile's own rotational symmetry, where it has one
+     1   no rotational symmetry, but a single mirror fold does not break it
+     0   no kaleidoscope at all -- folding this profile cuts a piece loose at some mirror angles
+
+   The 1 and the 0 are MEASURED, not reasoned. Connected components of the silhouette, counted by
+   flood fill over the debug mask, sweeping the mirror phase across the whole range kalPhaseFor()
+   can produce (and every segment count as well, for the one profile that reads it):
+
+     profile   pieces unfolded   worst folded   phases worse than unfolded
+     Chevron         2                2                 0 of 16
+     Wave            1                1                 0 of 16
+     Plate           1                1                 0 of 16
+     Arc             1                2                 4 of 16
+     Lattice         1                2                 8 of 40
+
+   Arc's failure is not subtle and the count understates it: at phase 1.65 its end cap detaches and
+   floats below the ring as a separate blob. Chevron reads 2 both ways because it IS two nested
+   Vs -- unchanged, not broken. So Chevron, Wave and Plate get the single mirror; Arc and Lattice
+   get no kaleidoscope, which is the honest answer for a shape the operation cannot survive.
+
+   Reasoning alone had already got this wrong twice in this file, in both directions. */
 float foldOrder(float m){
   if(u_volOn>0.5 || u_svgOn>0.5) return 0.0;
   float n=clamp(floor(u_segN+0.5),2.0,8.0);
   if(m<1.5)      return n;                       // Tris, Clover
-  else if(m<5.5) return 0.0;                     // Arc, Chevron, Wave, Plate
+  else if(m<2.5) return 0.0;                     // Arc -- fragments, see the table
+  else if(m<5.5) return 1.0;                     // Chevron, Wave, Plate -- one mirror, measured safe
   else if(m<6.5) return n;                       // Gear: C_2n contains C_n
   else if(m<7.5) return clamp(n,2.0,6.0);        // Knot, at its own clamp
-  return 0.0;                                    // Lattice
+  return 0.0;                                    // Lattice -- fragments
 }
 /* The order the FOLD may use, which is the order the whole evaluated field has. evalForm blends
    two modes whenever u_mix is live, and a blend of a C_3 and a C_5 form is neither -- so the two
    have to agree before anything may be folded. */
 float kalOrder(){
   float a=foldOrder(u_mode);
-  if(a<1.5) return 0.0;
+  if(a<0.5) return 0.0;
   if(u_mix>0.001 && abs(a-foldOrder(u_mode2))>0.5) return 0.0;
   return a;
 }
@@ -941,11 +964,6 @@ vec3 kalFold(vec3 p,float N){
   a=abs(a)+u_kalPh;                              // mirror about the plane at u_kalPh
   float r=length(p.xy);
   p.xy=vec2(cos(a),sin(a))*r;
-  return p;
-}
-vec3 kalMirror(vec3 p){
-  float c=cos(2.0*u_kalPh), sn=sin(2.0*u_kalPh);   // reflection about the line at angle u_kalPh
-  p.xy=vec2(c*p.x+sn*p.y, sn*p.x-c*p.y);
   return p;
 }
 vec2 map(vec3 wp){
@@ -983,29 +1001,41 @@ vec2 map(vec3 wp){
   else{
   // KALEIDOSCOPE: the form softly unioned with its own reflection, faded in by u_kal. Off costs
   // one evalForm and skips the second entirely; on costs two, for as long as it is on.
-  /* KALEIDOSCOPE. A domain FOLD where the profile has a rotational symmetry to fold on, and the
-     mirror UNION everywhere else -- see foldOrder() for which is which and why the gate exists.
-     The fold is the better construction on both counts that matter: it has no intersection curve,
-     so it cannot crease, and at a fully open fold it evaluates the form ONCE, where the union
-     always costs two. It just cannot be applied to a profile that is not C_N. */
+  /* KALEIDOSCOPE, AND WHY THE UNION IS GONE.
+     The union of the form with its own reflection is where the reported radial lines came from,
+     and this file has said so for a while without acting on it: "a union's intersection curve is a
+     CREASE: wherever the twin passes through the original there is a ridge, and because the profile
+     is N-fold symmetric about the mirror axis those ridges radiate from the centre." Isolated at a
+     frozen pose with the Director driving: kaleidoscope off, every seam gone and the surface clean
+     at 3.9x; back on, the seams return. Nothing else in the frame produces them.
+
+     Widening the blend does not fix it -- swept 0.08 to 0.45 and rendered at each, the seams get
+     DEEPER and the form inflates. Two surfaces that cross meet at an angle; smin moves that meeting
+     and fattens the body, it does not remove it. The only fix is to stop crossing.
+
+     So there is no union any more, at any order. Where the profile has a rotational symmetry the
+     fold uses it; where it has none the fold is ORDER 2 -- a single mirror line, kalFold at N=1,
+     which wraps the whole circle into one half and reflects it. A fold has no intersection curve
+     at all: it keeps one side of a plane and mirrors it, so the only crease it can make is on the
+     plane itself, where two copies of the same surface meet at a predictable angle.
+
+     This is also strictly cheaper. The union evaluated the form TWICE for as long as it was on;
+     every path here evaluates it once at a fully open kaleidoscope.
+
+     The earlier fold attempt that had to be reverted folded at order N on profiles that are not
+     C_N, which cuts arms into wedges and fragments the form. Order 2 keeps a whole half-plane, and
+     the fragmentation is measured below rather than argued -- see the mirror-phase sweep. */
   float d;
   float kalN=(u_kal>0.002)?kalOrder():0.0;
-  if(u_kal>0.998 && kalN>1.5){
-    d=evalForm(kalFold(p,kalN));                 // the cheap path: one evaluation, no seam
-  } else if(u_kal>0.002){
-    float kk=clamp(u_kal,0.,1.); kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
-    if(kalN>1.5){
-      // Fading: blend the two FIELDS, never the two positions. A domain map blended toward the
-      // identity stops being an isometry, and a compressed domain makes the field overestimate.
-      d=mix(evalForm(p), evalForm(kalFold(p,kalN)), kk);
-    } else {
-      d=evalForm(p);
-      // 0.12 = the old 0.08 carried over at the cubic's 1.5x, so the fillet is the same size it
-      // always was. What changes is that its boundary no longer draws itself.
-      d=mix(d, smin3(d, evalForm(kalMirror(p)), 0.12), kk);
-    }
+  if(kalN<0.5){
+    d=evalForm(p);                               // off, or a profile the fold would break
+  } else if(u_kal>0.998){
+    d=evalForm(kalFold(p,kalN));                 // one evaluation, no seam but the fold plane
   } else {
-    d=evalForm(p);
+    // Fading: blend the two FIELDS, never the two positions. A domain map blended toward the
+    // identity stops being an isometry, and a compressed domain makes the field overestimate.
+    float kk=clamp(u_kal,0.,1.); kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
+    d=mix(evalForm(p), evalForm(kalFold(p,kalN)), kk);
   }
   /* THE LIVING SURFACE IS GONE, AND IT WAS THE LINES.
      A band-driven fbm used to displace the field here. It was cut back twice -- once off the
@@ -4366,7 +4396,7 @@ function frame(){
   gl.uniform1f(US('u_swirl'),formSwirl);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
      have segments (p2Tris, p2Clover) and just a reasonable angle on the four that do not. See
-     the note above kalMirror() for why that is fine and why this is a dial to look at rather
+     the kaleidoscope note in map() for why that is fine and why this is a dial to look at rather
      than a lattice to compute. window.KAL={phase} to try others. */
   const KALO=window.KAL||{};
   gl.uniform1f(US('u_kal'),kalAmt);
@@ -5436,7 +5466,7 @@ function rollAll(seedStr){
   // ---- things every family gets, rolled BEFORE the recipe so the recipe can override them
   setCtl('selPal', pick(r,['auto','auto','auto','blood','acid','ultra','cyber','solar','mono']));
   /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count and only two of the six
-     profiles use it (p2Tris and p2Clover -- see the note above kalMirror); on the others the
+     profiles use it (p2Tris and p2Clover -- see foldOrder()); on the others the
      slider is inert, so rolling a high count there is a roll that did nothing. And the Arc is a
      broken ring: repeated eight times it stops reading as a single stroke. */
   const shape=pick(r,['0','1','2','3','4','5','6','7','8','6','7','8']);   // the complex three, twice as often
