@@ -122,7 +122,7 @@
       <option value="auto">Auto &middot; Director</option>
       <option value="0">Triskelion</option><option value="1">Clover</option>
       <option value="2">Arc</option><option value="3">Chevron</option>
-      <option value="4" selected>Wave</option><option value="5">Plate</option>
+      <option value="4">Wave</option><option value="5">Plate</option>
       <option value="6">Gear</option><option value="7">Knot</option>
       <option value="8">Lattice</option>
       <option value="mesh">Reference mesh</option>
@@ -377,7 +377,23 @@ uniform int u_shaN;
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
 uniform float u_valence,u_warmth,u_epic;
-uniform float u_keyPulse,u_rimPulse;   // lights breathing with the beat; see the JS that sets them
+/* ONE LEG OF THE RIG PER BAND, so the sounds are TELLABLE APART.
+   Every onset used to arrive as global brightness -- exposure, bloom, a touch of emission -- so a
+   kick and a hi-hat did the same thing to the frame and the only thing you could read was that
+   something had happened. u_hSub and u_hLow were not even read in this shader; they reached the
+   image through the JS exposure term and nothing else.
+   The rig already has legs pointing in different directions, and a light's DIRECTION is what
+   makes it identifiable: the eye separates two flashes by where they land far more easily than
+   by how bright they are. So each band drives a different one.
+     sub   ambient      the whole form lifts, shadow side included. Weight, not a flash.
+     low   key          the LIT side flares. This is the kick and it should read as the hit.
+     mid   fill         the SHADOW side flares -- the opposite face from the kick, so a snare
+                        and a kick land in visibly different places.
+     high  emission     surface glint, at the material rather than from a light.
+     air   rim          the silhouette edge. Hats and cymbals live on the outline.
+   Sub and mid are new legs; key and rim already existed and now take their band cleanly rather
+   than sharing the generic beat envelope. */
+uniform float u_keyPulse,u_rimPulse,u_fillPulse,u_ambPulse;   // one per band; see the JS that sets them
 uniform float u_fill;                  // directional fill leg of the rig; 0 ablates it (DXS.fill)
 uniform float u_keyG,u_fillG,u_ambG;   // key/fill/ambient gains; their RATIO is the modelling
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
@@ -1996,14 +2012,19 @@ void main(){
     float aoF =mix(0.22,0.72,u_hardAmb);
     float shaF=mix(0.35,0.74,u_hardAmb);
     vec3 c=kD*( keyC*(0.95*u_keyG*hk*u_keyPulse*NoL*mix(shaF,1.0,sha))*mix(shaF,1.0,occ)
-              + fillC*(0.68*u_fillG*hf*u_fill*NoF)*mix(mix(0.30,0.72,u_hardAmb),1.0,occ)
-              + amb*ambK*mix(aoF,1.0,occ) )
-          + Fms*Ems*amb*ambK*mix(aoF,1.0,occ);
+              + fillC*(0.68*u_fillG*hf*u_fill*u_fillPulse*NoF)*mix(mix(0.30,0.72,u_hardAmb),1.0,occ)
+              + amb*ambK*u_ambPulse*mix(aoF,1.0,occ) )
+          + Fms*Ems*amb*ambK*u_ambPulse*mix(aoF,1.0,occ);
     // emotional rim: swells with epicness/arousal, colour from valence
     // the mood rim reads as a glossy edge on a matte surface, so it scales back with u_spec —
     // not to zero, because it is how the section's valence reaches the form at all.
     // ...and the rim, which is pure pow(1-NoV): the single strongest gradient across a flat face.
-    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec)*(1.0-u_furnace)*(1.0-u_hardAmb);
+    /* AIR IS ADDED INTO THE RIM'S STRENGTH, not just multiplied over it. u_rimPulse alone could
+       not make hats visible because the coefficient it scales rests at 0.08 -- on a section with
+       little epicness or arousal there was nothing there to multiply, and the measured response
+       to a full hi-hat was 0.09 of one 8-bit level. As an additive term the hat lights the edge
+       whatever the section is doing, which is the point: a hat is a hat in a quiet passage too. */
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12+u_hAir*2.60)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec)*(1.0-u_furnace)*(1.0-u_hardAmb);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
@@ -2159,7 +2180,9 @@ void main(){
       c += base*keyC*u_transl*trans*(wrapB*0.42+pow(back,3.0)*0.55)*mix(0.5,1.0,sha)*(1.0-u_furnace);
     }
     // emissive glow (neon) — high-band stabs flare it, desaturated so it cannot band
-    c += base*fr*(u_emis*1.6+u_hHigh*0.30+u_hMid*0.16)*(1.0-u_furnace);
+    // HIGH is the surface glint. Raised from 0.30 and the mid term dropped, because mid now has
+    // the fill leg -- two bands sharing one emission term was part of what made them indistinct.
+    c += base*fr*(u_emis*1.6+u_hHigh*3.20)*(1.0-u_furnace);
     // Direct specular: Cook-Torrance GGX (roughness still comes from the TEXTURED field, so the
     // lobe breaks up instead of reading as plastic). Blinn-Phong's pow(NoH,k) was the single
     // biggest "not a real render" cue here — its lobe has the wrong falloff and no geometry
@@ -3219,9 +3242,21 @@ const MODV={};                                 // this frame's summed value per 
    is locked to the grid the same way the form's rotation is -- an LFO on wall-clock time would
    drift against the track within a few bars, which is the whole reason Sketch offers 1/1..1/8
    rather than a frequency in hertz. */
-let beatPhase=0, snapV=0.5, snapAt=-1, sectRand=0.5;
+let beatPhase=0, snapV=0.5, snapAt=-1, sectRand=0.5, barOrigin=0;
 function modUpdate(dt,bpm){
-  beatPhase += dt*Math.max(20,bpm)/60;
+  /* THE LFO CLOCK IS THE GRID'S CLOCK when there is one. `beatPhase += dt*bpm/60` is the same
+     seconds-times-estimated-bpm integration that beatsAtTime was written to replace, and it has
+     both of that version's faults: the bpm is librosa's SCALAR estimate, which can disagree with
+     its own beat grid, and dt is wall-clock, which is capped at 50ms -- so below 20fps these
+     sources slowed down with the frame rate exactly as the rotation used to (see musicalStep).
+     Reading the grid directly makes SIG.beat / SIG.bar / SIG.snap immune to both.
+     PHASE, not just rate: beatsAtTime counts from the tracker's first beat, which on a track with
+     a sparse intro is often not a downbeat -- so the bar would be the right LENGTH in the wrong
+     place. barOrigin is the last beat the analyser called a downbeat, so SIG.bar crosses zero
+     where the music's bar does. It is only ever set from events.downbeats; with no downbeats it
+     stays 0 and the bar is as arbitrary as it was, which is the honest fallback. */
+  if(director && isPlaying) beatPhase = beatsAtTime(pos()) - barOrigin;
+  else beatPhase += dt*Math.max(20,bpm)/60;
   const b=Math.floor(beatPhase);
   if(b!==snapAt){ snapAt=b; snapV=Math.random(); }
   SIG.beat = 0.5+0.5*Math.sin(beatPhase*6.2831853);
@@ -3402,17 +3437,19 @@ const SPIN_LADDER=[4,6,9,14,22];                     // beats per revolution, fa
    move alike -- but none of them is allowed to be nearly still any more. */
 const RATIO_PAIRS=[[2,1.5],[1.5,2],[2.5,1.5],[1.5,1.25],[1.25,2],[2,2.5]];   // [tumble, swirl] as multiples
 const MOTP ={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // live, eased
+let eFlow=null;        // the energy curve's own recent mean -- see `flow` in the frame loop
 const MOTPT={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // target
 function hashAt(x){ return Math.abs(Math.sin(x*127.1+311.7)*43758.5453)%1; }
 /* Derive a section's three periods. Percussive material spins; harmonic and atmospheric material
    tumbles and swirls instead -- a pad has no reason to windmill and a drum break has every reason
    to. Stereo width decides how far apart the two off-axes are allowed to sit, because a wide mix
    is the one that can carry two independent motions without reading as noise. */
-function motionPeriodsFor(s){
-  const T=(director&&director.tempo)||{};
+/* The raw drive for one section, 0..1. Split out of motionPeriodsFor because the ladder pick
+   below needs every section's drive, not just this one's -- see driveSpan. */
+function motionDriveFor(s){
   const mid=(s.t0+s.t1)*0.5;
   const mot = (s.motion!==undefined) ? s.motion : (0.25+(s.energy||0)*0.70);
-  const perc = cv('percussive',mid,0.5), harm = cv('harmonic',mid,0.5);
+  const perc = cv('percussive',mid,0.5);
   const dance= cv('danceability',mid,0.5), dens = cv('density',mid,0.4);
   const drums=((director&&director.instruments)||{}).drums;
   let drive = Math.max(0,Math.min(1,
@@ -3423,12 +3460,54 @@ function motionPeriodsFor(s){
      A build leans the same way but less far, since its job is to arrive rather than to land. */
   if(s.label==='drop')  drive=Math.max(drive,0.92);
   else if(s.label==='build') drive=Math.max(drive,0.66);
+  return drive;
+}
+/* THE LADDER IS RANKED AGAINST THIS TRACK, not against an absolute 0..1 -- the same move kalRef
+   already makes for the fold ("energy against the track's own peak"), and for the same reason.
+   MEASURED on the test track, the eight sections' raw drives were
+
+       0.28  0.42  0.47  0.76  0.75  0.27  0.20  0.23
+
+   which is a span of 0.55 sitting inside a scale of 1.0, so round((1-drive)*4) could only ever
+   reach rungs 1..3 of a five-rung ladder. Part of that compression is structural rather than
+   musical: `drums` is a TRACK-GLOBAL number, identical in every section, so a fifth of the drive
+   is a constant offset that moves no section relative to any other. The quiet end of a quiet
+   track and the quiet end of a loud one are both "this track's quiet end", and that is what the
+   rotation should answer -- a mix that is 6dB down should not permanently disqualify a track
+   from its own top gear.
+   Normalised, the same eight land on 3 2 2 0 0 4 4 4: the whole ladder, floor to ceiling, in the
+   order the analysis ranked them. The 0.12 floor on the span keeps a genuinely flat track flat
+   instead of amplifying its noise into a full sweep. */
+let _dspan=null, _dspanFor=null;
+function driveSpan(){
+  if(_dspanFor===director && _dspan) return _dspan;
+  const secs=(director&&director.sections)||[];
+  let lo=1, hi=0;
+  for(const x of secs){ const d=motionDriveFor(x); if(d<lo) lo=d; if(d>hi) hi=d; }
+  if(!secs.length){ lo=0; hi=1; }
+  _dspanFor=director; _dspan={lo,hi};
+  return _dspan;
+}
+function motionPeriodsFor(s){
+  const T=(director&&director.tempo)||{};
+  const mid=(s.t0+s.t1)*0.5;
+  const perc = cv('percussive',mid,0.5), harm = cv('harmonic',mid,0.5);
+  const drive = motionDriveFor(s);
+  const sp=driveSpan();
+  const dn = Math.max(0,Math.min(1,(drive-sp.lo)/Math.max(0.12, sp.hi-sp.lo)));
   // A high drive picks a SHORT period, i.e. a fast revolution: index runs down the ladder.
-  let i = Math.round((1-drive)*(SPIN_LADDER.length-1));
-  // Tempo stability widens the choice: a track whose tempo wanders is one where a neighbouring
-  // period will not read as a mistake, so it is allowed to step off the drive's pick.
-  const stab = (T.stability!==undefined)?T.stability:0.8;
-  if(stab<0.75 && hashAt(s.t0)>0.5) i += (hashAt(s.t0*3.1)>0.5?1:-1);
+  let i = Math.round((1-dn)*(SPIN_LADDER.length-1));
+  /* THE TEMPO-STABILITY STEP IS GONE. It read "a track whose tempo wanders is one where a
+     neighbouring period will not read as a mistake, so it is allowed to step off the drive's
+     pick" -- variety, bought with a hashed +/-1 on the rung. But a random step on a five-entry
+     integer ladder cannot ADD variety to a ranking that already spreads across it; it can only
+     permute it, and on a small ladder a permutation collides. MEASURED, before the normalisation
+     above, the drive's own picks were 3 2 2 1 1 3 3 3 -- five sections' worth of spread -- and
+     the step turned them into 3 3 3 0 1 3 3 3, deleting both mid-ladder picks in favour of a
+     value five other sections already held. It was reliably making the track MORE uniform.
+     What it was reaching for is now bought continuously and musically by `flow` (see the frame
+     loop), which varies the rate inside every section from the energy curve rather than dicing
+     for it once at the boundary. A coarse randomiser on top of that is noise on a signal. */
   i = Math.max(0,Math.min(SPIN_LADDER.length-1,i));
   const base = SPIN_LADDER[i];
   // Ratio pair from the section's own hash, biased by what the material is made of: percussive
@@ -3643,6 +3722,7 @@ let beatCount=-1;                                     // position in the bar, fo
 const BANDS=['sub','low','mid','high','air'];
 const HIT ={sub:0,low:0,mid:0,high:0,air:0};          // transient, raw (set on each onset)
 const HITS={sub:0,low:0,mid:0,high:0,air:0};          // smoothed attack -> no jitter
+window.HITS=HITS; window.HIT=HIT;   // console-injectable, to check each band lands somewhere different
 const BND ={sub:0,low:0,mid:0,high:0,air:0};          // sustained band level
 // low frequencies swell and hang; highs must snap, or hats smear into a blur
 // Softened ~30%: the envelopes hang longer and rise less abruptly, so a hit reads as a swell
@@ -3718,7 +3798,17 @@ function commitReform(beatNow){
 }
 function triggerReform(energy){ const nm=chooseMode(energy); if(nm===mode&&phase===0) return; mode2=nm; mix=0; phase=1; }
 function setMode(m){ if(m===mode&&phase===0) return; mode2=m; mix=0; phase=1; }   // manual morph to a chosen style
-let autoShape=false;   // shape only changes automatically if HUD = "Auto · Director"
+/* AUTO IS THE DEFAULT, and the Shape select agrees with it -- its first option is the selected
+   one now, where `value="4" selected` used to pin the menu to Wave. The two halves of that were
+   consistent with each other and wrong together: the menu said Wave, this said false, and so the
+   Director's shape changes were OFF on every fresh load until the user opened the panel and
+   chose Auto themselves. MEASURED on the test track, same 80s, same everything else:
+       shipped default   mode 4 -> 4 -> 4 -> 4 ... zero changes in the whole track
+       Auto . Director   mode 3 -> 1 -> 3 -> 8 -> 3, four changes on downbeats
+   The product is an AI director and its most visible decision was disabled out of the box. mode
+   stays 4, so the form still OPENS on the Wave -- what changes is that it no longer has to end
+   there. */
+let autoShape=true;   // the Director drives the shape unless the HUD picks a specific one
 // ---- rich MATERIAL variations (HUD-selectable, eased for smooth switches) ----
 const MATS={
   // tscale = base detail frequency (fbmT stacks 5 octaves above it), tamp = surface tilt in
@@ -3985,8 +4075,19 @@ function beatsAtTime(t){
    catches seeks and the load boundary, where the position jumps and a raw difference would
    snap the form through a large angle. */
 let _btPrev=null;
-function musicalStep(dt){
-  if(!director) return dt*2.0;
+function musicalStep(dt,rawSec){
+  /* THE IDLE PATH GETS ITS OWN, MUCH LOOSER CAP. dt is clamped to 50ms so that one stall -- a
+     tab switch, the 8s analyse -- cannot jump every dt-integrated value at once. That is right
+     for a spring and wrong for a rotation: below 20fps the clamp silently scales the turn rate
+     by 50/frameMs, so the form slows down exactly when the frame does. Measured on a forced
+     load, idle: 65ms frame -> 36.3 deg/s, 90ms -> 24.8, 160ms -> 14.0, against 45 when the
+     frame is fast. Predicted 34.6 / 25.0 / 14.1 from the clamp alone -- it is the whole effect.
+     Zooming in is what makes the frame slow, which is why it reads as "zooming slows the
+     rotation".
+     0.25s still bounds a real stall to a quarter turn of catch-up, and nothing below 4fps is a
+     frame anyone is watching. The playing path never had this: it reads the audio clock, and
+     measured 51.2 deg/s at 8.4ms against 51.8 at 20.4ms. */
+  if(!director) return Math.min(0.25, rawSec!==undefined?rawSec:dt)*2.0;
   if(!isPlaying){ _btPrev=beatsAtTime(pos()); return 0; }
   const bt=beatsAtTime(pos());
   if(_btPrev===null){ _btPrev=bt; return 0; }
@@ -4345,7 +4446,33 @@ function frame(){
        Measured with a track playing: the frame sat at 28 ms, inside the old dead band -- too fast
        to degrade, too slow to raise -- which is exactly where "low fps while playing" was coming
        from. 18/14.5 puts 60 fps inside the band instead. */
+    /* WHY THERE IS NO SHADOW LEVER HERE, having tried one.
+       Zooming in takes this renderer from 10.6ms to 52.7ms as the form's coverage goes 0.19 ->
+       0.67, and the obvious suspect was the soft shadow at 128 field evaluations per hit. It is
+       not. Ablated at the zoomed-in frame: shaN 128 -> 8 moved 52.2 to 49.3, and turning the
+       shadow OFF ENTIRELY gave 50.1 -- about 4% of the frame. AO is the same, env 1.8ms, the
+       whole post chain about 1ms, and flat-shading everything (furnace) saves 7.6. That leaves
+       roughly 40ms of 50 in the PRIMARY MARCH.
+       Which is exactly right and not a defect: a ray that misses the bounding sphere costs
+       nothing, and zoomed out most of them do. Zoomed in nearly every pixel hits and marches to
+       convergence. Cost tracks the number of rays that HIT, so the only real lever is fewer
+       rays -- which is rscale, which the governor already pulls. A shadow lever would have
+       bought 2ms and cost the penumbra. */
     else if(frameAvg>18.0 && rscale>SFLOOR){ rscale=Math.max(SFLOOR,rscale-0.08); applyScale(); }
+    /* SUB-NATIVE IS AN EMERGENCY, NOT A RESTING STATE -- and the dead band was keeping it there.
+       Degrade over 18ms, restore under 14.5, so 14.5-18 is a band where nothing happens. Once
+       rscale has been driven to the 0.82 floor the frame settles INSIDE that band (measured at
+       16.3-17.3ms sitting at the floor), which is too slow to restore and too fast to degrade --
+       so it stays below native indefinitely and every frame ships upscaled and soft. This file
+       already found and fixed the identical one-way trap for the CANVAS a few comments up; the
+       march had it too.
+       Below 1.0 the march is rendering fewer pixels than the display and the post pass is
+       inventing the rest, which is a different kind of loss from having less supersampling --
+       the note above is explicit that this is what made "every form look soft, permanently".
+       So climbing back to native gets its own, much more willing gate, in small steps so it
+       settles rather than hunts. Above native the original conservative thresholds still apply:
+       supersampling is a luxury and is bought only with genuine headroom. */
+    else if(rscale<1.0 && frameAvg<17.4){ rscale=Math.min(1.0,rscale+0.04); applyScale(); }
     else if(frameAvg<14.5 && rscale<SCAP){ rscale=Math.min(SCAP,rscale+0.06); applyScale(); }
   }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
@@ -4390,6 +4517,10 @@ function frame(){
         const inBar = isDown ? 0 : 1;
         pulse = isDown ? 1.0 : 0.62;                 // downbeat lands harder than the rest
         lastBeatT=beats[bi]; lastBeatDown=isDown;   // for the SYNC readout
+        // Where the bar starts, for the matrix's bar LFO -- see modUpdate. Only from a real
+        // analysed downbeat: the &3 fallback counts from the tracker's first beat, which is the
+        // arbitrary phase this exists to avoid, so it is left alone rather than guessed at.
+        if(isDown && dbSet) barOrigin = beatsAtTime(beats[bi]);
         /* A PENDING SHAPE CHANGE LANDS HERE. On the downbeat by preference; if one has been
            waiting longer than REFORM_MAX_WAIT the next beat takes it, so a request made just
            after a downbeat cannot sit through most of a bar. */
@@ -4589,13 +4720,48 @@ function frame(){
      it -- the same relationship every other control here has with the Director.
      Floored at zero: a rate driven negative would run the form BACKWARDS, and a reversing
      rotation is the exact fault the bar-locked camera sway was removed for. */
-  const rSpin=Math.max(0,Math.min(4,MOT.spin  *(1+MV('spin')  *1.2)));
-  const rTum =Math.max(0,Math.min(4,MOT.tumble*(1+MV('tumble')*1.2)));
+  /* THE RATE BREATHES INSIDE A SECTION. The ladder is a SECTION-level decision, so between two
+     boundaries the turn was at a literally constant rate -- and on a real track most sections
+     land on the same rung. MEASURED on the test track, per section, over the whole 80s:
+
+         section      intro  brk   brk   groove groove brk   brk   brk
+         beats/rev    14     14    14    4      6      14    14    14
+
+     81% of the track turns at one unchanging speed, and all of the ladder's range is spent in a
+     single 16s window. That is the "static, no emotion" reading: not that the form is slow --
+     the intro measured 50 deg/s, which is not slow -- but that it never CHANGES, so there is
+     nothing to attribute to the music.
+     (That row is the ladder as it stood BEFORE driveSpan ranked it; re-running the same track now
+     gives 14 9 9 4 4 22 22 22. Both changes landed together and each is worth having on its own:
+     ranking spreads the rungs ACROSS sections, this spreads the rate WITHIN one.)
+
+     The fix is not a faster ladder. It is a live multiplier on the rate, from the energy curve's
+     departure from its own recent mean -- so a lift inside a section winds the form up and a
+     drop-out lets it ease, while the section's own rung stays the thing it breathes around.
+     WHY THIS IS NOT THE JIGGLE. Everything removed for trembling (spinKick, the size punch) was
+     driven by ONSETS: something in a mix lands on almost every frame, so the response never
+     settled. This reads the Director's energy CURVE at 30fps, whose deviation from a 5s mean
+     moves over a bar or two -- measured p10/p90 of -0.31/+0.35, |mean| 0.21. Slow enough to be a
+     swell, not a tremble.
+     ASYMMETRIC, and floored well above zero. Up is worth about twice down (1.15 against 0.55)
+     because the interesting direction is the lift, and 0.78 is a floor rather than a target: a
+     rate multiplier that can approach zero is a form that stops, and a stopped form is a worse
+     fault than a still one. Ceiling 1.55 so a swell cannot outrun the rung above it. */
+  eFlow = (eFlow===null || !isPlaying) ? energy : eFlow + (energy-eFlow)*(1-Math.exp(-dt/5.0));
+  const dEf  = energy-eFlow;
+  const flow = Math.max(0.78, Math.min(1.55, 1 + (dEf>0 ? dEf*1.15 : dEf*0.55)));
+  /* The off-axes take it at reduced strength rather than in full. All three swelling by the same
+     factor is ONE gesture seen three times, which reads as the whole object throbbing; giving
+     the body the swell and the off-axes about half of it keeps the three rates from locking
+     together. Swirl keeps its bar route (see autoPatch) and takes none of this, so the third
+     axis is still the one moving on a clock of its own. */
+  const rSpin=Math.max(0,Math.min(4,MOT.spin  *flow             *(1+MV('spin')  *1.2)));
+  const rTum =Math.max(0,Math.min(4,MOT.tumble*(1+(flow-1)*0.55)*(1+MV('tumble')*1.2)));
   const rSwi =Math.max(0,Math.min(4,MOT.swirl *(1+MV('swirl') *1.2)));
   /* ADVANCED IN BEATS, NOT SECONDS. One revolution per MOTP.spin beats is the whole design, so
      the integration variable should be beats -- see beatsAtTime for the three ways the old
      seconds-times-estimated-bpm version lost the grid. Same rates, same feel, locked clock. */
-  const dBeats=musicalStep(dt);
+  const dBeats=musicalStep(dt, rawMs/1000);
   formSpin   += 2*Math.PI*dBeats/MOTP.spin  *rSpin;
   formTumble += 2*Math.PI*dBeats/MOTP.tumble*rTum;       // second axis, about X
   formSwirl  += 2*Math.PI*dBeats/MOTP.swirl *rSwi;       // third axis, about Z
@@ -4612,10 +4778,23 @@ function frame(){
       errBeats:+(formSpin/(2*Math.PI)*MOTP.spin - bt).toFixed(4),
       mode, mode2, phase, beatCount, lastBeatT, lastBeatDown, usingDownbeats:!!dbSet,
       mix:+mix.toFixed(3), dBeats:+dBeats.toFixed(4),
+      rscale:+rscale.toFixed(3), dprScale:+dprScale.toFixed(2), tier:TIER, frameAvg:+frameAvg.toFixed(1),
       spin:formSpin, tumble:formTumble, swirl:formSwirl,
       pSpin:+MOTP.spin.toFixed(2), pTum:+MOTP.tumble.toFixed(2), pSwi:+MOTP.swirl.toFixed(2),
       pulseS:+pulseS.toFixed(3), energy:+energy.toFixed(3), arousal:+arousal.toFixed(3),
-      spinPeriod:+MOTP.spin.toFixed(2), pendingReform:!!reformWant};
+      spinPeriod:+MOTP.spin.toFixed(2), pendingReform:!!reformWant,
+      /* THE TARGETS, not just the eased live values. MOTP is what the form is turning at now;
+         MOTPT is what the Director asked for. Reading only MOTP cannot tell a period that was
+         never CHOSEN apart from one that was chosen and never LANDED, and those have different
+         causes -- see commitReform. secKey is the third piece: which section the frame thinks
+         it is in, so a target that never moves can be traced to a boundary that never fired. */
+      tSpin:+MOTPT.spin.toFixed(2), tTum:+MOTPT.tumble.toFixed(2), tSwi:+MOTPT.swirl.toFixed(2),
+      secKey:lastSecKey, autoShape, pendingPeriod:!!periodWant,
+      /* flow is the live rate multiplier, so errBeats is only a constant while it is 1 --
+         the form's angle stopped being a pure function of the beat count the moment the rate
+         was allowed to answer the music. Read them together: errBeats drifting WITH flow off
+         1.0 is the design; errBeats drifting with flow pinned at 1.0 is a clock fault. */
+      flow:+flow.toFixed(3), eFlow:+eFlow.toFixed(3), barOrigin:+barOrigin.toFixed(2)};
   }
   // SLEW, not a spring: at most one full scale per KAL_SECS in either direction, so the drive
   // can move as fast as it likes and the shape still takes 1.2s to travel. This is what makes a
@@ -4913,7 +5092,9 @@ function frame(){
   // track without needing the BPM here.
   // Clamped: these multiply a term that can already reach the tonemapper's knee, and an
   // unbounded pulse on a loud section turns every beat into a white frame.
-  const keyPulse=Math.min(2.10, 1 + (pulseS*0.30+HITS.low*0.28)*(0.55+arousal*0.85) + (energy-0.30)*0.12);
+  // Kick weighted up and the generic beat envelope down: the key leg is the KICK's channel now,
+  // not the shared pulse's, or it answers to everything and identifies nothing.
+  const keyPulse=Math.min(2.10, 1 + (pulseS*0.16+HITS.low*0.85)*(0.55+arousal*0.85) + (energy-0.30)*0.12);
   // VOICE -> RIM. A track with a lead vocal gets a stronger edge light, because that is what a
   // voice is in a mix: the thing sitting in front. Whole-track and constant, so it separates one
   // track's look from another's rather than flickering within one. Speech is excluded upstream —
@@ -4924,8 +5105,23 @@ function frame(){
   // As an offset it lifts the floor and leaves the dynamic range intact.
   const voxRim = (director && director.vocals && director.vocals.is_vocal)
                  ? Math.min(0.45, (director.vocals.presence||0)*0.55) : 0;
-  const rimPulse=Math.min(2.60, 1 + voxRim + (pulseS*0.20+HITS.air*0.40)*(0.50+epic*1.10));
+  const rimPulse=Math.min(2.60, 1 + voxRim + (pulseS*0.14+HITS.air*0.90)*(0.50+epic*1.10));
+  /* THE OTHER TWO LEGS. Each is its own band and nothing else, so what lands where is
+     unambiguous: the fill flares on the shadow side for the snare, the ambient lifts the whole
+     form for the sub. Both are clamped for the same reason the key is -- they multiply terms
+     that already reach the tonemapper's knee.
+     Weighted so a hit is unmistakable but the resting frame is unchanged: at HITS 0 both are
+     exactly 1.0, which is what the rig was tuned against. */
+  /* CALIBRATED AGAINST WHAT THE ENVELOPES ACTUALLY REACH, not against 1.0. Measured peaks over
+     the test track: sub 0.47, low 0.47, mid 0.23, high 0.24, air 0.24 -- so the three upper
+     bands only ever deliver about half of what the low pair does, and a coefficient tuned as if
+     they all reached 1.0 leaves a snare at a third of a kick and a hat at nothing. The weights
+     below are scaled by each band's own ceiling so the five land with comparable force, with the
+     kick still first among them because it should be. */
+  const fillPulse=Math.min(2.40, 1 + HITS.mid*4.10*(0.55+arousal*0.75));
+  const ambPulse =Math.min(1.65, 1 + HITS.sub*0.85*(0.50+energy*0.60));
   gl.uniform1f(US('u_keyPulse'),keyPulse); gl.uniform1f(US('u_rimPulse'),rimPulse);
+  gl.uniform1f(US('u_fillPulse'),fillPulse); gl.uniform1f(US('u_ambPulse'),ambPulse);
   gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
   gl.uniform1f(US('u_hSub'),HITS.sub); gl.uniform1f(US('u_hLow'),HITS.low);
   gl.uniform1f(US('u_hMid'),HITS.mid); gl.uniform1f(US('u_hHigh'),HITS.high);
