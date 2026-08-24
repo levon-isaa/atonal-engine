@@ -3042,10 +3042,17 @@ function applyTier(name){
 // governor absorbs as a hair of render scale.
 /* NEAR 1.45 -> 1.75, WHICH IS WHERE THE ZOOMED-IN FRAME WAS GOING.
    Zoomed in, nearly every pixel hits the form and marches to convergence, so the primary march
-   IS the frame -- and the governor has nothing left to pull there: measured at full zoom with
-   rscale, dprScale and the shadow taps all sitting on their floors and the frame still at 74.6ms.
-   The step multiplier is the only lever that makes a HIT ray cheaper rather than making fewer of
-   them.
+   is a large part of the frame, and the step multiplier is the only lever that makes a HIT ray
+   cheaper rather than making fewer of them.
+   WHAT THIS IS ACTUALLY WORTH, measured properly and it is less than first claimed: on a real
+   track at 142bpm, zoomed to coverage 0.995, resolution pinned so only this varies, and with a
+   control repeat to prove the instrument -- 1.75 gives 37.6 and 38.0 fps, 1.45 gives 36.4. About
+   4%, not the 26% the step COUNT falls by. The two differ because the march is only part of a
+   hit pixel: at the shadow floor of 32 taps the shadow still outweighs the march's ~19, and post,
+   AO and the Newton steps are on top of both. A count of field evaluations is not a frame time.
+   The earlier note here quoted 74.6ms at full zoom. That number was read while the browser pane
+   was throttled and is not trustworthy; with the pane genuinely rendering and the governor free
+   to adapt, the same zoomed-in view on the same track runs at about 50fps.
    Measured with DIAG 13, which renders the per-pixel step count and so reads the march directly,
    independent of frame rate (mean steps over every pixel on screen -- the unbiased figure; steps
    per HIT pixel is not, because a bigger step also makes MISSING rays cheaper and quietly changes
@@ -3090,7 +3097,13 @@ window.STEP=STEP;   // live-tunable for step/budget A/B; see the u_steps upload
    the Newton refinement, 4 for AO -- and 48 for the shadow. The shadow is not merely the largest
    item, it is larger than everything else combined, so at full zoom, where every pixel is a hit
    pixel, the floor here is what decides the frame. Dropping 48 -> 32 takes a hit pixel from 74
-   evaluations to 58, a fifth of the whole frame, where the march step alone was worth about 9%.
+   evaluations to 58. Read that as a COUNT and not as a frame time: the march step's 26% fall in
+   step count turned out to be about 4% of the frame when measured directly (see the note on
+   STEP), so the honest claim here is that the shadow is the biggest single item in a hit pixel,
+   not that this change is worth a fifth of the frame. It could not be A/B'd on its own either --
+   the floor is a const, and once the governor has driven shaScale to 0 the tap count cannot be
+   raised from the console to compare against. Unlike the step multiplier, this one has a measured
+   cost and an unmeasured benefit.
    Error at 32 is 0.918 RMS levels against the converged reference: still under one level, still
    decorrelated grain rather than contours, and still a far better thing to spend than the render
    scale. It is a FLOOR, not a setting -- nothing reaches it while the frame has headroom, and the
