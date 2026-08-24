@@ -218,7 +218,10 @@ class H(BaseHTTPRequestHandler):
         if n > MAX_UPLOAD:
             return self._json(413, {"error": f"file too large (limit {MAX_UPLOAD//(1024*1024)} MB)"})
         job = (parse_qs(urlparse(self.path).query).get("job") or [""])[0][:64]
-        name = self.headers.get("X-Filename", "upload.mp3")
+        # Percent-encoded by the client, because a header cannot carry anything outside
+        # ISO-8859-1 and music filenames routinely do (curly apostrophes, en dashes, any
+        # non-Latin script). unquote is the exact inverse of the client's encodeURIComponent.
+        name = unquote(self.headers.get("X-Filename", "upload.mp3"))
         ext = os.path.splitext(name)[1] or ".mp3"
         tmp = None
         try:

@@ -4267,7 +4267,17 @@ async function loadFile(file){
     director = await new Promise((resolve,reject)=>{
       const xhr=new XMLHttpRequest();
       xhr.open('POST', SERVER+'/analyze?job='+encodeURIComponent(job));
-      xhr.setRequestHeader('X-Filename', file.name);
+      /* PERCENT-ENCODED, because an HTTP header may only carry ISO-8859-1 and a real music
+         library is full of characters that are not in it. setRequestHeader THROWS on those --
+         "String contains non ISO-8859-1 code point" -- and it throws before the upload starts,
+         so the whole load fails on the filename alone, with the track never leaving the disk.
+         Not an exotic case: a curly apostrophe (U+2019) and an en/em dash (U+2013/U+2014) are
+         what most download sites and every Apple text field produce, and neither is Latin-1.
+         Anything non-ASCII does it -- Cyrillic, Armenian, CJK, an accented artist name.
+         encodeURIComponent is exact rather than lossy: the server unquotes it back. A literal
+         '%' in the name round-trips too, because it encodes to %25 first -- which matters here,
+         since files downloaded with escaped names really do arrive containing %20. */
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
       xhr.upload.onprogress = e=>{
         if(e.lengthComputable) setProg((e.loaded/e.total)*UPLOAD_SHARE,'Uploading…');
       };
