@@ -289,15 +289,41 @@ if __name__ == "__main__":
     # address list; the page has no such luxury. Two explicit loopback listeners rather than
     # binding "::" with V6ONLY off, because that would also expose the server on every external
     # interface — this stays loopback-only, as it was.
+    # ATONAL_HOST OPENS THAT UP, DELIBERATELY AND NEVER BY DEFAULT.
+    #
+    # Loopback-only is right for the normal case and stays the default: with no ATONAL_HOST set,
+    # the binds below are exactly the two above and nothing is reachable off this machine. The one
+    # case it cannot serve is looking at the viewer from a phone or a tablet, where the browser is
+    # on a different device and 127.0.0.1 means that device, not this one.
+    #
+    # KNOW WHAT SETTING IT COSTS. /analyze accepts an arbitrary upload and spends real CPU on it,
+    # and the static handler serves out of the project directory. Exposed on a LAN, both are
+    # reachable by anything sharing the network -- a guest phone, a smart TV, whatever else is on
+    # the Wi-Fi. There is no authentication here and this flag does not add any. So it is opt-in,
+    # per run, and it announces itself loudly at startup rather than being a quiet default:
+    #     ATONAL_HOST=0.0.0.0 python server.py     then http://<this machine's LAN IP>:8770
+    # Turn it off by restarting without the variable. Do not set it on a network you do not
+    # control.
+    host_env = os.environ.get("ATONAL_HOST", "").strip()
+    if host_env:
+        binds = [(ThreadingHTTPServer, host_env)]
+    else:
+        binds = [(ThreadingHTTPServer, "127.0.0.1"), (_V6, "::1")]
+
     servers = []
-    for cls, host in ((ThreadingHTTPServer, "127.0.0.1"), (_V6, "::1")):
+    for cls, host in binds:
         try:
             servers.append(cls((host, PORT), H))
         except OSError as e:
             print(f"  (no listener on {host}: {e})", flush=True)
     if not servers:
-        raise SystemExit(f"could not bind port {PORT} on either loopback address")
+        where = host_env if host_env else "either loopback address"
+        raise SystemExit(f"could not bind port {PORT} on {where}")
 
+    if host_env:
+        print(f"!! ATONAL_HOST={host_env} -- this server is reachable from OTHER DEVICES on your "
+              f"network.\n!! /analyze takes uploads and there is no authentication. "
+              f"Restart without ATONAL_HOST to go back to loopback-only.", flush=True)
     print(f"ATONAL Director server on http://127.0.0.1:{PORT}   (PANNs: {tagger.available()})",
           flush=True)
     for s in servers[1:]:
