@@ -228,6 +228,32 @@ def layer1_signal(mono, stereo, sr, prog=None):
                 bpm = grid_bpm
     f["tempo"] = _fold_tempo(bpm)
     f["beat_frames"] = beats
+    # ---- DOWNBEATS ----
+    # The module docstring has always advertised events.downbeats and the payload has never
+    # carried it, so the client had no way to know where a bar starts. It was counting every
+    # fourth beat from whichever beat the tracker happened to return first, which lands the bar
+    # on an arbitrary phase -- and the two things keyed to it, the downbeat accent and the shape
+    # change, are the most visible events in the render.
+    # librosa has no downbeat tracker, so infer the phase: of the four ways to group the beats
+    # into bars, the true one is the grouping whose first beats carry the most low-frequency
+    # onset energy, because that is where the kick sits in almost all metered popular music.
+    # Falls back to phase 0 when there is no evidence either way.
+    db_times = []
+    if len(beat_times) >= 8:
+        lo = librosa.onset.onset_strength(
+            S=librosa.power_to_db(
+                librosa.feature.melspectrogram(y=mono, sr=sr, hop_length=HOP, fmax=160.0),
+                ref=np.max),
+            sr=sr, hop_length=HOP)
+        bf = np.clip(f["beat_frames"], 0, len(lo) - 1)
+        strength = lo[bf]
+        best, best_score = 0, -np.inf
+        for ph in range(4):
+            sc = float(np.mean(strength[ph::4])) if len(strength[ph::4]) else -np.inf
+            if sc > best_score:
+                best, best_score = ph, sc
+        db_times = [float(x) for x in beat_times[best::4]]
+    f["downbeat_times"] = db_times
     f["beat_times"]  = beat_times.tolist()
     # tempo stability: dynamic tempo std (API name moved across librosa versions)
     try:
@@ -737,6 +763,7 @@ def build_director(path, progress=None):
         "genre": genre,
         "sections": secs,
         "events": {"beats": [round(x, 3) for x in f["beat_times"]],
+                   "downbeats": [round(x, 3) for x in f.get("downbeat_times", [])],
                    "onsets": f["band_onsets"],          # the individual sounds, per band
                    "predictions": events},
         "curves": curves,

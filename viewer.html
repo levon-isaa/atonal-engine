@@ -404,7 +404,8 @@ uniform vec3  u_f0Tint;                // metal reflectance colour: gold is not 
 uniform float u_wear;                  // edge wear, 0..1; see the WEAR note in the shading
 uniform float u_nobound;               // 1 = march unbounded, as before the ray/sphere test (A/B)
 uniform float u_bmarg;                 // extra bounding radius, for testing whether the bound clips
-uniform float u_kal,u_kalPh;           // kaleidoscope: amount 0..1, and the mirror line's angle
+uniform float u_kal,u_kalPh,u_kalSeg,u_kalOff;   // amount 0..1, mirror angle, order, ring offset
+const float KAL_REACH=1.15;   // the profile reach in this normalised space; see REACH[] in JS
 uniform float u_swirl;                 // third rotation axis (xy / about z); see formRot
 #define PI 3.14159265
 mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
@@ -838,15 +839,21 @@ vec3 formRot(vec3 p){
    K=1.0 because the profiles' deepest interior is about -0.5, so b+K clears a's surface at m=0
    and the far shape cannot bleed into the near one at the ends.
    Still Lipschitz-1: smin3 of two 1-Lipschitz fields, offset by per-frame constants. */
+/* The crease-free crossfade, shared by the shape morph and the kaleidoscope fade. Both cross
+   between two quite different fields, and mix() averages their creases into flat facets -- see
+   the note above. min(a+c,b+c)=min(a,b)+c exactly, so the erosion constant cancels and the
+   midpoint is smin(a,b): both forms at full size joined by a fillet. */
+float blendField(float a,float b,float m){
+  if(u_morphU<0.5) return mix(a,b,m);            // legacy average, for A/B
+  const float K=1.0;
+  float comp=K*0.5*(1.0-abs(2.0*m-1.0))*u_morphC;
+  return smin3(a+K*m, b+K*(1.0-m), u_morphK)-comp;
+}
 float evalForm(vec3 p){
   float d=evalMode(p,u_mode);
   if(u_mix>0.001){ float m=clamp(u_mix,0.,1.); m=m*m*m*(m*(m*6.0-15.0)+10.0);
     float b=evalMode(p,u_mode2);
-    if(u_morphU>0.5){
-      const float K=1.0;
-      float comp=K*0.5*(1.0-abs(2.0*m-1.0))*u_morphC; // u_morphC=1 cancels the erosion exactly
-      d=smin3(d+K*m, b+K*(1.0-m), u_morphK)-comp;
-    } else d=mix(d, b, m);
+    d=blendField(d,b,m);
   }
   return d;
 }
@@ -956,6 +963,9 @@ float evalForm(vec3 p){
    get no kaleidoscope, which is the honest answer for a shape the operation cannot survive.
 
    Reasoning alone had already got this wrong twice in this file, in both directions. */
+/* NO LONGER DRIVES THE FOLD -- kalOrder() below takes the order from u_kalSeg instead. Kept
+   because it is the record of which profile is symmetric under what, which the Segments row and
+   the notes below still refer to. */
 float foldOrder(float m){
   if(u_volOn>0.5 || u_svgOn>0.5) return 0.0;
   float n=clamp(floor(u_segN+0.5),2.0,8.0);
@@ -969,11 +979,20 @@ float foldOrder(float m){
 /* The order the FOLD may use, which is the order the whole evaluated field has. evalForm blends
    two modes whenever u_mix is live, and a blend of a C_3 and a C_5 form is neither -- so the two
    have to agree before anything may be folded. */
+/* THE ORDER IS A SETTING NOW, NOT THE PROFILE'S OWN SYMMETRY. foldOrder() above ties N to what
+   each profile happens to be symmetric under, because a wedge cut through a form that is not
+   C_N slices its arms apart. The table is honest about the cost: Arc and Lattice return 0, so
+   the kaleidoscope did NOTHING on them, and Chevron/Wave/Plate return 1 -- a single mirror line,
+   which doubles the form into a bilaterally symmetric lump rather than making a rosette. That is
+   the reported "too fat", and a symmetric lump turning on the spot is the reported lost motion.
+   kalEval below removes the reason for the restriction: it samples an OFF-CENTRE region, so each
+   of the N copies is a whole small form sitting in a ring rather than a wedge cut from the
+   middle. Nothing gets sliced, so any profile folds at any order.
+   Mesh stays excluded for a real reason -- its primary ray is a BVH traversal that never calls
+   map(), so a fold here would move the shadows and not the surface. */
 float kalOrder(){
-  float a=foldOrder(u_mode);
-  if(a<0.5) return 0.0;
-  if(u_mix>0.001 && abs(a-foldOrder(u_mode2))>0.5) return 0.0;
-  return a;
+  if(u_volOn>0.5) return 0.0;
+  return clamp(floor(u_kalSeg+0.5),2.0,12.0);
 }
 /* THE DOMAIN FOLD. Polar, about Z, into a wedge of half-angle PI/N with the mirror plane at
    u_kalPh. One isometry on the sample point, so f(fold(p)) is exactly as Lipschitz as f, and the
@@ -986,6 +1005,31 @@ vec3 kalFold(vec3 p,float N){
   float r=length(p.xy);
   p.xy=vec2(cos(a),sin(a))*r;
   return p;
+}
+/* THE RING. Folding alone puts all N copies on top of each other at the centre, which is why the
+   order had to be kept low enough not to cut the form up. Offsetting the sampled region off the
+   fold axis first turns that pile into a ring of N separate copies -- the actual kaleidoscope
+   construction, where the mirrors look at something beside the axis rather than through it.
+   THE SILHOUETTE DOES NOT GROW, which is the whole point of deriving the scale from the offset
+   rather than exposing both: at offset f the copies sit at f*REACH and are scaled by (1-f), so
+   the outermost point is f*REACH + (1-f)*REACH = REACH for every f. Same radius as the
+   kaleidoscope off, so framing, the march bound and the studio floor all still hold, and f=0
+   collapses to exactly the old fold.
+   Scaling an SDF needs the field scaled with the domain -- evalForm(q/S)*S -- or the distance is
+   wrong by S and the march oversteps. */
+float kalEval(vec3 p,float N){
+  vec3 q=kalFold(p,N);
+  float f=clamp(u_kalOff,0.0,0.85);
+  float S=1.0-f;
+  /* ALONG THE WEDGE'S OWN BISECTOR, not along x. kalFold leaves every point in the sector
+     [u_kalPh, u_kalPh+w) -- the mirror phase turns that sector with the track. Offsetting along
+     a fixed axis therefore pushes the sampled region SIDEWAYS out of the wedge whenever the
+     phase is not near zero, and the form is simply never hit: the object vanished outright for
+     u_kalOff >= 0.34 at the phase that happened to be live, and changed shape as the phase
+     drifted. Along the bisector each copy is centred in its own wedge at every phase. */
+  float w=PI/N, b=u_kalPh+w*0.5;
+  q.xy-=vec2(cos(b),sin(b))*(f*KAL_REACH);
+  return evalForm(q/S)*S;
 }
 vec2 map(vec3 wp){
   vec3 p=formRot(wp);
@@ -1051,12 +1095,14 @@ vec2 map(vec3 wp){
   if(kalN<0.5){
     d=evalForm(p);                               // off, or a profile the fold would break
   } else if(u_kal>0.998){
-    d=evalForm(kalFold(p,kalN));                 // one evaluation, no seam but the fold plane
+    d=kalEval(p,kalN);                           // one evaluation, no seam but the fold plane
   } else {
     // Fading: blend the two FIELDS, never the two positions. A domain map blended toward the
     // identity stops being an isometry, and a compressed domain makes the field overestimate.
+    // Through blendField, not mix(): the plain form and the ring are very different fields, and
+    // averaging them faceted the fade for exactly the reason the shape morph did.
     float kk=clamp(u_kal,0.,1.); kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
-    d=mix(evalForm(p), evalForm(kalFold(p,kalN)), kk);
+    d=blendField(evalForm(p), kalEval(p,kalN), kk);
   }
   /* THE LIVING SURFACE IS GONE, AND IT WAS THE LINES.
      A band-driven fbm used to displace the field here. It was cut back twice -- once off the
@@ -2163,6 +2209,21 @@ vec3 fxaa(vec2 uv,vec2 r){
   float lb=luma(b); return (lb<lmin||lb>lmax)?a:b;
 }
 float r2(vec2 p){return fract(dot(p,vec2(0.7548776662,0.5698402909)));}
+/* r2() IS NOT A HASH, AND BOTH NOISE TERMS BELOW USED IT AS ONE. It is the R2 low-discrepancy
+   SEQUENCE: fract(dot(p,alpha)), a linear ramp wrapped by fract. That is the right tool for
+   spreading N samples over a unit square and the wrong one for per-pixel noise, because over a
+   pixel LATTICE a wrapped ramp is a set of parallel stripes. Measured at the grain's own scale
+   (p*1.7): the value advances 0.283 per pixel in x, a 3.5px vertical period, and 0.031 per pixel
+   in y, i.e. almost nothing -- vertical corduroy. Invisible while the grain gain was broken and
+   glaring the moment it was fixed, which is how it was found.
+   A real hash, differenced against a second one for a TRIANGULAR distribution: triangular noise
+   breaks banding at a given amplitude better than uniform does, and reads as film grain rather
+   than as salt-and-pepper. */
+float gh21(vec2 p){
+  vec3 q=fract(vec3(p.xyx)*vec3(443.8975,441.4231,437.1953));
+  q+=dot(q,q.yzx+19.19);
+  return fract((q.x+q.y)*q.z);
+}
 // Bloom now reads an ALREADY-thresholded buffer, so this is a pure gather: wide, soft, and
 // energy-preserving. No knee here — doing it per mip sample was the bug.
 vec3 bloom(vec2 uv,vec2 t){
@@ -2353,8 +2414,10 @@ void main(){
      additive noise of about +/-1.5 levels, which is exactly what this line is. It exists to break
      banding on very gradual gradients, and a flat-shaded look has no gradual gradients to band;
      here it is just noise laid over a flat tone. */
-  col+=(r2(gl_FragCoord.xy+fract(u_time)*17.)-r2(gl_FragCoord.xy*1.31+fract(u_time)*53.))*(1.5/255.)*(1.0-u_flat);
-  col+=(r2(gl_FragCoord.xy*1.7+fract(u_time)*91.)-.5)*.032*u_grain;
+  col+=(gh21(gl_FragCoord.xy+fract(u_time)*17.)-gh21(gl_FragCoord.xy*1.31+fract(u_time)*53.))*(1.5/255.)*(1.0-u_flat);
+  // Triangular, so the mean is 0 and no DC shift rides in with the amount.
+  col+=(gh21(gl_FragCoord.xy*1.7+fract(u_time)*91.)
+       -gh21(gl_FragCoord.xy*1.7+fract(u_time)*91.+vec2(37.71,11.39)))*.016*u_grain;
   col*=mix(1.,smoothstep(1.5,.3,length(c2)*.95),u_vig);
   /* DEPTH GOES OUT IN ALPHA, normalised, background pinned at 1. The filter pass needs to know
      what is subject and what is backdrop -- luminance cannot tell it, because a pale form on a
@@ -2888,6 +2951,14 @@ window.STEP=STEP;   // live-tunable for step/budget A/B; see the u_steps upload
 // k=0.10, not 0.25: the wider fillet left a scalloped rim wherever the two fields ran close and
 // nearly parallel, which is the same low-poly read the blend change was made to remove.
 const MORPH={k:0.10, comp:0.94};  window.MORPH=MORPH;
+/* Kaleidoscope order and ring offset. off is the fraction of the reach the copies are pushed off
+   the fold axis; kalEval derives their scale from it so the silhouette radius never changes.
+   0.30 rather than something larger, chosen against the two profile extremes: a solid form (Wave)
+   becomes a six-petal flower with real negative space between the arms, and a thin hollow one
+   (Arc) closes into a continuous ring. Past about 0.4 the thin profiles stop touching and break
+   into scattered chips -- their copies still overlap by bounding radius, but a hollow ring has no
+   material where its neighbour arrives. */
+const KALSET={seg:6, off:0.30};  window.KALSET=KALSET;
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -3492,6 +3563,31 @@ function chooseMode(energy){
   if(m===mode){ const alt=allowed.filter(x=>x!==mode); if(alt.length) m=alt[(Math.random()*alt.length)|0]; }
   return m;
 }
+/* SHAPE CHANGES LAND ON A DOWNBEAT, AND CAN HAPPEN INSIDE A SECTION.
+   Two things were wrong with firing triggerReform() straight off the section boundary.
+   FIRST, the boundary is wherever the analyser put it, which is close to a bar line but not on
+   one -- so the single biggest visual event in the whole piece, the form becoming a different
+   form, arrived a fraction of a beat early or late every time. Holding the request until the
+   next downbeat costs at most a bar and puts the change exactly where the listener is already
+   expecting the music to turn over.
+   SECOND, a boundary was the ONLY thing that could change the shape. Sections run 20-30s on a
+   real track, so the form held one shape and one rate for that whole stretch; that is the
+   predictability. requestReform() is also called when the music departs far enough from where
+   the section started, so a track that actually moves gets more change and a static one gets
+   none -- the variation comes from the music rather than from a timer. */
+let reformWant=null, lastReformBeat=-1e9, secERef=null;
+let dbSet=null, dbFor=null;   // Set of downbeat times for the loaded track; see the beat loop
+let lastBeatT=-1, lastBeatDown=false;   // last beat crossed and whether it was a downbeat
+const REFORM_MIN_BEATS=16;       // never twice inside four bars, whatever the music does
+const REFORM_MAX_WAIT=4;         // beats a pending change may wait for its downbeat
+function requestReform(energy,beatNow){
+  if(beatNow-lastReformBeat < REFORM_MIN_BEATS) return;
+  reformWant={energy, at:beatNow};
+}
+function commitReform(beatNow){
+  if(!reformWant) return;
+  lastReformBeat=beatNow; const e=reformWant.energy; reformWant=null; triggerReform(e);
+}
 function triggerReform(energy){ const nm=chooseMode(energy); if(nm===mode&&phase===0) return; mode2=nm; mix=0; phase=1; }
 function setMode(m){ if(m===mode&&phase===0) return; mode2=m; mix=0; phase=1; }   // manual morph to a chosen style
 let autoShape=false;   // shape only changes automatically if HUD = "Auto · Director"
@@ -3716,6 +3812,50 @@ function sampleCurve(name,t){
 }
 const FALLBACK_SECTION={t0:0,t1:1e9,label:'—',mood:'pearl',energy:0.3,tension:0.2,valence:0.5,
   camera:'orbit',composition:'radial',palette:[0.62,0.68,0.92],intent:''};
+/* ---- MUSICAL TIME ----
+   WHERE THE MUSIC IS, IN BEATS, TAKEN FROM THE ANALYSED GRID RATHER THAN FROM A SCALAR BPM.
+   The rotation used to advance by wall-clock seconds times director.tempo.bpm, and that is three
+   separate ways to lose the beat:
+     1. tempo.bpm is an ESTIMATE and it disagrees with the grid shipped beside it. Measured on a
+        synthesised 120.000 BPM click track: tempo.bpm came back 117.45, a 2.1% error, which is a
+        beat and a half of drift per minute -- while events.beats put every one of 151 beats
+        within 36ms of its true position with no accumulating trend. The right number was already
+        in the payload; the rotation was reading the wrong one.
+     2. Wall-clock dt is clamped to 50ms, so every frame longer than that silently dropped the
+        excess. Hitches, tab throttling and the quality governor's own rescales all leaked phase
+        that nothing ever gave back.
+     3. dt kept flowing while the transport was paused, so the form spun on over stopped music and
+        came back in a different place.
+   Interpolating the grid fixes all three at once: the result is a function of the audio clock, so
+   it cannot accumulate error, it tracks real tempo drift inside a track, and it stops when the
+   music stops. Linear between beats, extrapolated at the ends by the nearest interval. */
+function beatsAtTime(t){
+  const d=director;
+  if(!d) return t*2.0;                                  // no track: 120bpm equivalent
+  const B=d.events&&d.events.beats;
+  if(!B||B.length<2) return t*(((d.tempo&&d.tempo.bpm)||120)/60);
+  const n=B.length;
+  if(t<=B[0]){   const w=B[1]-B[0];       return w>1e-6?(t-B[0])/w:0; }
+  if(t>=B[n-1]){ const w=B[n-1]-B[n-2];   return (n-1)+(w>1e-6?(t-B[n-1])/w:0); }
+  let lo=0,hi=n-1;
+  while(hi-lo>1){ const m=(lo+hi)>>1; if(B[m]<=t) lo=m; else hi=m; }
+  const w=B[hi]-B[lo];
+  return lo+(w>1e-6?(t-B[lo])/w:0);
+}
+/* The frame's step in beats. Idle (nothing loaded) free-runs so the landing page still turns;
+   with a track it is the difference of two grid readings, which is 0 while paused. The guard
+   catches seeks and the load boundary, where the position jumps and a raw difference would
+   snap the form through a large angle. */
+let _btPrev=null;
+function musicalStep(dt){
+  if(!director) return dt*2.0;
+  if(!isPlaying){ _btPrev=beatsAtTime(pos()); return 0; }
+  const bt=beatsAtTime(pos());
+  if(_btPrev===null){ _btPrev=bt; return 0; }
+  let dB=bt-_btPrev; _btPrev=bt;
+  if(!isFinite(dB)||dB<0||dB>8) return 0;               // seek, reload, or a stalled tab
+  return dB;
+}
 function currentSection(t){
   const s=director&&director.sections;
   if(!s||!s.length) return FALLBACK_SECTION;   // never hand undefined back to the frame loop
@@ -4083,6 +4223,9 @@ function frame(){
     atmos=cv('atmosphere',t,0.5); density=cv('density',t,0.5);
     // beat pulse: fire when a Director beat time is crossed, then decay -> active, on-beat motion
     const beats=director.events.beats;
+    if(dbFor!==director){ dbFor=director;
+      const D=director.events.downbeats;
+      dbSet=(D&&D.length)?new Set(D):null; }
     /* THE BEAT NOW HAS A BAR IN IT. Every beat fired an identical pulse, so a 4/4 track read as an
        undifferentiated throb -- the motion was ON the beat but had no idea where in the bar it
        was, which is most of why it did not feel like it was following the music.
@@ -4098,8 +4241,24 @@ function frame(){
        touches the rotation itself. */
     if(prevT>=0 && t>prevT){
       for(let bi=0;bi<beats.length;bi++){ if(beats[bi]>prevT && beats[bi]<=t){
-        beatCount++; const inBar=beatCount&3;
-        pulse = inBar===0 ? 1.0 : 0.62;              // downbeat lands harder than the rest
+        beatCount++;
+        /* THE REAL DOWNBEAT, when the analyser knows one. Counting beatCount&3 put the bar on
+           whichever beat the tracker happened to return first -- an arbitrary phase, and the two
+           things keyed to it (this accent, and the shape change below) are the most visible
+           events in the render. events.downbeats is a subset of events.beats and both are
+           rounded identically upstream, so membership is exact rather than a tolerance match.
+           Falls back to the old count when a track yields no downbeats. */
+        const isDown = dbSet ? dbSet.has(beats[bi]) : ((beatCount&3)===0);
+        const inBar = isDown ? 0 : 1;
+        pulse = isDown ? 1.0 : 0.62;                 // downbeat lands harder than the rest
+        lastBeatT=beats[bi]; lastBeatDown=isDown;   // for the SYNC readout
+        /* A PENDING SHAPE CHANGE LANDS HERE. On the downbeat by preference; if one has been
+           waiting longer than REFORM_MAX_WAIT the next beat takes it, so a request made just
+           after a downbeat cannot sit through most of a bar. */
+        if(reformWant && autoShape){
+          const bn=beatsAtTime(t);
+          if(isDown || bn-reformWant.at>=REFORM_MAX_WAIT) commitReform(bn);
+        }
         break; } }
     }
     // ---- fire the individual sounds: walk each band's onset list up to now ----
@@ -4131,10 +4290,24 @@ function frame(){
          push it over that line would spend the quiet two thirds of a track on the expensive path.
          Inside a bloom the path is already paid for and the swell is free. */
       if(kalDrive>0) kalDrive=Math.min(1, kalDrive + pulseS*0.16 + HITS.low*0.12); }
+    /* IN-SECTION CHANGE, ON MUSICAL DEPARTURE. secERef is where the section's energy was when
+       it last produced a shape; when the live curve has moved far enough from that, the form is
+       allowed to answer without waiting for the next boundary. The threshold is on a SUSTAINED
+       curve, not on a transient, so a loud snare cannot fire it -- it takes an actual change in
+       how much is going on. Rate-limited to REFORM_MIN_BEATS, so the ceiling is one change per
+       four bars however wild the track is, and a flat track never reaches the threshold at all. */
+    if(autoShape && secERef!==null){
+      const dE=Math.abs(energy-secERef);
+      if(dE>0.22) requestReform(energy, beatsAtTime(t));
+    }
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
     moodTarget=s.palette||MO;
-    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(); if(autoShape) triggerReform(s.energy);
+    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant();
+      // requested, not fired: commitReform lands it on the next downbeat. A boundary always gets
+      // its change, so the beat budget is reset rather than tested.
+      if(autoShape){ lastReformBeat=-1e9; requestReform(s.energy, beatsAtTime(t)); }
+      secERef=s.energy;
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
       sectRand=Math.random();                       // the matrix's 'Section step' source
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
@@ -4259,7 +4432,6 @@ function frame(){
      section boundary is exactly where the eye is already looking. 0.7/s puts the change across
      about two seconds, under the section it belongs to. */
   for(const k in MOTP) MOTP[k]=sm(MOTP[k],MOTPT[k],0.7,dt);
-  const spinRate=2*Math.PI*(bpm/60)/MOTP.spin;
   /* ROUTED. Each rate takes its own route as a multiplier, floored at zero -- a route pushed deep
      negative would run the form BACKWARDS, and a reversing rotation is the exact fault the
      bar-locked camera sway was removed for. Ceiling at 3x so one route cannot make it a blur. */
@@ -4271,9 +4443,26 @@ function frame(){
   const rSpin=Math.max(0,Math.min(4,MOT.spin  *(1+MV('spin')  *1.2)));
   const rTum =Math.max(0,Math.min(4,MOT.tumble*(1+MV('tumble')*1.2)));
   const rSwi =Math.max(0,Math.min(4,MOT.swirl *(1+MV('swirl') *1.2)));
-  formSpin   += spinRate*dt*rSpin;
-  formTumble += 2*Math.PI*(bpm/60)/MOTP.tumble*dt*rTum;  // second axis, about X
-  formSwirl  += 2*Math.PI*(bpm/60)/MOTP.swirl *dt*rSwi;  // third axis, about Z
+  /* ADVANCED IN BEATS, NOT SECONDS. One revolution per MOTP.spin beats is the whole design, so
+     the integration variable should be beats -- see beatsAtTime for the three ways the old
+     seconds-times-estimated-bpm version lost the grid. Same rates, same feel, locked clock. */
+  const dBeats=musicalStep(dt);
+  formSpin   += 2*Math.PI*dBeats/MOTP.spin  *rSpin;
+  formTumble += 2*Math.PI*dBeats/MOTP.tumble*rTum;       // second axis, about X
+  formSwirl  += 2*Math.PI*dBeats/MOTP.swirl *rSwi;       // third axis, about Z
+  /* SYNC READOUT, console-only. tBeats is where the MUSIC is, in beats, straight off the audio
+     clock; spinBeats is where the FORM is, in the same unit. Their difference is the sync error,
+     and if the two clocks are the same clock it can only be the constant it started at. */
+  if(window.SYNC!==undefined){
+    window.DIRECTOR=director;                      // the analysed track, for measurement
+    const bt=(typeof beatsAtTime==='function')?beatsAtTime(pos()):pos()*bpm/60;
+    window.SYNC={t:+pos().toFixed(3), playing:isPlaying, bpm:+bpm.toFixed(2),
+      tBeats:+bt.toFixed(4),
+      spinBeats:+(formSpin/(2*Math.PI)*MOTP.spin).toFixed(4),
+      errBeats:+(formSpin/(2*Math.PI)*MOTP.spin - bt).toFixed(4),
+      mode, mode2, phase, beatCount, lastBeatT, lastBeatDown, usingDownbeats:!!dbSet,
+      spinPeriod:+MOTP.spin.toFixed(2), pendingReform:!!reformWant};
+  }
   // SLEW, not a spring: at most one full scale per KAL_SECS in either direction, so the drive
   // can move as fast as it likes and the shape still takes 1.2s to travel. This is what makes a
   // live curve safe to steer with; nothing here can snap.
@@ -4480,7 +4669,17 @@ function frame(){
      than a lattice to compute. window.KAL={phase} to try others. */
   const KALO=window.KAL||{};
   gl.uniform1f(US('u_kal'),kalAmt);
-  gl.uniform1f(US('u_kalPh'),(Math.PI/Math.max(1,PRM.seg))*(KALO.phase!==undefined?KALO.phase:kalPhase));
+  /* The phase step is the FOLD'S OWN wedge, not the Segments slider. kalPhase is carried in units
+     of one wedge, and the wedge is pi/N where N is the kaleidoscope order -- it was scaled by
+     PRM.seg, which used to be the same number back when the order came from the profile's
+     symmetry and is unrelated to it now. */
+  const kalN=Math.max(1,(KALO.seg!==undefined?KALO.seg:KALSET.seg));
+  gl.uniform1f(US('u_kalPh'),(Math.PI/kalN)*(KALO.phase!==undefined?KALO.phase:kalPhase));
+  // Kaleidoscope shape. seg is the number of mirrored copies; off pushes them off the fold axis
+  // into a ring and shrinks them to compensate, so the silhouette radius is unchanged. off=0 is
+  // exactly the old centre-pile fold. See kalEval.
+  gl.uniform1f(US('u_kalSeg'), KALO.seg!==undefined?KALO.seg:KALSET.seg);
+  gl.uniform1f(US('u_kalOff'), KALO.off!==undefined?KALO.off:KALSET.off);
   gl.uniform1f(US('u_room'),ENV.room);
   gl.uniform1f(US('u_segN'), director?segNow:PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
   gl.uniform1f(US('u_pDepth'),PRM.depth);
@@ -4770,9 +4969,19 @@ function frame(){
        the Hard look sets grain to 0.00, so a route on it was multiplied by zero and did nothing
        at all -- one of the two targets that made the matrix look like it was not wired up. It is
        inside the on/off, though, because off has to mean off. */
-    const grainLook=Math.max(LOOK_DEF.grain, LK.grain);
+    /* AND THE LOOK'S VALUE IS A CHARACTER RATIO, NOT A GAIN. Floored at LOOK_DEF.grain the note
+       above is right that a look cannot take the control away -- but the floor IS 0.10, so the
+       whole term was multiplied by a tenth. That was survivable while a look picker existed and
+       something could raise it; once Look was removed, studio (which has no grain override, so
+       it inherits the 0.10 default) became permanent and the 10x attenuation became permanent
+       with it. Measured before this change: sliding grain across its FULL range, 0 to 200,
+       moved the frame by mean 0.064 of one 8-bit level. The control did nothing.
+       Dividing by the default makes studio 1.0 and leaves a grittier look as a genuine multiple
+       of it; capped at 3 so riso/xerox add grit without swamping the slider. */
+    const grainChar=Math.min(3.0, Math.max(LOOK_DEF.grain, LK.grain)/LOOK_DEF.grain);
+    const grainDrive=0.35+darkness*0.30+density*0.22;                     // busier passage, grittier frame
     gl.uniform1f(UP('u_grain'), GRAIN.amt<=0.001 ? 0 :
-      Math.max(0, GRAIN.amt*(0.35+darkness*0.30+density*0.22)*grainLook + MV('grain')*0.6));   // busier passage, grittier frame
+      Math.max(0, GRAIN.amt*grainDrive*grainChar*1.9 + MV('grain')*0.6));
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
     // press grade
     gl.uniform1f(UP('u_sharpen'),LK.sharp*DX.sharpen); gl.uniform1f(UP('u_chroma'),LK.chroma*DX.chroma);
