@@ -2815,8 +2815,29 @@ let dpr=1, rscale=1.00, RW=1, RH=1;                 // raymarch renders at rscal
 // which is 239MB for ONE of several targets. Exceeding either limit fails target creation and
 // the viewer goes black, so the request is clamped rather than trusted.
 const MARCH_MAX_PX = 26e6;                          // ~26 Mpx: 2x on a 3.4k canvas, ~210MB/target
+/* A MORPH IS A KNOWN, SCHEDULED 2.45x COST SPIKE, so it is paid for in advance rather than
+   discovered by the governor after the fact.
+   evalForm blends two profiles whenever u_mix is live, so every map() call mid-morph does the
+   work of two -- and every mapD() the shadow makes does too. MEASURED zoomed in on a real track,
+   pinned so only the blend varies, control repeated: mix 0 gives 37.1 and 36.8 fps, mix 0.5
+   gives 15.1 and 15.1. MORPH_BEATS=8 holds that for ~3.4s at 142bpm, which is precisely the
+   "it falls apart during the shape change" report.
+   The governor cannot answer this. It ticks every 500ms and reacts to a frame that has ALREADY
+   gone slow, so it spends the first half of the morph catching up and the second half climbing
+   back out -- and zoomed in it is already sitting on every floor it has, with nothing left to
+   give. Feedback is the wrong tool for a disturbance whose size and timing are both known.
+   So the march resolution takes a step down for the duration and steps back at the end. Two
+   initTargets reallocations per shape change, and REFORM_MIN_BEATS puts those at least 32 beats
+   apart -- about 16s -- so the reallocation cost is nothing next to 3.4s at 15fps.
+   It is deliberately a PARTIAL compensation. Fully cancelling 2.45x would need the linear scale
+   at 0.64, and softening the frame that hard exactly when the form is changing shape trades one
+   visible fault for another. This buys most of the frame rate back for a softness that lands
+   while the silhouette is in motion, which is where it is least readable. */
+let morphScale=1.0;
+const MORPH_RSCALE=0.74;           // linear; pixels fall to ~0.55 -- see the measurement above
 function applyScale(){
-  let w=Math.max(2,Math.round(glc.width*rscale)), h=Math.max(2,Math.round(glc.height*rscale));
+  const s=rscale*morphScale;
+  let w=Math.max(2,Math.round(glc.width*s)), h=Math.max(2,Math.round(glc.height*s));
   const maxDim=gl.getParameter(gl.MAX_TEXTURE_SIZE)||4096;
   const k=Math.min(1, maxDim/Math.max(w,h), Math.sqrt(MARCH_MAX_PX/Math.max(1,w*h)));
   if(k<1){ w=Math.max(2,Math.floor(w*k)); h=Math.max(2,Math.floor(h*k)); }
@@ -5037,6 +5058,13 @@ function frame(){
      governor fix above is the real cure; this is what keeps a GC pause or a tab switch from
      tearing a transition in half. */
   else if(phase===1){ mix+=Math.min(dBeats/MORPH_BEATS, 0.02); if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  /* THE MORPH'S RESOLUTION STEP, applied on the two edges of the transition and nowhere else --
+     see MORPH_RSCALE. Driven off `phase` rather than off mix, so it is exactly one step down when
+     the morph starts and one back up when it lands; applyScale reallocates, which is fine twice
+     per shape change and would not be per frame. The governor keeps managing rscale underneath
+     and applyScale multiplies the two, so neither fights the other. */
+  { const wantMS=(phase===1)?MORPH_RSCALE:1.0;
+    if(wantMS!==morphScale){ morphScale=wantMS; applyScale(); } }
   const prog=(phase===1)?mix:0;
   const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
   flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*Math.sin(prog*Math.PI));  // gentle bloom lift, not a strobe
