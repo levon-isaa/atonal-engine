@@ -5412,7 +5412,32 @@ function frame(){
   gl.uniform1f(US('u_volPad'),VOL.pad);
   // 0.75 of a mesh texel: wide enough to cross a cell boundary, narrow enough not to round off
   // detail the grid actually holds.
-  gl.uniform1f(US('u_nEps'), (volOn&&volTex) ? (2.0*VOL.pad/VOL.res)*0.75 : (window.NEPS||0.0018));
+  /* AN UPLOADED SVG GETS ITS NORMAL SAMPLED OVER ITS OWN TEXELS, not over the analytic default.
+     The mesh already does this -- its epsilon is 0.75 of a voxel, for the reason written above it
+     -- but the SVG path was left on 0.0018, a number chosen for the analytic profiles, whose
+     field is exact everywhere. The SVG's is not: it is reconstructed bilinearly from a 1024
+     texture, so it carries a reconstruction error the built-in profiles do not have, and a
+     stencil narrower than a few texels reads that error as surface.
+     MEASURED on a deep extruded triangle, zoomed onto a flat side wall -- the worst case, since
+     a large flat glossy face is where a small normal error is most visible -- as detrended RMS
+     luminance along a scanline crossing the wall (the trend is the face's real shading gradient;
+     what is left is the ripple):
+         0.0018 (analytic default)   3.857
+         0.008  (~4 texels)          3.039     <- here, -21%
+         0.05   (~26 texels)         2.600     -33%, and far too wide to keep detail
+     Flat beyond that: the curve is shallow, so this buys most of what is available before the
+     stencil starts rounding real features. 4 texels is 0.008 object units against a bevel of
+     about 0.055, so it averages the reconstruction noise without reaching the edge treatment.
+     WHAT THIS IS NOT. The ripple does not come from the field's resolution, its blur, the march
+     step, or the post chain -- each was swept with a control that repeated exactly and none of
+     them moved it (1024 vs 2048: no change; extra blur passes: no change; step 1.75/1.10/0.70:
+     no change; all post off: no change). It is reconstruction error in the normal, and the
+     stencil width is the only thing that touches it. */
+  const svgNEps=(2.0/SVG_RES)*4.1;
+  gl.uniform1f(US('u_nEps'),
+    (volOn&&volTex) ? (2.0*VOL.pad/VOL.res)*0.75
+    : (svgOn&&svgTex) ? (window.NEPS||svgNEps)
+    : (window.NEPS||0.0018));
   if(svgTex){ gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,svgTex); gl.activeTexture(gl.TEXTURE0); }
   if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
   if(bvhNodeTex){ gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D,bvhNodeTex); gl.activeTexture(gl.TEXTURE0); }
