@@ -5418,9 +5418,18 @@ function frame(){
   if(bvhNodeTex){ gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D,bvhNodeTex); gl.activeTexture(gl.TEXTURE0); }
   if(bvhTriTex){ gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D,bvhTriTex); gl.activeTexture(gl.TEXTURE0); }
   gl.uniform1f(US('u_svgOn'),svgOn&&svgTex?1:0);
-  // depth and bevel breathe with the music like every other form here
-  gl.uniform1f(US('u_svgDepth'),0.17+energy*0.05+HITS.low*0.04);
-  gl.uniform1f(US('u_svgBevel'),0.014+HITS.air*0.006);
+  /* DEPTH AND EDGE REACH THE UPLOADED SHAPE TOO. They did not, and the panel gave no sign of it:
+     both sliders sat there looking live and moved nothing, because these two uniforms were the
+     only extrusion inputs on the SVG path and neither read PRM. The generated forms take the
+     same two controls as plain multipliers --
+         exDepth() = (0.30 + u_gThick*0.05) * u_pDepth
+         exBevel() = (0.055 + u_gCut*0.012) * u_pEdge * ...
+     -- so applying them the same way here is what makes an uploaded shape the same kind of
+     object as a built-in one, which is the stated intent at mSVG. The music terms are untouched
+     and still breathe; PRM is a multiplier ON that, exactly as it is for a generated profile.
+     Both default to 1.0, so nothing about an existing look changes until the slider is moved. */
+  gl.uniform1f(US('u_svgDepth'),(0.17+energy*0.05+HITS.low*0.04)*PRM.depth);
+  gl.uniform1f(US('u_svgBevel'),(0.014+HITS.air*0.006)*PRM.edge);
   gl.uniform1f(US('u_gTwist'), tension*1.25+arousal*0.45+Math.sin(time*0.05)*0.12);
   // element count / lattice density — energy packs the structure tighter
   /* ENERGY DRIVES THICKNESS, AND 1.9 WAS TOO MUCH OF IT ON LOUD MATERIAL. Every profile sets its
