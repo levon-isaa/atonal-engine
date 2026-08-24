@@ -91,28 +91,15 @@
   #ctrl button.mini:hover{background:rgba(255,255,255,.13)}
   #ctrl button.mini.on{background:rgba(200,184,255,.20);border-color:rgba(200,184,255,.48);color:#e8e0ff}
   /* ---- ROUTING MATRIX ---- one route per card: what it drives, what drives it, how hard. */
-  .mrow{border:1px solid rgba(255,255,255,.09);border-radius:6px;padding:6px 7px;margin:5px 0;
     background:rgba(255,255,255,.028)}
-  .mrow .r1{display:flex;align-items:center;gap:6px}
-  .mrow .r2{display:flex;align-items:center;gap:7px;margin-top:5px}
-  .mrow .arw{flex:0 0 auto;font-size:9px;color:#6f7078}
-  .mrow select{font-size:9px;padding:4px 5px}
-  .mrow .mdel{flex:0 0 auto;padding:3px 6px;font-size:9px;line-height:1;
     background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.14);border-radius:4px;
     color:#9a9aa2;cursor:pointer}
-  .mrow .mdel:hover{color:#ffb4b4;border-color:rgba(255,120,120,.5)}
-  .mrow .mv{font-size:9px;color:#c8b8ff;flex:0 0 34px;text-align:right;font-variant-numeric:tabular-nums}
-  #modEmpty{font-size:9px;line-height:1.6;color:#6f7078;padding:4px 0 6px;letter-spacing:.04em}
   /* A control that cannot do anything right now says so, rather than leaving you to drag it and
      wonder. Same idea as the dead-route marking in the matrix. */
   #ctrl .row.inert{opacity:.38}
   #ctrl .row.inert input,#ctrl .row.inert select{pointer-events:none}
-  .mrow .meter{position:relative;height:3px;margin-top:6px;border-radius:2px;
     background:rgba(255,255,255,.08);overflow:hidden}
-  .mrow .meter i{position:absolute;top:0;bottom:0;left:50%;width:0;background:#c8b8ff;
     border-radius:2px;transition:width .06s linear,left .06s linear}
-  .mrow.dead .meter i{background:#7a5a5a}
-  .mrow.dead .mtgt{color:#c9a0a0}
 </style>
 
 <canvas id="gl"></canvas>
@@ -238,20 +225,14 @@
       <input type="range" id="grainAmt" min="0" max="200" value="100"><span class="val" id="grainAmtV">100</span></div>
   </details>
 
-  <!-- ROUTING MATRIX. See MODSRC / MODTGT in the script for what each end of a route is and why
-       the Director's own signals are the sources. -->
-  <details id="gMod"><summary>Modulation</summary>
-    <div class="row"><label>Routing</label><select id="selMod">
-      <option value="auto" selected>Auto &middot; Director</option>
-      <option value="manual">Manual</option>
-      <option value="off">Off</option></select></div>
-    <div id="modEmpty">Nothing routed. The Director still drives everything on its own &mdash;
-      a route is an extra hand on top of it.</div>
-    <div id="modList"></div>
-    <div class="row" style="justify-content:flex-end;gap:6px">
-      <button id="modAdd" class="mini" title="Add a route">+ Route</button>
-      <button id="modClear" class="mini" title="Remove every route">Clear</button></div>
-  </details>
+  <!-- THE ROUTING MATRIX IS GONE FROM THE PANEL, NOT FROM THE ENGINE. It shipped empty in Manual
+       and its own empty-state admitted the Director drove everything anyway, so what it offered
+       the user was a page of selects that changed nothing until they built a patch by hand -- and
+       the mode persisted, so anyone who once set it to Manual never saw it do anything again.
+       autoPatch() is the part that was worth keeping: it reads the analysed track and wires the
+       body to the kick, bloom to energy, saturation to tension or valence, the lens to epicness
+       and a slow swirl to the bar. That now runs unconditionally, which is the whole point --
+       the engine drives the movement and the panel above is where you tweak it. See autoMap(). -->
 
   <details id="gView" open><summary>View</summary>
     <div class="row"><label>Camera</label>
@@ -391,7 +372,7 @@ uniform sampler2D u_svg;            // R = signed distance, in object units, fro
 uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
 uniform float u_volOn,u_volPad,u_nEps,u_shaJit;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
-uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC;
+uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR;
 uniform int u_shaN;
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
@@ -405,6 +386,8 @@ uniform float u_wear;                  // edge wear, 0..1; see the WEAR note in 
 uniform float u_nobound;               // 1 = march unbounded, as before the ray/sphere test (A/B)
 uniform float u_bmarg;                 // extra bounding radius, for testing whether the bound clips
 uniform float u_kal,u_kalPh,u_kalSeg,u_kalOff;   // amount 0..1, mirror angle, order, ring offset
+uniform float u_kalPump,u_kalDrift,u_kalScl;      // the sample point breathing and sweeping; see kalEval
+uniform float u_kalBev,u_kalCore;                // bevel compensation, and the axis cut; see kalEval
 const float KAL_REACH=1.15;   // the profile reach in this normalised space; see REACH[] in JS
 uniform float u_swirl;                 // third rotation axis (xy / about z); see formRot
 #define PI 3.14159265
@@ -539,7 +522,10 @@ const float EXR = 1.15;                    // the radius every profile is normal
    it drives the light (u_keyPulse), the density and the count, which is where the reference puts
    it too: its rosette holds absolutely steady while its blades change. */
 float formScale(){
-  return max(u_reform,0.2)*(1.0+u_energy*0.10)*0.95;
+  // 0.16 rather than 0.10 on the energy term. This is the section curve, which moves over bars
+  // and not beats -- the note above is explicit that a louder passage being a larger form is
+  // scale rather than jitter, so it is the one size response that is safe to widen.
+  return max(u_reform,0.2)*(1.0+u_energy*0.16)*0.95;
 }
 float extr(float d2,vec3 p,float halfD,float bev){
   float r = clamp(length(p.xy)/EXR, 0.0, 1.0);
@@ -568,7 +554,13 @@ float extr(float d2,vec3 p,float halfD,float bev){
 // The user parameters multiply the audio-driven value rather than replacing it, so the Director
 // keeps animating the form and the slider decides how much form there is to animate.
 float exDepth(){ return (0.30 + u_gThick*0.05)*u_pDepth; }
-float exBevel(){ return (0.055 + u_gCut*0.012)*u_pEdge*u_bevK; }
+/* u_kalBev KEEPS THE EDGE THE SAME SIZE WHEN THE FOLD IS OPEN. kalEval evaluates the form in a
+   domain divided by S (about 0.59 at the shipped settings) and the framing holds the silhouette
+   at the same size on screen, so everything inside it -- the bevel included -- came out 41%
+   tighter the moment the kaleidoscope bloomed. The form did not become more angular; its
+   rounding got smaller relative to the frame, which is what read as edges being too sharp.
+   The compensation is 1/S, faded in with the bloom so nothing steps. */
+float exBevel(){ return (0.055 + u_gCut*0.012)*u_pEdge*u_bevK*u_kalBev; }
 
 // ---- profiles ----
 /* WHY THE UNIONS BELOW ARE SMOOTH ONES, AND WHERE THE RADIAL LINES CAME FROM.
@@ -843,17 +835,41 @@ vec3 formRot(vec3 p){
    between two quite different fields, and mix() averages their creases into flat facets -- see
    the note above. min(a+c,b+c)=min(a,b)+c exactly, so the erosion constant cancels and the
    midpoint is smin(a,b): both forms at full size joined by a fillet. */
-float blendField(float a,float b,float m){
+/* AND IT MELTS THROUGH A BALL, rather than showing both forms at once.
+   The smooth union fixed the faceting the old mix() produced, but it is a UNION: at the middle
+   of a transition both shapes are present at full size, so the incoming one arrives as separate
+   material sitting inside or behind the outgoing one -- visible pieces of the next shape, which
+   is not what a change of form should look like. Eroding harder fuses them but re-exposes the
+   creases the union was introduced to remove, so there is no setting of the pair that is both.
+   Passing the blend through a SPHERE at the midpoint solves both at once. A ball has no creases
+   to average and no features to recognise, so the middle of the transition is smooth and reads
+   as one object rather than two overlaid ones: the form softens into a blob and the new one
+   grows back out of it. sin(m*PI) is zero at both ends, so m=0 and m=1 are still exactly a and
+   b -- the endpoints stay untouched, which is the property the whole blend is built around.
+   Still Lipschitz-1: mix() of 1-Lipschitz fields, and a sphere is one. */
+float blendField(vec3 p,float a,float b,float m){
   if(u_morphU<0.5) return mix(a,b,m);            // legacy average, for A/B
   const float K=1.0;
   float comp=K*0.5*(1.0-abs(2.0*m-1.0))*u_morphC;
-  return smin3(a+K*m, b+K*(1.0-m), u_morphK)-comp;
+  float d=smin3(a+K*m, b+K*(1.0-m), u_morphK)-comp;
+  /* Raised to a power so the ball is confined to the MIDDLE. Plain sin(m*PI) is already 0.81 at
+     m=0.3, which rounds the outgoing shape away before it has visibly begun to change; the eye
+     reads that as the form being replaced rather than transformed. At 2.5 the same point is
+     0.42, so each end holds its own identity through the first and last third and the melt
+     happens where nothing is recognisable anyway. */
+  float w=pow(sin(m*3.14159265), 2.5)*u_morphBlob;
+  if(w>0.001){
+    // radius tracks the form's own reach, so the melt neither swells nor collapses the frame
+    float sph=length(p)-u_morphR;
+    d=mix(d,sph,w);
+  }
+  return d;
 }
 float evalForm(vec3 p){
   float d=evalMode(p,u_mode);
   if(u_mix>0.001){ float m=clamp(u_mix,0.,1.); m=m*m*m*(m*(m*6.0-15.0)+10.0);
     float b=evalMode(p,u_mode2);
-    d=blendField(d,b,m);
+    d=blendField(p,d,b,m);
   }
   return d;
 }
@@ -1006,21 +1022,41 @@ vec3 kalFold(vec3 p,float N){
   p.xy=vec2(cos(a),sin(a))*r;
   return p;
 }
-/* THE RING. Folding alone puts all N copies on top of each other at the centre, which is why the
-   order had to be kept low enough not to cut the form up. Offsetting the sampled region off the
-   fold axis first turns that pile into a ring of N separate copies -- the actual kaleidoscope
-   construction, where the mirrors look at something beside the axis rather than through it.
-   THE SILHOUETTE DOES NOT GROW, which is the whole point of deriving the scale from the offset
-   rather than exposing both: at offset f the copies sit at f*REACH and are scaled by (1-f), so
-   the outermost point is f*REACH + (1-f)*REACH = REACH for every f. Same radius as the
-   kaleidoscope off, so framing, the march bound and the studio floor all still hold, and f=0
-   collapses to exactly the old fold.
+/* THE RING, AND WHY IT ALSO HAS TO MOVE.
+   Folding alone puts all N copies on top of each other at the centre. Offsetting the sampled
+   region off the fold axis first is the actual kaleidoscope construction: the mirrors look at
+   something beside the axis rather than through it.
+   CORRECTION TO WHAT THIS COMMENT USED TO CLAIM. It said each copy was "a whole small form", and
+   that is not what the geometry does. The wedge clips angularly, so what each copy shows is the
+   slice of the form that fits inside a wedge of half-angle PI/N at radius f*REACH. At the shipped
+   default (N=6, f=0.30) that wedge is 0.172 wide against a copy radius of 0.805 -- 21% of it.
+   Every profile therefore came through as the same bland petal, which is why the shapes stopped
+   looking like themselves once the kaleidoscope was on.
+   The tension has no setting that resolves it: a wider wedge (low N) means fewer mirrors and less
+   of a kaleidoscope, and a bigger offset shrinks the copy by exactly as much as it widens the
+   view of it. Folding at f=0 is no better -- a 30 degree pie slice through a Gear lands between
+   its teeth and mirrors a plain annulus, destroying the one feature that made it a gear.
+   So the richness cannot come from which slice is chosen. It comes from the slice MOVING. A real
+   kaleidoscope is not a fixed pattern being spun; it is a fixed set of mirrors with the source
+   drifting past them, and the mandala reconfigures continuously as it goes -- petals grow, meet,
+   merge and separate. u_kalPump breathes the sample radially and u_kalDrift sweeps it sideways
+   across the mirror line, both on musical periods, and that sideways sweep is the one that makes
+   the pattern reconfigure rather than merely turn. A C_N form turning about its own symmetry axis
+   is invisibly turning; this is what gives it something to do instead.
+   THE SILHOUETTE STILL DOES NOT GROW: the scale subtracts the pump's full amplitude as well as
+   the offset, so f*REACH + pump + S*REACH <= REACH at every point in the cycle. Framing, the
+   march bound and the studio floor all still hold, and f=0 with no drive collapses to the old
+   fold exactly.
    Scaling an SDF needs the field scaled with the domain -- evalForm(q/S)*S -- or the distance is
    wrong by S and the march oversteps. */
 float kalEval(vec3 p,float N){
   vec3 q=kalFold(p,N);
   float f=clamp(u_kalOff,0.0,0.85);
-  float S=1.0-f;
+  /* The scale arrives precomputed. JS knows the pump and drift AMPLITUDES, so it can solve the
+     worst-case reach once and send a constant; deriving it here from the live values would make
+     the copies swell and shrink as the drive changed, which is a size pulse nobody asked for on
+     top of the movement. Constant scale, moving sample point. */
+  float S=clamp(u_kalScl,0.10,1.0);
   /* ALONG THE WEDGE'S OWN BISECTOR, not along x. kalFold leaves every point in the sector
      [u_kalPh, u_kalPh+w) -- the mirror phase turns that sector with the track. Offsetting along
      a fixed axis therefore pushes the sampled region SIDEWAYS out of the wedge whenever the
@@ -1028,8 +1064,25 @@ float kalEval(vec3 p,float N){
      u_kalOff >= 0.34 at the phase that happened to be live, and changed shape as the phase
      drifted. Along the bisector each copy is centred in its own wedge at every phase. */
   float w=PI/N, b=u_kalPh+w*0.5;
-  q.xy-=vec2(cos(b),sin(b))*(f*KAL_REACH);
-  return evalForm(q/S)*S;
+  vec2 dir=vec2(cos(b),sin(b)), tang=vec2(-dir.y,dir.x);
+  q.xy-=dir*(f*KAL_REACH+u_kalPump)+tang*u_kalDrift;
+  float d=evalForm(q/S)*S;
+  /* PUNCH OUT THE FOLD AXIS. Every wedge meets at r=0, so a polar fold puts a CONE SINGULARITY
+     there -- N surfaces converging on one point, which renders as the little spiked umbrella with
+     a dark speck at the exact centre of the mandala. It is not a marching fault and no amount of
+     precision removes it; it is what the map does to that point. atan is also worthless there,
+     so the last few pixels of angle are numerical noise on top.
+     Cutting a small cylinder along the axis takes the singular point off the surface entirely.
+     A clean circular opening at the centre is what a kaleidoscope looks like anyway, so this
+     reads as the form rather than as a repair. Faded by u_kalCore, which is zero when the fold
+     is closed, so an unfolded form is untouched.
+     max() of two 1-Lipschitz fields, so the march bound is unaffected. */
+  /* Rounded, not a plain max(). A hard intersection leaves a 90 degree lip that nothing bevels,
+     and it stippled along the rim -- a sharp silhouette edge is the one thing the march samples
+     worst. smax is smin3 on the negated pair; the radius matches the form's own bevel so the
+     opening reads as part of the object. */
+  float cut=u_kalCore-length(p.xy);
+  return -smin3(-d, -cut, exBevel()*0.9);
 }
 vec2 map(vec3 wp){
   vec3 p=formRot(wp);
@@ -1102,7 +1155,7 @@ vec2 map(vec3 wp){
     // Through blendField, not mix(): the plain form and the ring are very different fields, and
     // averaging them faceted the fade for exactly the reason the shape morph did.
     float kk=clamp(u_kal,0.,1.); kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
-    d=blendField(evalForm(p), kalEval(p,kalN), kk);
+    d=blendField(p, evalForm(p), kalEval(p,kalN), kk);
   }
   /* THE LIVING SURFACE IS GONE, AND IT WAS THE LINES.
      A band-driven fbm used to displace the field here. It was cut back twice -- once off the
@@ -1479,9 +1532,20 @@ vec3 bg(vec3 rd, vec2 sv){
   // with a stronger coefficient folds the field convincingly at 3 fbm calls instead of 5.
   // The field turns WITH the form (u_spin) and its feature size tracks the form's scale, so the
   // backdrop belongs to the subject instead of being a texture the subject happens to sit on.
-  vec2 uv=sv*1.25*(1.0+u_energy*0.12); uv*=rot(u_spin*0.16+u_tilt*0.25);
-  // the beat breathes the flow forward — motion on the downbeat, not just colour
-  float tt=u_time*(0.020+u_arousal*0.055)+u_pulse*0.045+u_bLow*0.03;
+  /* THE BACKDROP'S SHARE OF THE FORM'S ROTATION IS SMALL NOW. Coupling the field to u_spin and
+     u_tilt is right -- it is what stops the backdrop being a texture the subject happens to sit
+     on -- but the coefficients were set against a form that turned at 30 deg/s. The ladder now
+     peaks near 175, so at 0.16/0.25 the background was sweeping about 57 deg/s on its own: the
+     backdrop had become the fastest thing in the frame. Divided by roughly the same factor the
+     rotation went up by, so the RELATIONSHIP is unchanged and the absolute motion is back to
+     what it was. */
+  vec2 uv=sv*1.25*(1.0+u_energy*0.12); uv*=rot(u_spin*0.05+u_tilt*0.07);
+  /* The beat still breathes the flow forward, at about a third of what it was. At 0.045 a single
+     beat pushed the field further than a second of its own drift, so the backdrop lurched twice a
+     bar -- read as the background competing with the subject rather than supporting it. The
+     comment above already states the rule this broke: it must always be slow in absolute terms,
+     because it sits behind the form. */
+  float tt=u_time*(0.014+u_arousal*0.038)+u_pulse*0.016+u_bLow*0.011;
   vec2 w1=vec2(fbm(vec3(uv*1.20, tt)), fbm(vec3(uv*1.20+11.7, tt)));
   float f=fbm(vec3(uv*1.60+w1*2.6, tt*0.75));
   // RIDGED fold. Reflecting the field about its midpoint (1-|2f-1|) turns smooth blobs into thin
@@ -2950,7 +3014,11 @@ window.STEP=STEP;   // live-tunable for step/budget A/B; see the u_steps upload
 // gone by mid-morph and the transition is just the Arc; at 0.94 they survive intact.
 // k=0.10, not 0.25: the wider fillet left a scalloped rim wherever the two fields ran close and
 // nearly parallel, which is the same low-poly read the blend change was made to remove.
-const MORPH={k:0.10, comp:0.94};  window.MORPH=MORPH;
+/* blob 0.62, not 0.78. At 0.78 the middle of a transition is a featureless ball -- clean, and a
+   moment of nothing. At 0.62 the outgoing form still shows as low relief across the surface, so
+   the melt keeps a trace of where it came from without any of it standing proud enough to read
+   as a separate piece. r matches the reach so the melt neither swells nor collapses the frame. */
+const MORPH={k:0.10, comp:0.94, blob:0.62, r:0.92};  window.MORPH=MORPH;
 /* Kaleidoscope order and ring offset. off is the fraction of the reach the copies are pushed off
    the fold axis; kalEval derives their scale from it so the silhouette radius never changes.
    0.30 rather than something larger, chosen against the two profile extremes: a solid form (Wave)
@@ -2958,7 +3026,10 @@ const MORPH={k:0.10, comp:0.94};  window.MORPH=MORPH;
    (Arc) closes into a continuous ring. Past about 0.4 the thin profiles stop touching and break
    into scattered chips -- their copies still overlap by bounding radius, but a hollow ring has no
    material where its neighbour arrives. */
-const KALSET={seg:6, off:0.30};  window.KALSET=KALSET;
+const KALSET={seg:6, off:0.30, pump:0.10, drift:0.16, core:0.075};  window.KALSET=KALSET;
+// Breathing on the bar, sweeping across the phrase. 4 and 14 rather than 4 and 16 so the two
+// never repeat together into a single pulse the eye can predict.
+const KAL_PUMP_BEATS=4, KAL_DRIFT_BEATS=14;
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -3086,8 +3157,11 @@ const MODTGT={
   bloom:'Bloom', sat:'Saturation', grain:'Grain',
   dolly:'Camera distance', fov:'Field of view', hue:'Hue'
 };
+/* The routes, written by autoPatch() from the analysed track and not by hand any more. The mode
+   selector is gone with the panel: there is no Manual and no Off, because both of those were
+   ways to end up with an engine that had stopped reacting without saying so -- and Manual was
+   the state a user could get stuck in permanently, since the choice persisted. */
 let MODB=[];                                   // the routes themselves: {t, s, a}
-let MODMODE='auto';                            // 'auto' | 'manual' | 'off'
 /* ---- AUTOMATIC MAPPING ----
    The matrix is the manual half of this; nothing about it required the ROUTES to be manual too.
    The Director already knows enough about a track to wire a sensible patch for it, and doing that
@@ -3101,8 +3175,9 @@ let MODMODE='auto';                            // 'auto' | 'manual' | 'off'
    because a big one on a flat curve is a constant, not a reaction. Whether saturation follows
    tension or valence depends on which of the two the track actually has.
 
-   The routes it writes are ordinary rows: visible in the panel, editable, deletable. Auto is a
-   starting point you can see, not a hidden layer. */
+   This used to be one of three modes and is now the only one. What it writes is no longer a
+   starting point to argue with in a panel -- it is the mapping, rewritten for each track. The
+   arguing surface is the Motion group, which multiplies these rather than replacing them. */
 function autoPatch(){
   const secs=(director&&director.sections)||[];
   if(!secs.length) return [];
@@ -3135,9 +3210,8 @@ function autoPatch(){
   return P;
 }
 function autoMap(reason){
-  if(MODMODE!=='auto' || !director) return;
-  MODB=autoPatch(); modSave(); if(window.modRender) modRender();
-  if(reason) { showStat('Routed automatically — '+MODB.length+' routes'); hideStat(1800); }
+  if(!director) return;
+  MODB=autoPatch();
 }
 const MODV={};                                 // this frame's summed value per target
 /* Two clocks the sources need that nothing else in the file keeps: a phase in BEATS, and a
@@ -3159,18 +3233,18 @@ function modUpdate(dt,bpm){
     MODV[r.t]=(MODV[r.t]||0)+r.a*v;
   }
 }
-const MV=k=>(MODMODE==='off')?0:(MODV[k]||0);
+const MV=k=>(MODV[k]||0);
 /* The largest MV(t) can ever be, from the routes as they stand. Every source is bounded to
    0..1, so the peak is just the sum of the amounts -- and unlike MV() this does not change
    from frame to frame, which is what makes it usable for anything that has to be placed ONCE
    and stay put (the studio floor). */
-const modPeak=t=>(MODMODE==='off')?0:MODB.reduce((a,r)=>a+(r.t===t?Math.abs(r.a):0),0);
-function modSave(){ try{ localStorage.setItem('atonal.mod',JSON.stringify(MODB));
-  localStorage.setItem('atonal.modmode',MODMODE); }catch(e){} }
-function modLoad(){ try{ const m=localStorage.getItem('atonal.modmode');
-  if(m==='auto'||m==='manual'||m==='off') MODMODE=m;
-  const v=JSON.parse(localStorage.getItem('atonal.mod')||'[]');
-  if(Array.isArray(v)) MODB=v.filter(r=>MODTGT[r.t]&&MODSRC[r.s]).map(r=>({t:r.t,s:r.s,a:+r.a||0})); }catch(e){} }
+const modPeak=t=>MODB.reduce((a,r)=>a+(r.t===t?Math.abs(r.a):0),0);
+/* NOTHING PERSISTS ANY MORE. The saved mode was the actual trap: set Manual once, and every
+   later session started with an empty patch and an engine that looked broken. The routes are
+   derived from the track, so they are rebuilt on load and there is nothing worth carrying over.
+   The old keys are cleared so an existing install does not keep a stale patch around. */
+function modSave(){ try{ localStorage.removeItem('atonal.mod');
+  localStorage.removeItem('atonal.modmode'); }catch(e){} }
 /* CELL SIZE IS PER MODE, and it starts at the bottom of the range.
    One shared value starting at 14 was wrong at both ends. On the halftones and Pixelate a cell
    that size is coarse enough to destroy the subject -- the form stops being readable and the
@@ -3306,8 +3380,27 @@ const SWIRL_BEATS=SPIN_BEATS*1.5;                    // 24 beats, about Z
    for exactly this purpose), tempo.stability, crest_db, stereo_width, the whole instruments{}
    block, and the danceability / percussive / harmonic / density / dynamics / release / atmosphere
    curves. The ones that bear on how a thing should MOVE are used here. */
-const SPIN_LADDER=[8,12,16,24,32];                   // beats per revolution, slow -> fast
-const RATIO_PAIRS=[[3,1.5],[2,1.5],[3,2],[4,2],[4,3],[2,4]];   // [tumble, swirl] as multiples
+/* THE LADDER WAS TUNED FOR A TURNTABLE, NOT FOR MUSIC. Measured on the test track, at 120bpm,
+   with the old values [8,12,16,24,32]:
+                    intro        drop peak     revolution
+        spin        28-31 deg/s  56 deg/s      6.4s
+        tumble      7.0-7.7      18            20s
+        swirl       11-15        32            11s
+   A clock's SECOND HAND is 6 deg/s. The tumble axis was barely above it, and the drop was only
+   about twice the intro -- so the form was slow everywhere and the loud part was not much
+   faster than the quiet one. That is the whole of "it looks static with no energy": not a
+   plumbing fault, just numbers chosen for a calm product render.
+   [4,6,9,14,22] puts the top of the ladder at 2.0s per revolution (180 deg/s) and the bottom at
+   11s (33 deg/s) -- a 5.5x spread instead of 4x, and a top end that actually reads as fast.
+   NOTE THIS IS NOT THE JIGGLE. That was u_pulse driving the form's SIZE, a discontinuous
+   per-onset kick on a continuous property; see the note above formScale. Rotation rate is
+   continuous and section-level, which is the axis the reference puts its energy on. */
+const SPIN_LADDER=[4,6,9,14,22];                     // beats per revolution, fast -> slow
+/* And the off-axes come closer in. At [3,1.5]..[4,3] the tumble ran three to four times the
+   spin PERIOD, i.e. three to four times slower, which is why it measured at 7 deg/s while the
+   spin was at 30. Keeping the pairs varied preserves the point of the table -- no two sections
+   move alike -- but none of them is allowed to be nearly still any more. */
+const RATIO_PAIRS=[[2,1.5],[1.5,2],[2.5,1.5],[1.5,1.25],[1.25,2],[2,2.5]];   // [tumble, swirl] as multiples
 const MOTP ={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // live, eased
 const MOTPT={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // target
 function hashAt(x){ return Math.abs(Math.sin(x*127.1+311.7)*43758.5453)%1; }
@@ -3478,6 +3571,16 @@ const GENRE_MODES={
 // how they are built: the Lattice is a quiet regular grid, the Knot is an intricate middle,
 // and the Gear's teeth are the most aggressive silhouette in the set.
 const CALM=[3,2,8], MID=[1,3,7], HOT=[0,4,5,6];
+/* WHICH PROFILES SURVIVE THE FOLD. Measured rather than judged: the wedge clips angularly, so
+   what the kaleidoscope shows of a form is the slice fitting inside half-angle PI/N at the ring
+   radius -- 21% of the copy at the shipped default. A profile whose interest is its OUTLINE has
+   nothing left after that cut and comes through as the same bland petal as everything else,
+   which is why every shape looked alike once the fold was on. A profile carrying repeated
+   internal structure at a scale below the wedge -- teeth, bores, rings, a weave -- still has
+   detail inside the slice, and the mirrors multiply it into something worth looking at.
+   Triskelion, Clover, Gear, Knot and Lattice have that. Arc, Chevron, Wave and Plate are single
+   smooth strokes and do not. */
+const FOLD_FRIENDLY=[0,1,6,7,8];
 let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 // Object-space reach per mode — the radius that actually sets the silhouette, read off each
 // SDF's own constants:
@@ -3556,7 +3659,12 @@ function resetOnsetCursors(t){                         // after a seek, re-place
 }
 function genreModes(){ const g=(director&&director.genre&&director.genre.primary)||''; return GENRE_MODES[g]||[0,1,2,3,4,5]; }
 function chooseMode(energy){
-  const allowed=genreModes();
+  let allowed=genreModes();
+  /* WITH THE FOLD OPEN, PICK SOMETHING THE FOLD CAN USE. Only while it is actually blooming --
+     below that the full set is in play, so this narrows the vocabulary during folded passages
+     rather than permanently. Falls back to the full set if the genre's own list and this one do
+     not intersect, so it can never leave nothing to choose from. */
+  if(kalAmt>0.35){ const ff=allowed.filter(m=>FOLD_FRIENDLY.includes(m)); if(ff.length) allowed=ff; }
   const pref = energy<0.38?CALM : energy>0.68?HOT : MID;
   let cand=allowed.filter(m=>pref.includes(m)); if(!cand.length) cand=allowed;
   let m=cand[(Math.random()*cand.length)|0];
@@ -3578,14 +3686,34 @@ function chooseMode(energy){
 let reformWant=null, lastReformBeat=-1e9, secERef=null;
 let dbSet=null, dbFor=null;   // Set of downbeat times for the loaded track; see the beat loop
 let lastBeatT=-1, lastBeatDown=false;   // last beat crossed and whether it was a downbeat
-const REFORM_MIN_BEATS=16;       // never twice inside four bars, whatever the music does
+/* EIGHT BARS, not four. At 16 the in-section rule plus the boundaries put a shape change every
+   6-10 seconds on the test track, which is faster than the form can be read -- a change is only
+   an event if there was time to settle into what it interrupted. 32 puts the floor at 16s at
+   120bpm and leaves the boundaries as the thing that usually fires. */
+const REFORM_MIN_BEATS=32;
+const MORPH_BEATS=8;             // two bars at 4/4; see the morph advance
 const REFORM_MAX_WAIT=4;         // beats a pending change may wait for its downbeat
 function requestReform(energy,beatNow){
   if(beatNow-lastReformBeat < REFORM_MIN_BEATS) return;
   reformWant={energy, at:beatNow};
 }
+/* THE PACE ARRIVES WITH THE FORM. The section's motion periods used to be applied the instant
+   the boundary was crossed, while the shape change waited for the next downbeat -- so the form
+   audibly changed speed at one moment and changed shape up to a bar later. Two halves of one
+   event, split apart, which is what made the transition read as ragged rather than as a turn.
+   Both land together now. The easing in MOTP is unchanged, so the rate still ramps over about
+   two seconds from wherever it was; what moved is when that ramp is allowed to start. */
+let periodWant=null;
 function commitReform(beatNow){
+  if(periodWant){ MOTPT.spin=periodWant.spin; MOTPT.tumble=periodWant.tumble; MOTPT.swirl=periodWant.swirl;
+                  periodWant=null; }
   if(!reformWant) return;
+  /* NOT WHILE ONE IS ALREADY IN FLIGHT. triggerReform only refuses a repeat when phase is 0, so
+     a request arriving mid-morph reset mix to 0 and started the whole transition again from a
+     new target -- measured as an 8.0s morph where 8 beats is 4.0s, because a section boundary
+     landed inside the first one and restarted it. The form never settled into either shape.
+     The request stays pending instead and takes the first downbeat after the morph finishes. */
+  if(phase===1) return;
   lastReformBeat=beatNow; const e=reformWant.energy; reformWant=null; triggerReform(e);
 }
 function triggerReform(energy){ const nm=chooseMode(energy); if(nm===mode&&phase===0) return; mode2=nm; mix=0; phase=1; }
@@ -3621,7 +3749,17 @@ const MATS={
   // GLASS. Near-zero roughness and full reflect so the grazing sweep goes properly mirror, with
   // transmission carrying the body. irid stays low — a faint edge tint reads as real glass, more
   // reads as a soap bubble. Almost no surface tilt: texture on glass reads as a dirty window.
-  glass:   {cc:0.00,ccr:0.10,sssd:0.0,tintw:0.68,iridf:2.2,alb:1.00,absorb:1.15,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.92,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
+  /* GLASS HAD ALMOST NO BODY. trans 0.92 passes 92% of what is behind it, and with absorption at
+     1.15 there was little left to say the form was there at all -- against a bright field it
+     read as a faint outline rather than as an object made of anything. Real glass is legible
+     because THICKNESS is legible: a thin edge is near-clear and a thick section is dense and
+     saturated, and it is that gradient, not the transparency, that says glass.
+     trans 0.74 keeps it obviously see-through while leaving something to shade; absorb 2.2 is
+     what buys the gradient, since Beer-Lambert is per unit of path length so the difference
+     between a rim and a body grows with it. tintw up a little so what does absorb takes the
+     section's colour rather than going neutral grey. Roughness and reflect are untouched: the
+     crisp specular and the Fresnel rim were the parts that already worked. */
+  glass:   {cc:0.00,ccr:0.10,sssd:0.0,tintw:0.80,iridf:2.2,alb:1.00,absorb:2.20,metal:0.0,rough:0.04,reflect:1.00,irid:0.15,transl:0.00,emis:0.00,trans:0.74,spec:1.00, tscale:150,tamp:0.004,taniso:1.00,trough:0.10},
   // CLAY. Surface texture is OFF outright — tamp 0 makes texNormal early-out, trough 0 makes
   // texRough early-out AND zeroes the albedo grain, since that term is scaled by trough. So the
   // shading normal is the raw geometric normal and the colour is uniform: nothing on it at all.
@@ -4255,9 +4393,12 @@ function frame(){
         /* A PENDING SHAPE CHANGE LANDS HERE. On the downbeat by preference; if one has been
            waiting longer than REFORM_MAX_WAIT the next beat takes it, so a request made just
            after a downbeat cannot sit through most of a bar. */
-        if(reformWant && autoShape){
+        /* A pending PERIOD has to land even when no shape change is coming -- autoShape off, or
+           a reform the rate limiter refused. commitReform applies whatever is pending, so the
+           condition is on either request, not on the reform alone. */
+        if(reformWant || periodWant){
           const bn=beatsAtTime(t);
-          if(isDown || bn-reformWant.at>=REFORM_MAX_WAIT) commitReform(bn);
+          if(isDown || (reformWant && bn-reformWant.at>=REFORM_MAX_WAIT)) commitReform(bn);
         }
         break; } }
     }
@@ -4298,7 +4439,8 @@ function frame(){
        four bars however wild the track is, and a flat track never reaches the threshold at all. */
     if(autoShape && secERef!==null){
       const dE=Math.abs(energy-secERef);
-      if(dE>0.22) requestReform(energy, beatsAtTime(t));
+      // and the departure has to be bigger to earn one, for the same reason
+      if(dE>0.34) requestReform(energy, beatsAtTime(t));
     }
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
@@ -4306,12 +4448,19 @@ function frame(){
     const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant();
       // requested, not fired: commitReform lands it on the next downbeat. A boundary always gets
       // its change, so the beat budget is reset rather than tested.
-      if(autoShape){ lastReformBeat=-1e9; requestReform(s.energy, beatsAtTime(t)); }
+      /* A BOUNDARY GETS PRIORITY, NOT A FREE PASS. Resetting the limiter outright let two close
+         boundaries fire back-to-back: measured at 6s apart with a 4s morph between them, so the
+         form was in transition two thirds of the time and never held a shape long enough to be
+         one. Half the normal spacing still lets every real section change through while keeping
+         a bar of stillness on either side of it. */
+      if(autoShape){ lastReformBeat=Math.min(lastReformBeat, beatsAtTime(t)-REFORM_MIN_BEATS/2);
+                     requestReform(s.energy, beatsAtTime(t)); }
       secERef=s.energy;
+      // held for the same downbeat the shape change lands on; see commitReform
+      periodWant=motionPeriodsFor(s);
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
       sectRand=Math.random();                       // the matrix's 'Section step' source
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
-      { const mp=motionPeriodsFor(s); MOTPT.spin=mp.spin; MOTPT.tumble=mp.tumble; MOTPT.swirl=mp.swirl; }
       segNow=segForSection(s);                        // one step, on the boundary
       // The section's hash is the STARTING angle now, not the whole story: kalSpin carries it on
       // from there every frame. Still gated on the form being unfolded, because re-seeding the
@@ -4455,12 +4604,17 @@ function frame(){
      and if the two clocks are the same clock it can only be the constant it started at. */
   if(window.SYNC!==undefined){
     window.DIRECTOR=director;                      // the analysed track, for measurement
+    window.ROUTES=MODB; window.MVNOW={scale:MV('scale'),bloom:MV('bloom'),sat:MV('sat'),swirl:MV('swirl')};
     const bt=(typeof beatsAtTime==='function')?beatsAtTime(pos()):pos()*bpm/60;
     window.SYNC={t:+pos().toFixed(3), playing:isPlaying, bpm:+bpm.toFixed(2),
       tBeats:+bt.toFixed(4),
       spinBeats:+(formSpin/(2*Math.PI)*MOTP.spin).toFixed(4),
       errBeats:+(formSpin/(2*Math.PI)*MOTP.spin - bt).toFixed(4),
       mode, mode2, phase, beatCount, lastBeatT, lastBeatDown, usingDownbeats:!!dbSet,
+      mix:+mix.toFixed(3), dBeats:+dBeats.toFixed(4),
+      spin:formSpin, tumble:formTumble, swirl:formSwirl,
+      pSpin:+MOTP.spin.toFixed(2), pTum:+MOTP.tumble.toFixed(2), pSwi:+MOTP.swirl.toFixed(2),
+      pulseS:+pulseS.toFixed(3), energy:+energy.toFixed(3), arousal:+arousal.toFixed(3),
       spinPeriod:+MOTP.spin.toFixed(2), pendingReform:!!reformWant};
   }
   // SLEW, not a spring: at most one full scale per KAL_SECS in either direction, so the drive
@@ -4536,7 +4690,14 @@ function frame(){
   /* window.MORPHPIN={from,to,mix} holds a morph at a chosen point so the two sides of a step
      or budget change can be compared on the SAME frame. Peak error is mix=0.5. */
   if(window.MORPHPIN){ mode=window.MORPHPIN.from; mode2=window.MORPHPIN.to; mix=window.MORPHPIN.mix; phase=1; }
-  else if(phase===1){ mix+=dt/3.4; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  /* THE MORPH IS MEASURED IN BEATS TOO. 3.4 wall-clock seconds was a duration chosen against no
+     particular tempo, so the same change took a bar and a half on a slow track and nearly three
+     on a fast one -- and the one thing it could never do was land on anything. MORPH_BEATS=8 is
+     two bars at 4/4: it starts on a downbeat (commitReform holds it for one) and finishes on
+     one, so the whole transition is bracketed by the music instead of merely starting with it.
+     Longer than the old 3.4s at anything under 141bpm, which is the other half of what was
+     wanted -- the change reads as a dissolve rather than a switch. */
+  else if(phase===1){ mix+=dBeats/MORPH_BEATS; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   const prog=(phase===1)?mix:0;
   const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
   flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*Math.sin(prog*Math.PI));  // gentle bloom lift, not a strobe
@@ -4680,6 +4841,37 @@ function frame(){
   // exactly the old centre-pile fold. See kalEval.
   gl.uniform1f(US('u_kalSeg'), KALO.seg!==undefined?KALO.seg:KALSET.seg);
   gl.uniform1f(US('u_kalOff'), KALO.off!==undefined?KALO.off:KALSET.off);
+  /* THE SAMPLE POINT MOVES, ON MUSICAL PERIODS. This is what stops the mandala being a rigid
+     ornament: a C_N form turning about its own symmetry axis is invisibly turning, so the fold
+     used to leave the frame looking still no matter how fast the rotation was set. Sweeping the
+     sampled region across the mirror line reconfigures the pattern instead of turning it.
+     Both periods are in BEATS and read off the same grid the rotation uses, so the breathing is
+     on the bar and the sweep is on the phrase -- coprime lengths, so they do not line up into
+     one gesture. Amplitude follows arousal, which is what carries the emotion: a quiet passage
+     barely moves and a loud one churns.
+     The SCALE is solved from the maximum amplitudes, not the live ones, so it is a constant --
+     see kalEval. Worst-case reach is the offset plus the full pump, with the drift as the
+     perpendicular leg, and the copy has to fit inside REACH from there. */
+  {
+    const kf=(KALO.off!==undefined?KALO.off:KALSET.off);
+    const kMove=Math.max(0,Math.min(1, 0.22+arousal*0.78));
+    // window.KALBT forces the sweep's musical position, so the sample movement can be isolated
+    // from everything else the Director is doing on a frozen frame.
+    const bts=(window.KALBT!==undefined)?window.KALBT
+             :(director&&isPlaying)?beatsAtTime(pos()):(performance.now()/1000)*2;
+    const pump = KALSET.pump *kMove*Math.sin(2*Math.PI*bts/KAL_PUMP_BEATS);
+    const drift= KALSET.drift*kMove*Math.sin(2*Math.PI*bts/KAL_DRIFT_BEATS+1.7);
+    const rMax = Math.hypot(kf*1.15+KALSET.pump, KALSET.drift);
+    gl.uniform1f(US('u_kalPump'), pump*1.15);
+    gl.uniform1f(US('u_kalDrift'),drift*1.15);
+    const kS=Math.max(0.10, 1.0-rMax/1.15);
+    gl.uniform1f(US('u_kalScl'), kS);
+    // 1/S, faded in with the bloom: at kalAmt 0 this is exactly 1, so an unfolded frame is
+    // untouched. See exBevel for why the edge needed compensating at all.
+    gl.uniform1f(US('u_kalBev'), 1.0 + Math.max(0,Math.min(1,kalAmt))*(1.0/kS - 1.0));
+    // the axis cut, opened with the bloom; see kalEval
+    gl.uniform1f(US('u_kalCore'), Math.max(0,Math.min(1,kalAmt))*KALSET.core);
+  }
   gl.uniform1f(US('u_room'),ENV.room);
   gl.uniform1f(US('u_segN'), director?segNow:PRM.seg); gl.uniform1f(US('u_pEdge'),PRM.edge);
   gl.uniform1f(US('u_pDepth'),PRM.depth);
@@ -4795,6 +4987,7 @@ function frame(){
   // window.MORPHU=0 restores the old mix() blend for comparison; see evalForm.
   gl.uniform1f(US('u_morphU'), (window.MORPHU===0)?0:1);
   gl.uniform1f(US('u_morphK'), MORPH.k); gl.uniform1f(US('u_morphC'), MORPH.comp);
+  gl.uniform1f(US('u_morphBlob'), MORPH.blob); gl.uniform1f(US('u_morphR'), MORPH.r);
 
   gl.uniform1i(US('u_shaN'),STEP.shaN);
   gl.uniform1f(US('u_shaJit'), (window.SHAJIT!==undefined)?window.SHAJIT:1.0);
@@ -5620,84 +5813,14 @@ document.querySelectorAll('#ctrlBody details').forEach(d=>d.addEventListener('to
 /* ---- ROUTING MATRIX UI ---- one card per route. Rebuilt wholesale on every change: the list is
    never more than a handful of rows, and rebuilding removes a whole class of index-drift bug that
    in-place patching invites for nothing measurable in return. */
-function optsFor(map,sel){
-  return Object.keys(map).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+map[k]+'</option>').join('');
-}
-function modRender(){
-  const L=$('modList'); L.innerHTML='';
-  const em=$('modEmpty');
-  em.style.display = MODB.length ? 'none' : 'block';
-  em.innerHTML = MODMODE==='auto'
-    ? 'Auto &middot; the Director wires these from the track when one is analysed. Edit or delete '
-      +'any of them; the next track rewires.'
-    : MODMODE==='off'
-    ? 'Routing off. The rows are kept but nothing is applied.'
-    : 'Nothing routed. The Director still drives everything on its own &mdash; a route is an '
-      +'extra hand on top of it.';
-  MODB.forEach((r,i)=>{
-    const d=document.createElement('div'); d.className='mrow';
-    /* THE LIVE METER IS THE POINT OF THIS CARD. The matrix was reported as doing nothing, and
-       two of its targets genuinely were dead -- but a routing matrix is also very hard to BELIEVE
-       without feedback: the amount slider says what you asked for, and nothing on screen says
-       what is arriving. The bar under each route shows source x amount as it happens, so a route
-       that is not moving is visibly not moving rather than a suspicion. */
-    d.innerHTML='<div class="r1"><select class="mtgt">'+optsFor(MODTGT,r.t)+'</select>'
-      +'<button class="mdel" title="Remove">&times;</button></div>'
-      +'<div class="r2"><span class="arw">&#8592;</span><select class="msrc">'+optsFor(MODSRC,r.s)+'</select></div>'
-      +'<div class="r2"><input type="range" class="mamt" min="-100" max="100" value="'+Math.round(r.a*100)+'">'
-      +'<span class="mv">'+(r.a>0?'+':'')+Math.round(r.a*100)+'%</span></div>'
-      +'<div class="meter"><i></i></div>';
-    d.querySelector('.mtgt').addEventListener('change',e=>{ MODB[i].t=e.target.value; modSave(); });
-    d.querySelector('.msrc').addEventListener('change',e=>{ MODB[i].s=e.target.value; modSave(); });
-    d.querySelector('.mamt').addEventListener('input',e=>{ const v=+e.target.value;
-      MODB[i].a=v/100; d.querySelector('.mv').textContent=(v>0?'+':'')+v+'%'; modSave(); });
-    d.querySelector('.mdel').addEventListener('click',()=>{ MODB.splice(i,1); modSave(); modRender(); });
-    L.appendChild(d);
-  });
-}
-$('selMod').addEventListener('change',e=>{
-  MODMODE=e.target.value; modSave();
-  // Switching TO auto rewires immediately if there is a track to read; without that the choice
-  // does nothing visible until the next load, which reads as a broken control.
-  if(MODMODE==='auto' && director) autoMap(true);
-  else { showStat(MODMODE==='off'?'Routing off':'Routing manual'); hideStat(1300); }
-  modRender();
-});
-$('modAdd').addEventListener('click',()=>{
-  // The first route is a WORKING one, not an empty stub. An unset row asks the user to guess what
-  // the two lists mean before anything moves; kick -> form scale is the one pairing whose effect
-  // is unmistakable on the first beat.
-  const seed = MODB.length===0 ? {t:'scale',s:'kick',a:0.45}
-             : {t:'bloom', s:'energy', a:0.35};
-  MODB.push(seed); modSave(); modRender();
-  if(MODB.length===1){ showStat('Routed: Kick → Form scale'); hideStat(1600); }
-});
-$('modClear').addEventListener('click',()=>{ MODB=[]; modSave(); modRender();
-  showStat('Routes cleared'); hideStat(1200); });
-modLoad(); $('selMod').value=MODMODE; modRender(); panelLoad();
-/* Meters update on a TIMER, at 20Hz, not in the frame loop. Writing to the DOM every frame is a
-   cost the renderer should not be paying for a 3px bar, and a bar that changes 60 times a second
-   cannot be read anyway -- the same argument as the perf readout. */
-setInterval(()=>{
-  const g=$('gMod'); if(!g||!g.open||$('ctrl').classList.contains('min')) return;
-  const rows=document.querySelectorAll('#modList .mrow');
-  for(let i=0;i<rows.length && i<MODB.length;i++){
-    const r=MODB[i], v=(MODMODE==='off')?0:((SIG[r.s]||0)*r.a);
-    const w=Math.min(50,Math.abs(v)*50), bar=rows[i].querySelector('.meter i');
-    if(bar){ bar.style.left=(v<0?50-w:50)+'%'; bar.style.width=w+'%'; }
-    // A target that cannot move in the current configuration is marked, rather than leaving the
-    // user to guess why a route with a healthy meter changes nothing on screen.
-    rows[i].classList.toggle('dead', modDead(r.t));
-  }
-},50);
-/* WHICH TARGETS CANNOT MOVE RIGHT NOW. Filter cell and Filter amount need a filter; cell also
-   needs one that HAS a cell (Thermal bands and Facets folds are not it). This used to be
-   something you had to know. */
-function modDead(t){
-  if(t==='cell')  return !(FILT.mode>0.5 && FILT.mode!==4 && FILT.mode!==5);
-  if(t==='famt')  return !(FILT.mode>0.5);
-  return false;
-}
+/* THE MATRIX UI IS GONE. What was here: a render for the route rows, the three-way mode select,
+   add/clear buttons, a 20Hz meter timer and modDead(). All of it existed so a person could build
+   and believe a patch by hand -- and the panel's own empty state said the Director drove
+   everything anyway. autoPatch() writes the routes from the track now and nothing edits them, so
+   there is no patch to display, no mode to choose and no meter to reassure anyone with.
+   panelLoad() still runs; it is unrelated to routing. */
+panelLoad();
+
 
 /* ======================= THE ROLL =======================
    A global randomiser, and the whole difficulty is that a uniform random over every control does
@@ -5814,7 +5937,7 @@ function rollAll(seedStr){
     used[t]=1;
     MODB.push({t, s:pick(r,srcs), a:+(((r()<0.22)?-1:1)*(0.18+r()*0.42)).toFixed(2)});
   }
-  MODMODE='manual'; setCtl('selMod','manual'); modSave(); modRender();
+  // routing is derived from the track; the roll has nothing to set here
   $('rollSeed').textContent=seed;
   showStat('Roll · '+rec.name+' · '+seed); hideStat(2200);
   return seed;
