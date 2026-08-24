@@ -205,27 +205,64 @@ def layer1_signal(mono, stereo, sr, prog=None):
     f["chroma"]    = librosa.feature.chroma_cqt(y=mono, sr=sr, hop_length=HOP)
     # tempo / beats / downbeats
     step("beats")
-    onset = f["flux"]
-    # start_bpm biases the autocorrelation prior. Without it librosa takes whichever peak is
-    # tallest, and on material with strong offbeat content (hats on every 8th) that is regularly
-    # a 3:2 relative of the true tempo rather than the usual octave: measured 140 -> 92.3 and
-    # 126 -> 83.4, both almost exactly two thirds. The renderer locks its spin to this number,
-    # so a metrical error is directly visible as the form turning at the wrong speed.
-    tempo, beats = librosa.beat.beat_track(onset_envelope=onset, sr=sr, hop_length=HOP,
+    # THE BEAT GRID IS TRACKED ON THE LOW BAND, NOT ON FULL-BAND FLUX.
+    #
+    # Full-band spectral flux is dominated by whatever has the sharpest spectral change, and that
+    # is the hi-hat, not the kick: a hat is broadband noise with a near-instant attack, while a
+    # kick is a low sine with a slow one. So on any material with hats between the beats, the
+    # tallest flux peaks sit on the OFFBEATS, and the tracker locks its grid to them.
+    #
+    # MEASURED on click120.wav, whose beats are at exact multiples of 0.5s by construction:
+    #     full-band flux    0.0% of beats within 60ms of a true beat, 100% on the offbeat hat
+    #     low band (160Hz)  100% within 60ms, median error 24ms (one hop -- the floor)
+    # and on arc120.wav, 37.8% -> 99.4%.
+    #
+    # A half-beat error is 250ms at 120bpm. Every beat-keyed event in the renderer -- the accent,
+    # the shape change, the motion-period change -- fired a half beat after the sound that was
+    # supposed to trigger it, which is the whole of the reported "the movement is behind the
+    # track". It is a PHASE error, so it survived every tempo fix, and nothing downstream could
+    # detect it: the grid is perfectly regular, just wrong by half a beat.
+    #
+    # The same low-band envelope already existed below for downbeat inference, for exactly the
+    # reason it belongs here -- that is where the kick lives. It is computed once now and used
+    # for both. start_bpm still biases the autocorrelation prior: without it librosa takes
+    # whichever periodicity peak is tallest, and on strong offbeat content that is regularly a
+    # 3:2 relative of the true tempo rather than the usual octave (measured 140 -> 92.3 and
+    # 126 -> 83.4, both almost exactly two thirds).
+    lo_onset = librosa.onset.onset_strength(
+        S=librosa.power_to_db(
+            librosa.feature.melspectrogram(y=mono, sr=sr, hop_length=HOP, fmax=160.0),
+            ref=np.max),
+        sr=sr, hop_length=HOP)
+    tempo, beats = librosa.beat.beat_track(onset_envelope=lo_onset, sr=sr, hop_length=HOP,
                                            start_bpm=128.0, trim=False)
     bpm = float(np.atleast_1d(tempo)[0])
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP)
-    # Cross-check against the beat grid actually returned. beat_track can report a tempo that
-    # disagrees with the spacing of its own beats; the median inter-beat interval is the more
-    # trustworthy of the two because it is what the onset evidence supports.
+    # TEMPO FROM THE WHOLE SPAN, NOT FROM THE MEDIAN GAP.
+    #
+    # Beats are reported as frame indices, so every beat time is quantised to a 23.2ms hop. A true
+    # 0.5s beat is 21.5 hops, so consecutive gaps alternate 21 and 22 frames -- 0.488s and 0.511s
+    # -- and the MEDIAN of that pair is whichever side won, not 0.5. On the 120.000 BPM fixture the
+    # median gap gave 117.45 BPM, a 2.1% error that is pure quantisation and has nothing to do with
+    # the music. Fitting a line through beat index -> beat time averages the quantisation out over
+    # the whole track instead of trusting one gap.
+    #     truth 120.00 | librosa 117.45 | median gap 117.45 | least squares 120.00  (both fixtures)
+    # The renderer advances rotation off the beat GRID rather than this number, so a wrong tempo no
+    # longer desynchronises the turn -- but it is still the reported BPM, it still drives modUpdate
+    # and the HUD, and it is the fallback whenever the grid is too short to interpolate.
+    # PREFERRED OUTRIGHT, not only on a large disagreement. There used to be a 4% threshold here,
+    # on the reasoning that only a real metrical disagreement should override librosa's estimate
+    # and anything smaller was estimator noise. Quantisation is exactly the sub-4% case -- 117.45
+    # against 120.00 is 2.17% -- so the guard rejected precisely the error it was sitting next to,
+    # and the fixture came back at 117.45 with the fit already computed and discarded. The fit is
+    # not a second opinion about the tempo: it is the spacing of the grid that actually ships, and
+    # the client interpolates that grid, so the two must describe the same thing. Guarded only
+    # against a degenerate fit (too few beats, or a slope outside any plausible tempo).
     if len(beat_times) >= 4:
-        ibi = float(np.median(np.diff(beat_times)))
-        if ibi > 1e-3:
-            grid_bpm = 60.0 / ibi
-            # only trust the grid when it disagrees by more than a few percent (i.e. a real
-            # metrical disagreement, not estimator noise)
-            if abs(grid_bpm - bpm) / max(bpm, 1e-6) > 0.04:
-                bpm = grid_bpm
+        k = np.arange(len(beat_times), dtype=np.float64)
+        slope = float(np.polyfit(k, beat_times, 1)[0])
+        if slope > 1e-3 and 20.0 <= 60.0 / slope <= 400.0:
+            bpm = 60.0 / slope
     f["tempo"] = _fold_tempo(bpm)
     f["beat_frames"] = beats
     # ---- DOWNBEATS ----
@@ -240,11 +277,8 @@ def layer1_signal(mono, stereo, sr, prog=None):
     # Falls back to phase 0 when there is no evidence either way.
     db_times = []
     if len(beat_times) >= 8:
-        lo = librosa.onset.onset_strength(
-            S=librosa.power_to_db(
-                librosa.feature.melspectrogram(y=mono, sr=sr, hop_length=HOP, fmax=160.0),
-                ref=np.max),
-            sr=sr, hop_length=HOP)
+        # the same low-band envelope the grid was tracked on, computed once above
+        lo = lo_onset
         bf = np.clip(f["beat_frames"], 0, len(lo) - 1)
         strength = lo[bf]
         best, best_score = 0, -np.inf

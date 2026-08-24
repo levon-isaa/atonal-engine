@@ -3430,7 +3430,21 @@ const SWIRL_BEATS=SPIN_BEATS*1.5;                    // 24 beats, about Z
    NOTE THIS IS NOT THE JIGGLE. That was u_pulse driving the form's SIZE, a discontinuous
    per-onset kick on a continuous property; see the note above formScale. Rotation rate is
    continuous and section-level, which is the axis the reference puts its energy on. */
-const SPIN_LADDER=[4,6,9,14,22];                     // beats per revolution, fast -> slow
+/* THE TOP RUNG CAME BACK DOWN, 4 -> 6. The ladder above was set against "it looks static with no
+   energy", and it fixed that -- the slow end and the spread are both keeping their new values.
+   But 4 beats per revolution is 2.0s per turn, 180 deg/s, and that is what a drop was getting:
+   fast enough that the form reads as spinning rather than as turning, and too fast to see what
+   shape it currently is. 6 beats is 3.0s and 120 deg/s, still nearly three times the slow end and
+   still well clear of the 33 deg/s the old ladder topped out at in practice.
+   The ladder stays GEOMETRIC, which is the property worth preserving: 4:6:9:14:22 steps by about
+   1.5 each time, so no two rungs read as the same speed. Moving only the top rung and leaving the
+   rest breaks that -- 6 next to the existing 6 and 9 puts three rungs inside half a step of each
+   other. Respacing the whole ladder between the new top and the unchanged bottom keeps the ratio
+   at ~1.38 and keeps five distinct speeds.
+   Note that part of the reported "too quick" was not the ladder at all but the catch-up snaps
+   documented at the morph step and the governor -- this is the other part, and it is the half
+   that survives once the frame is smooth. */
+const SPIN_LADDER=[6,8,11,16,22];                    // beats per revolution, fast -> slow
 /* And the off-axes come closer in. At [3,1.5]..[4,3] the tumble ran three to four times the
    spin PERIOD, i.e. three to four times slower, which is why it measured at 7 deg/s while the
    spin was at 30. Keeping the pairs varied preserves the point of the table -- no two sections
@@ -4430,8 +4444,22 @@ function frame(){
     // handed straight back: the governor sees the headroom Preview just bought, spends it on
     // resolution, and the tier's declared 0.72 becomes decorative — measured as an identical
     // 8.0 Mpx grid in Preview and High. A tier has to bind the governor, not suggest to it.
-    else if(frameAvg>55 && dprScale>0.66){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
-    else if(frameAvg<48 && dprScale<DCAP){ dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
+    /* THE HANDOFF BETWEEN THE TWO LEVERS, which is where the governor was getting stuck.
+       This file has already found the identical one-way trap twice -- once for the canvas, once
+       for the march, both written up below. It was still here a third time, in the gap BETWEEN
+       them: rscale degrades over 18ms, but dpr only degraded over 55ms, so a frame sitting
+       anywhere in 18..55ms drove rscale to its floor and then had nothing left to pull. Every
+       branch fails at that point -- rscale is not > SFLOOR, it is not < 1.0 with a fast frame,
+       and 33ms is not < 14.5 -- so the chain falls through and the governor does nothing at all.
+       MEASURED on the test track at 3.6 Mpx: rscale 0.574 (floored), dprScale 1.0 (untouched),
+       frameAvg 33ms, 27fps, held there indefinitely. At 1.43 Mpx the same scene runs at 63.6fps
+       with zero stalls, so the pixels were always the problem and the lever for them was simply
+       unreachable.
+       55ms stays as the emergency rung -- a frame that bad should shed pixels immediately without
+       waiting for rscale to walk down first -- but the floored-and-still-slow case now reaches
+       the same lever at the ordinary 18ms threshold. */
+    else if(dprScale>0.66 && (frameAvg>55 || (frameAvg>18.0 && rscale<=SFLOOR+1e-3))){
+      dprScale=Math.max(0.66,dprScale-0.06); resize(); }
     // The floor is the TIER's, not a constant. It was hard-coded at 1.00, which meant no tier
     // could ever render fewer pixels than the native grid however slow the frame got -- so the
     // one lever that measurably moves this renderer was unavailable to the tier that exists to
@@ -4473,6 +4501,14 @@ function frame(){
        settles rather than hunts. Above native the original conservative thresholds still apply:
        supersampling is a luxury and is bought only with genuine headroom. */
     else if(rscale<1.0 && frameAvg<17.4){ rscale=Math.min(1.0,rscale+0.04); applyScale(); }
+    /* AND BACK UP IN THE OPPOSITE ORDER TO THE WAY DOWN. dpr is the coarsest lever and the last
+       one spent, so it is the first one recovered -- but only once rscale is back at native,
+       because restoring the canvas while the march is still sub-native just hands the extra
+       pixels straight to the upscaler. The old rule here was `frameAvg<48`, which restored dpr
+       at 21fps: with the degrade rule above now reachable at 18ms, that pair would have hunted
+       against each other every 500ms -- shed pixels at 18, take them back at 48, forever. Both
+       ends read the same 14.5ms headroom gate the rest of the governor uses. */
+    else if(frameAvg<14.5 && rscale>=1.0 && dprScale<DCAP){ dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
     else if(frameAvg<14.5 && rscale<SCAP){ rscale=Math.min(SCAP,rscale+0.06); applyScale(); }
   }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
@@ -4876,7 +4912,23 @@ function frame(){
      one, so the whole transition is bracketed by the music instead of merely starting with it.
      Longer than the old 3.4s at anything under 141bpm, which is the other half of what was
      wanted -- the change reads as a dissolve rather than a switch. */
-  else if(phase===1){ mix+=dBeats/MORPH_BEATS; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  /* THE STEP IS CAPPED, and this is the one dBeats-driven quantity that may be.
+     musicalStep reads the audio clock and returns the true elapsed beats, uncapped up to 8 --
+     deliberately, because rotation is PHASE-LOCKED and a rotation that skips its catch-up is a
+     rotation that has quietly fallen out of sync with the music. The morph is not phase-locked.
+     It is a transition with a start and an end, and nothing about it is read against the beat
+     except where it begins and roughly where it lands.
+     MEASURED at 3.6 Mpx with the governor stuck (see the note there): frame intervals p50 39ms,
+     p99 423ms, max 570ms, and a 570ms stall returns dBeats=1.13 -- so mix advanced 0.141 in a
+     single frame, 14% of the entire shape change at once. That is the reported "issues during
+     the shape change": not a defect in the melt, which is C2 and correct, but the melt being
+     stepped through in a dozen visible jumps instead of ~240 smooth ones.
+     0.02 is 2% of the transition per frame. Normal running never reaches it -- at 120bpm the
+     step is 0.004 at 60fps and 0.012 at 20fps -- so this clips stalls only, and below about
+     12fps it trades a slightly late landing for a morph that still reads as continuous. The
+     governor fix above is the real cure; this is what keeps a GC pause or a tab switch from
+     tearing a transition in half. */
+  else if(phase===1){ mix+=Math.min(dBeats/MORPH_BEATS, 0.02); if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   const prog=(phase===1)?mix:0;
   const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
   flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*Math.sin(prog*Math.PI));  // gentle bloom lift, not a strobe
