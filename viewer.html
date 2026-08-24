@@ -389,9 +389,9 @@ uniform float u_bLow,u_bAir;   // u_bHigh drove the surface noise's frequency an
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
 uniform sampler2D u_svg;            // R = signed distance, in object units, from the uploaded SVG
 uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
-uniform float u_volOn,u_volPad,u_nEps;
+uniform float u_volOn,u_volPad,u_nEps,u_shaJit;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
-uniform float u_meshOn,u_stepK,u_stepFar;
+uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC;
 uniform int u_shaN;
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
@@ -823,10 +823,31 @@ vec3 formRot(vec3 p){
    at the ends but a discontinuous SECOND derivative, so the melt visibly jerks into and out of
    motion — on a shape change, that snap at each end is most of what reads as abrupt.
    Smootherstep is C2, so the morph eases in and out with no kick. */
+/* HOW THE TWO FIELDS ARE COMBINED. mix() was the obvious choice and it is the wrong one.
+   Measured, not reasoned: pinned at MORPHPIN={from:8,to:2,mix:0.5} the blended form comes back
+   covered in large flat facets, and it stays IDENTICAL with the step cut to a third (1.45 ->
+   0.45) and the budget raised to 224. A march artefact would have moved. It did not, so the
+   facets are in the FIELD: the average of two fields averages their creases too, and every
+   profile here is built from min/max, so both sides bring plenty. Lattice's periodic bars
+   crease the Arc's ring into a low-poly shell -- geometrically honest, and it looks broken.
+   The fix blends through a smooth UNION instead of an average. Each field is eroded by K as it
+   leaves and un-eroded as it arrives; min(a+c,b+c)=min(a,b)+c exactly, so the constant comes
+   straight back out and at m=0.5 this reduces to smin(a,b) -- both shapes present at full size,
+   joined by a fillet, no creases anywhere. At m=0 and m=1 it is exactly a and b, so the
+   endpoints are untouched and only the middle of the transition changes.
+   K=1.0 because the profiles' deepest interior is about -0.5, so b+K clears a's surface at m=0
+   and the far shape cannot bleed into the near one at the ends.
+   Still Lipschitz-1: smin3 of two 1-Lipschitz fields, offset by per-frame constants. */
 float evalForm(vec3 p){
   float d=evalMode(p,u_mode);
   if(u_mix>0.001){ float m=clamp(u_mix,0.,1.); m=m*m*m*(m*(m*6.0-15.0)+10.0);
-    d=mix(d, evalMode(p,u_mode2), m); }
+    float b=evalMode(p,u_mode2);
+    if(u_morphU>0.5){
+      const float K=1.0;
+      float comp=K*0.5*(1.0-abs(2.0*m-1.0))*u_morphC; // u_morphC=1 cancels the erosion exactly
+      d=smin3(d+K*m, b+K*(1.0-m), u_morphK)-comp;
+    } else d=mix(d, b, m);
+  }
   return d;
 }
 /* ---- KALEIDOSCOPE ----
@@ -1206,8 +1227,37 @@ float calcSha(vec3 p,vec3 l,int N){
   // Chord-relative even spacing is the efficient distribution and the only thing that moves the
   // error is N. It is bought in STEP.shaN, where the cost measurement is.
   float ds=(t1-t0)/float(N);
+  /* JITTER THE SAMPLE PHASE PER PIXEL. The note above is right that the error falls as 1/N and
+     that only N moves it -- but N controls the error's SIZE, not its correlation, and what makes
+     this readable as lines rather than as noise is the correlation. Every sample position is a
+     smooth function of the shaded point, so two adjacent pixels commit almost exactly the same
+     quadrature error; the error is therefore constant along a contour and steps between them,
+     and the eye locks onto a coherent 14px band at well under 2 LSB that it would never find in
+     noise of the same amplitude.
+     Offsetting the phase by a per-pixel hash instead of the fixed 0.5 leaves the COUNT untouched
+     -- nothing pops, the property the fixed-count formulation was chosen for -- and leaves the
+     mean at 0.5, so the estimator stays unbiased. It only decorrelates neighbours, which turns
+     the contours into film grain at the same magnitude. Costs one hash for the whole loop.
+     The hash is on gl_FragCoord alone, so it is fixed in screen space and does not crawl. */
+  /* WHAT THE LINES WERE NOT, so the next pass does not re-walk it. Reported as lines on the
+     shape; isolated with a band-pass (blur r2 minus blur r9, which keeps 5-25px structure and
+     drops both the 4px dither and the shading gradient) over a 140x110 patch of the form, scored
+     as rms and as directional anisotropy. Background floor 0.133, striped surface 0.488.
+       geometry            DIAG 2 normal 0.133, DIAG 8 AO 0.146 -- both AT the floor, clean
+       march residual      Newton steps 0/1/3/8, start dither 0/0.012/0.10, normal eps
+                           0.0018/0.006/0.020 -- every one within 0.005 of baseline
+       post                bloom, sharpen, chroma, mblur, thr each off -- all within 0.005
+       surface terms       ao, twoTone, fill, kvar(specular AA), env room -- all within 0.01
+       clock               pinned vs running -- identical, so not the old temporal displacement
+       DIAG 13 step count  banded, but at 25deg while the shading stripes run at 115deg. It is a
+                           real and SEPARATE artefact, perpendicular to this one; it looks like
+                           the same thing and is not, which cost a wrong diagnosis here.
+     Only DXS.shadow=0 reached the floor (0.488 -> 0.133). ENV.map=0 alone only got to 0.225 --
+     the prefiltered environment sets how much light the shadow term modulates, so it scales the
+     stripes without being their source. */
+  float jit=mix(0.5, fract(sin(dot(gl_FragCoord.xy,vec2(23.1406,9.1265)))*17137.3271), u_shaJit);
   for(int i=0;i<N;i++){
-    float t=t0+(float(i)+0.5)*ds;
+    float t=t0+(float(i)+jit)*ds;
     float h=mapD(p+l*t);
     if(h<0.0015) return 0.0;
     r=min(r, 7.0*h/t);
@@ -1497,7 +1547,11 @@ void main(){
   float tIn=max(-bb-bsq,0.02), tOut=min(-bb+bsq,18.0);
   float t=tIn+dth*0.012;                          // dithered start kills stair-step banding
   if(u_nobound>0.5){ tIn=0.02; tOut=18.0; t=0.02+dth*0.012; }   // A/B: the old unbounded march
-  int STEPS=((bdisc<=0.0||tOut<=tIn)&&u_nobound<0.5)?0:112;      // ray misses the bound: nothing to march
+  /* MARCH BUDGET, a uniform rather than the old literal 112. It has to move with u_stepK:
+     shrinking the step without lengthening the loop just trades overshoot for exhaustion, and
+     a ray that runs out of iterations returns mid<0 -- a MISS -- so the form comes back
+     punctured. See the u_steps upload for the arithmetic. */
+  int STEPS=((bdisc<=0.0||tOut<=tIn)&&u_nobound<0.5)?0:int(u_steps);   // ray misses the bound: nothing to march
   int nStep=0;
   for(int i=0;i<STEPS;i++){ nStep++; vec3 p=ro+rd*t; vec2 h=map(p);
     // SURFACE EPSILON. 0.0015 was far too loose for thin-walled forms. Measured against a
@@ -2822,7 +2876,18 @@ function applyTier(name){
 // 53.9 at 96, 60.3 at 200 — about 0.06ms per sample, because only pixels that hit the form run
 // the shadow ray at all. 128 buys a 3.1x error cut for ~7% of a frame, which the quality
 // governor absorbs as a hair of render scale.
-const STEP={near:1.45,far:1.75,shaN:128};
+const STEP={near:1.45,far:1.75,shaN:128,count:112};  // count = the march budget; see the u_steps upload
+window.STEP=STEP;   // live-tunable for step/budget A/B; see the u_steps upload
+// Morph blend shape. k is the smin fillet joining the two forms mid-transition; comp is how much
+// of the shared erosion is cancelled -- 1.0 puts both forms through at full size, below that they
+// thin as they cross, which reads as a melt rather than a double exposure. See evalForm.
+// comp is deliberately just under 1: the erosion left at 0.94 is K*0.5*0.06 = 0.03 object units,
+// enough to pinch the form slightly as it crosses and not enough to eat thin features. Measured
+// on Lattice->Arc, whose bars are 0.048 half-width: at comp 0.85 (erosion 0.075) the bars are
+// gone by mid-morph and the transition is just the Arc; at 0.94 they survive intact.
+// k=0.10, not 0.25: the wider fillet left a scalloped rim wherever the two fields ran close and
+// nearly parallel, which is the same low-poly read the blend change was made to remove.
+const MORPH={k:0.10, comp:0.94};  window.MORPH=MORPH;
 let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -3372,19 +3437,31 @@ let svgReach=0.7, svgReachY=0.7;
 const VOL_REACH=1.343, VOL_REACH_Y=1.000;
 // One bar in seconds, from the Director's own bpm. 4/4 assumed, which is what the tempo prior
 // in analyze.py already assumes.
+/* EXTENT ACROSS A MORPH. A lerp between the two reaches was right when evalForm averaged the
+   two fields: an average of two shapes is contained in neither one's extent alone, so the
+   in-between really was in-between. The blend is a smooth UNION now, and a union reaches as far
+   as the FARTHER of its two parts, at every point in the transition -- so the lerp under-reports
+   by up to the gap between the two rows. That matters most in Y and most in Studio: REACH_Y runs
+   0.58 (Wave) to 1.15 (Gear), and the floor is placed off this number, so a Wave->Gear morph
+   framed on the lerp would put the floor 0.28 units INTO the form at mid-transition -- the same
+   penetration that was fixed for static shapes, coming back only while a morph is in flight.
+   max() while the union blend is active, the old lerp on the legacy mix() path. */
+function morphBlend(r0,r1){
+  if(phase!==1) return r0;
+  if(window.MORPHU===0) return r0+(r1-r0)*(mix*mix*(3-2*mix));   // legacy average: lerp
+  return Math.max(r0,r1);                                        // union: the farther one
+}
 function frameReachY(){
   if(volOn) return VOL_REACH_Y;
   if(svgOn) return svgReachY;
   const r0=REACH_Y[mode]!==undefined?REACH_Y[mode]:0.9, r1=REACH_Y[mode2]!==undefined?REACH_Y[mode2]:0.9;
-  const k=(phase===1)?(mix*mix*(3-2*mix)):0;
-  return r0+(r1-r0)*k;
+  return morphBlend(r0,r1);
 }
 function frameReach(){                                 // blended across a morph, as the shader does
   if(volOn) return VOL_REACH;
   if(svgOn) return svgReach;
   const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
-  const k=(phase===1)?(mix*mix*(3-2*mix)):0;           // same smoothstep the melt uses
-  return r0+(r1-r0)*k;
+  return morphBlend(r0,r1);
 }
 let pulse=0, pulseS=0, prevT=-1;                      // beat pulse (raw + smoothed envelope)
 let beatCount=-1;                                     // position in the bar, for the downbeat accent
@@ -4267,7 +4344,10 @@ function frame(){
   // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
   // genuinely neither shape; the longer that state is held the more it reads as one form flowing
   // into another rather than as a crossfade being rushed through.
-  if(phase===1){ mix+=dt/3.4; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  /* window.MORPHPIN={from,to,mix} holds a morph at a chosen point so the two sides of a step
+     or budget change can be compared on the SAME frame. Peak error is mix=0.5. */
+  if(window.MORPHPIN){ mode=window.MORPHPIN.from; mode2=window.MORPHPIN.to; mix=window.MORPHPIN.mix; phase=1; }
+  else if(phase===1){ mix+=dt/3.4; if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   const prog=(phase===1)?mix:0;
   const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
   flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*Math.sin(prog*Math.PI));  // gentle bloom lift, not a strobe
@@ -4490,15 +4570,40 @@ function frame(){
   // renderer with no polygons. Worst on section boundaries, where the Director morphs, so it
   // lands on the musical edit the eye is already watching. Scaled by sin(mix*PI) because the
   // error peaks mid-blend and vanishes at both ends, so the cost is paid only where it is real.
-  const morphT=(phase===1)?Math.sin(Math.min(1,Math.max(0,mix))*Math.PI):0.0;
+  /* THE MORPH SHRINK NOW APPLIES ONLY TO THE LEGACY mix() BLEND. It was added because averaging
+     two SDFs gives a field that overestimates the distance to its own zero set, and 1.45x an
+     overestimate steps through the surface. evalForm no longer averages -- it takes a smooth
+     UNION, which is <= min(a,b) and therefore UNDERestimates, the safe direction. Verified on
+     the pinned worst case (Lattice->Arc at mix 0.5): at the full 1.45/1.75 step and the plain
+     112 budget the blended form comes back clean, so the transition now costs what a static
+     frame costs instead of ~1.5x. */
+  const morphT=(phase===1&&window.MORPHU===0)?Math.sin(Math.min(1,Math.max(0,mix))*Math.PI):0.0;
   const stepSafe=1.0-0.34*morphT;
   gl.uniform1f(US('u_stepK'),STEP.near*stepSafe); gl.uniform1f(US('u_stepFar'),STEP.far*stepSafe);
+  /* AND LENGTHEN THE LOOP BY THE SAME FACTOR. The step shrink above was added alone, which is
+     half a fix: a ray needs distance/step iterations, so cutting the step to 0.66x raises the
+     count by 1/0.66 = 1.52x while the budget stayed at a hard 112. The eps comment 20 lines up
+     measured p99 at 92 steps for rays that hit -- so at peak morph the p99 ray wants ~139 and
+     gets 112. It exits the loop with mid still -1, which is a MISS, and the surface it never
+     reached is a hole. That is the puncturing the step shrink was supposed to remove: the
+     overshoot was fixed and an exhaustion failure was introduced in its place, and both look
+     like the same faceted low-poly wreckage on screen.
+     Budget and step move together, so the reachable DEPTH is unchanged -- this buys no extra
+     range, it just stops the loop ending early where it already had work left. Paid only while
+     morphT>0, i.e. inside a ~3.4s transition, and back to 112 the instant it ends. */
+  const stepBudget=Math.min(224,Math.ceil(STEP.count/stepSafe));
+  gl.uniform1f(US('u_steps'), window.STEPBUDGET||stepBudget);
+  // window.MORPHU=0 restores the old mix() blend for comparison; see evalForm.
+  gl.uniform1f(US('u_morphU'), (window.MORPHU===0)?0:1);
+  gl.uniform1f(US('u_morphK'), MORPH.k); gl.uniform1f(US('u_morphC'), MORPH.comp);
+
   gl.uniform1i(US('u_shaN'),STEP.shaN);
+  gl.uniform1f(US('u_shaJit'), (window.SHAJIT!==undefined)?window.SHAJIT:1.0);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
   // 0.75 of a mesh texel: wide enough to cross a cell boundary, narrow enough not to round off
   // detail the grid actually holds.
-  gl.uniform1f(US('u_nEps'), (volOn&&volTex) ? (2.0*VOL.pad/VOL.res)*0.75 : 0.0018);
+  gl.uniform1f(US('u_nEps'), (volOn&&volTex) ? (2.0*VOL.pad/VOL.res)*0.75 : (window.NEPS||0.0018));
   if(svgTex){ gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,svgTex); gl.activeTexture(gl.TEXTURE0); }
   if(volTex){ gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D,volTex); gl.activeTexture(gl.TEXTURE0); }
   if(bvhNodeTex){ gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D,bvhNodeTex); gl.activeTexture(gl.TEXTURE0); }
