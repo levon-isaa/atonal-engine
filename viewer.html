@@ -3040,7 +3040,38 @@ function applyTier(name){
 // 53.9 at 96, 60.3 at 200 — about 0.06ms per sample, because only pixels that hit the form run
 // the shadow ray at all. 128 buys a 3.1x error cut for ~7% of a frame, which the quality
 // governor absorbs as a hair of render scale.
-const STEP={near:1.45,far:1.75,shaN:128,count:112};  // count = the march budget; see the u_steps upload
+/* NEAR 1.45 -> 1.75, WHICH IS WHERE THE ZOOMED-IN FRAME WAS GOING.
+   Zoomed in, nearly every pixel hits the form and marches to convergence, so the primary march
+   IS the frame -- and the governor has nothing left to pull there: measured at full zoom with
+   rscale, dprScale and the shadow taps all sitting on their floors and the frame still at 74.6ms.
+   The step multiplier is the only lever that makes a HIT ray cheaper rather than making fewer of
+   them.
+   Measured with DIAG 13, which renders the per-pixel step count and so reads the march directly,
+   independent of frame rate (mean steps over every pixel on screen -- the unbiased figure; steps
+   per HIT pixel is not, because a bigger step also makes MISSING rays cheaper and quietly changes
+   which pixels are in the set):
+       near   1.45   1.60   1.75   1.90
+       steps  8.75   7.40   6.39   5.62      control 8.75 -> 8.75, exact
+   and far barely matters at all (1.75 -> 1.90 alone is 8.75 -> 8.51), so far is left where it is.
+   NOTE THAT near HAS NOW CAUGHT UP WITH far, so the `h.x>0.20 ? u_stepFar : u_stepK` branch in
+   the march is currently choosing between two equal numbers and does nothing. Left in place
+   rather than removed: the two are separate knobs with separate justifications and the next
+   measurement may well part them again. It is inert, not wrong -- but it should not be read as a
+   near/far split that is doing work, because right now there isn't one.
+   THE STEP IS NOT FREE AND THE COMMENT ABOVE u_stepK IS RIGHT TO BE CAREFUL: stepping past the
+   surface returns a MISS, and enough of those is the punctured, faceted look this file has
+   already had once. So it was checked for exactly that, on the worst case the morph note names --
+   Lattice->Arc pinned at mix 0.5 -- counting pixels differing by more than 30 levels from a
+   conservative near=1.00 reference, out of 98600:
+       control 0    near 1.45: 63    near 1.75: 75    near 1.90: 78
+   Twelve pixels, at silhouette edges rather than in clusters; a puncture is a hole, and a hole is
+   thousands. Full-frame error moves 1.719 -> 1.876 RMS over the same range.
+   1.75 rather than 1.90 because 1.90 buys another 9 points of march work for a shape of curve
+   that is clearly flattening, and this is the number that punctures the form if it is ever wrong.
+   The three Newton steps after the loop are why the surface survives a coarser march at all: they
+   close the residual the larger step leaves, so what the bigger step costs is march ACCURACY, not
+   surface accuracy. */
+const STEP={near:1.75,far:1.75,shaN:128,count:112};  // count = the march budget; see the u_steps upload
 window.STEP=STEP;   // live-tunable for step/budget A/B; see the u_steps upload
 /* SHADOW TAPS ARE THE GOVERNOR'S FIRST LEVER, AHEAD OF RESOLUTION.
    calcSha is a FIXED-count loop: a lit pixel runs every one of its N samples, each a full mapD().
@@ -3054,10 +3085,17 @@ window.STEP=STEP;   // live-tunable for step/budget A/B; see the u_steps upload
    Half a level of decorrelated grain is not visible. Dropping dprScale to 0.66 -- what the
    governor reached for instead -- softens every edge in the frame. The old order spent the
    expensive quality first because the cheap one was not wired up.
-   The floor is 48: still under a level of error, and it hands the governor roughly 10ms of
-   headroom to reclaim BEFORE it touches a pixel. Full 128 whenever the frame can afford it, and
-   it is the LAST thing restored, because it is the last thing anyone would notice missing. */
-const SHA_FLOOR=48;
+   The floor is 32, and it is the ZOOMED-IN case that sets it. Count the field evaluations a hit
+   pixel actually pays for once the march step is at 1.75: about 19 for the primary march, 3 for
+   the Newton refinement, 4 for AO -- and 48 for the shadow. The shadow is not merely the largest
+   item, it is larger than everything else combined, so at full zoom, where every pixel is a hit
+   pixel, the floor here is what decides the frame. Dropping 48 -> 32 takes a hit pixel from 74
+   evaluations to 58, a fifth of the whole frame, where the march step alone was worth about 9%.
+   Error at 32 is 0.918 RMS levels against the converged reference: still under one level, still
+   decorrelated grain rather than contours, and still a far better thing to spend than the render
+   scale. It is a FLOOR, not a setting -- nothing reaches it while the frame has headroom, and the
+   taps climb back to a full 128 as soon as it does. Raise it if the grain ever reads at rest. */
+const SHA_FLOOR=32;
 let shaScale=1.0;                  // 1 = full taps, 0 = SHA_FLOOR; driven by the quality governor
 const shaTaps=()=>Math.round(SHA_FLOOR+(STEP.shaN-SHA_FLOOR)*Math.max(0,Math.min(1,shaScale)));
 // Morph blend shape. k is the smin fillet joining the two forms mid-transition; comp is how much
