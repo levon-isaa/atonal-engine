@@ -363,6 +363,7 @@ uniform float u_furnace;
 uniform float u_spec,u_alb,u_absorb;
 uniform float u_twoTone;                               // colourway separation across the form
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
+uniform float u_fig;      // figure-ground: darkens the backdrop behind the subject, see bg()
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
 uniform float u_bLow,u_bAir;   // u_bHigh drove the surface noise's frequency and has no other reader
@@ -1549,6 +1550,15 @@ vec3 bg(vec3 rd, vec2 sv){
     vec3 hi=mix(vec3(0.58),B,0.20);                        // deeper up top
     vec3 c=mix(lo,hi,smoothstep(0.42,1.0,h));
     c*=mix(1.0,0.72,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
+    /* SEPARATION HAS TO BE HERE TOO, and this branch is the one that actually needed it. The
+       studio returns early -- deliberately, so the fluid field costs nothing when it is not on
+       screen -- which means the aura below, and the figure-ground dip that rides on it, never
+       run in the scene the viewer opens in. Measured against a cyclorama this bright, the form
+       separated from its background by 14 luminance levels on Tris and by MINUS 2 on Lattice.
+       Its own Gaussian rather than the aura's, because there is no aura in this branch: same
+       shape, centred on the subject, so the cyclorama darkens behind the form and is left alone
+       out at the corners where the falloff above is already doing the work. */
+    c*=1.0-exp(-dot(sv,sv)*2.2)*u_fig;
     return c*(0.85+u_bgAmt*0.25);
   }
   // ---- FLUID: two rounds of domain warping. Warping the noise's INPUT by more noise is what
@@ -1628,6 +1638,24 @@ vec3 bg(vec3 rd, vec2 sv){
   // same colour the material is picking up from u_mood.
   float aur=exp(-dot(sv,sv)*(2.6-u_bLow*1.0-u_energy*0.5));
   col=mix(col, mix(ink,u_mood,0.55), aur*(0.20+u_bLow*0.20+u_pulse*0.14));
+  /* FIGURE-GROUND. The form was not separating from what it sits on, and that -- not the
+     rotation rate and not the silhouette -- is what "no feeling of motion" turned out to be.
+     MEASURED with the subject isolated by DBGMASK, mean luminance inside the silhouette against
+     mean luminance outside it:
+         Tris     form 154.9   backdrop 140.6   separation +14.4   Michelson 0.049
+         Wave     form 150.4   backdrop 138.6   separation +11.8   Michelson 0.041
+         Lattice  form 136.0   backdrop 138.1   separation  -2.1   Michelson 0.008
+     Four percent contrast, and on Lattice the form is fractionally DARKER than the field behind
+     it. The silhouette is not the problem: it changes 54% of its own area every 60 degrees of
+     spin, and the shading inside it spans 155-205 levels. All of that motion is invisible because
+     the object and its background sit at the same luminance, so there is no edge for the eye to
+     track. A 4%-contrast shape can rotate as much as it likes and still read as a still image.
+     The aura above is already a pool anchored to the form's screen position rather than to the
+     frame, so the separation rides on it for free: darken what is directly behind the subject and
+     leave the rest of the colourway alone. That is what a studio does with a dark ground behind a
+     pale subject, and it is why this is a luminance dip rather than more colour -- adding chroma
+     behind a near-white form does not give the eye an edge, only a hue change. */
+  col*=1.0-aur*u_fig;
   // air band lifts a fine sheen across the whole field — hats/shimmer read in the backdrop too
   col+=vec3(0.9,0.95,1.0)*f*u_bAir*0.05;
   col*=mix(1.0,0.76,smoothstep(0.20,1.05,length(sv)));     // soft falloff into the corners
@@ -2867,6 +2895,11 @@ const SHP={edge:1.0, thick:1.0, chamf:0.55};  window.SHP=SHP;
 // User shape parameters, from the sliders. Multipliers on the Director's own values, except
 // mass which is an offset because stroke weight is already an additive term in the profiles.
 const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;
+/* How hard the backdrop darkens directly behind the subject. See the note in bg() for the
+   measurement this exists to fix -- the form was separating from its background by about 13
+   luminance levels, which is a Michelson contrast of 0.04, and on one profile it was zero.
+   window.FIG overrides it live for A/B. */
+const FIG_GROUND=0.26;
 // Film grain, global across every look and filter. amt is a multiplier on the look's own
 // character; 0 is off. See the u_grain upload for why the look can no longer zero it.
 const GRAIN={amt:1.0};  window.GRAIN=GRAIN;
@@ -5390,13 +5423,29 @@ function frame(){
   gl.uniform1f(US('u_svgBevel'),0.014+HITS.air*0.006);
   gl.uniform1f(US('u_gTwist'), tension*1.25+arousal*0.45+Math.sin(time*0.05)*0.12);
   // element count / lattice density — energy packs the structure tighter
-  gl.uniform1f(US('u_gDense'), energy*1.9+BND.high*0.5+SH.count*0.05+PRM.mass);
+  /* ENERGY DRIVES THICKNESS, AND 1.9 WAS TOO MUCH OF IT ON LOUD MATERIAL. Every profile sets its
+     stroke from this -- w = 0.19 + u_gDense*0.03, and the disc radii take u_gDense*0.04 -- so a
+     track that sits near the top of the energy curve, which is what techno does for minutes at a
+     time, holds the form permanently inflated rather than swelling it on a lift. Measured by
+     sweeping PRM.mass, which lands in the same sum, and reading the silhouette's compactness
+     (perimeter^2/area; a disc is 12.57, so lower means rounder and fatter):
+         Tris   mass -1.2  28.4     0  24.87     +1.2  22.1     area +27% across that range
+         Wave   mass -1.2  18.02    0  16.70     +1.2  16.07
+     At energy 0.85 the old coefficient contributed 1.6 of thickness on its own. 1.15 takes that
+     to 1.0, about a 40% cut in the energy-driven part, and the term still moves with the music --
+     what changes is that a loud track no longer parks the form at the fat end of its own range.
+     NOT THE WHOLE STORY, and worth saying so: the base 0.19 in each profile is a larger share of
+     the width than anything this term adds, and it is a design constant rather than a response
+     curve, so it is left alone. This makes the form lean on loud material; it does not make the
+     shapes themselves thinner. */
+  gl.uniform1f(US('u_gDense'), energy*1.15+BND.high*0.5+SH.count*0.05+PRM.mass);
   // member thickness — tension thins the structure until it reads fragile
   gl.uniform1f(US('u_gThick'), Math.max(0.0, 0.75-tension*0.55+SH.thick*0.9));
   // aperture size — valence opens the shell up, darkness closes it in
   gl.uniform1f(US('u_gCut'), Math.max(0.0, 0.25+valence*0.8-darkness*0.35));
   gl.uniform3f(US('u_bgA'),BGA[0],BGA[1],BGA[2]); gl.uniform3f(US('u_bgB'),BGB[0],BGB[1],BGB[2]);
   gl.uniform1f(US('u_bgAuto'),palAuto?1:0); gl.uniform1f(US('u_scene'),scene);
+  gl.uniform1f(US('u_fig'), (window.FIG!==undefined)?window.FIG:FIG_GROUND);
   gl.uniform1f(US('u_groundY'),groundY);
   // brighter, more positive sections separate further into two colourways
   gl.uniform1f(US('u_twoTone'), 0.30+valence*0.45+epic*0.15);
