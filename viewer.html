@@ -408,6 +408,7 @@ uniform float u_keyG,u_fillG,u_ambG;   // key/fill/ambient gains; their RATIO is
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
 uniform float u_envFoot;               // 1 = footprint env LOD on, 0 = off. window.ENVFOOT, for A/B
 uniform float u_edgeGate;              // 1 = metals refuse the additive edge, 0 = old. window.EDGEGATE
+uniform float u_reflTrace;             // 1 = ray-traced self-reflection, 0 = cheap path. window.REFLTRACE
 uniform vec3  u_f0Tint;                // metal reflectance colour: gold is not chrome lit yellow
 uniform float u_wear;                  // edge wear, 0..1; see the WEAR note in the shading
 uniform float u_nobound;               // 1 = march unbounded, as before the ray/sphere test (A/B)
@@ -2157,14 +2158,38 @@ void main(){
     // the trace is spent where it changes the image — measured 22.7fps on glass without this gate
     // against 30 with it, for a term glass cannot show anyway behind its own transmission.
     vec3 refl;
-    if(u_reflect>0.12 && rgh<0.55){
+    if(u_reflect>0.12 && rgh<0.55 && u_reflTrace>0.5){
       float tr=0.04, rocc=1.0; bool hit=false; vec3 hp=p;
+      /* THE HIT EPSILON HAS TO MATCH THE MINIMUM STEP, and it did not: the test was 0.0035
+         against a step floored at 0.012, so the acceptance band was 3.4x finer than the
+         distance the ray moves. A sphere trace cannot resolve a surface more finely than its
+         own minimum step -- a ray advancing 0.012 can straddle a 0.0035 band completely and
+         register no hit while passing well inside it. Whether any given pixel happens to land
+         in the band is then close to arbitrary, and its neighbour lands differently, which is
+         precisely a torn edge in the reflection rather than a smooth one.
+         MEASURED, chrome, on a bit-identical frozen frame, differencing the traced reflection
+         against the cheap path and counting ISOLATED touched pixels -- speckle rather than
+         structure:
+             eps   0.0035  0.006  0.010  0.012  0.014  0.020  0.030
+             iso%  3.09    3.13   2.39   1.60   0.93   0.19   0.04
+             touch 6.11    6.15   6.58   7.31   9.39   17.68  24.16
+         Speckle falls all the way down, but past the step size the touched area runs away -- at 0.020 the
+         trace claims 17.7% of the frame against a 6.1% baseline, which is not recovered grazing
+         hits any more, it is the reflection bleeding into places the ray should have seen the
+         room. The knee sits exactly where the theory puts it. Written as the step itself so the
+         two cannot drift apart again.
+         TWO OTHER CANDIDATES WERE TESTED AND ARE NOT IT, recorded so they are not retried: the
+         distance bound (far 4 / 8 / 16 / 32 gave byte-identical frames, so the march never
+         reaches it) and the iteration budget (28 / 44 / 64 likewise identical). A
+         distance-scaled epsilon also did nothing -- k from 0 to 0.016 moved iso 3.09 to 3.08 --
+         because the hits being missed are at short range, where t*k is still nothing. */
+      const float RSTEP=0.012;               // minimum march step AND the hit epsilon
       for(int i=0;i<28;i++){
         hp=p+R*tr;
         float hh=mapD(hp);
-        if(hh<0.0035){ hit=true; break; }
+        if(hh<RSTEP){ hit=true; break; }
         rocc=min(rocc,6.0*hh/tr);
-        tr+=max(hh,0.012);
+        tr+=max(hh,RSTEP);
         if(tr>4.0) break;
       }
       if(hit){
@@ -5519,6 +5544,7 @@ function frame(){
   // on the SAME frame. Every A/B in this file has to compare one frame; see POSE and VARPIN.
   gl.uniform1f(US('u_envFoot'),(window.ENVFOOT!==undefined)?window.ENVFOOT:1.0);
   gl.uniform1f(US('u_edgeGate'),(window.EDGEGATE!==undefined)?window.EDGEGATE:1.0);
+  gl.uniform1f(US('u_reflTrace'),(window.REFLTRACE!==undefined)?window.REFLTRACE:1.0);
   // f0 is per material and defaults to white (a dielectric's f0 comes from the 0.04 side of the
   // mix, so the value is only read when metal>0). MAT is eased toward MATT every frame, but f0
   // is a discrete identity rather than a level, so it is read straight off the preset.
