@@ -407,6 +407,8 @@ uniform float u_fill;                  // directional fill leg of the rig; 0 abl
 uniform float u_keyG,u_fillG,u_ambG;   // key/fill/ambient gains; their RATIO is the modelling
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
 uniform float u_envFoot;               // 1 = footprint env LOD on, 0 = off. window.ENVFOOT, for A/B
+uniform float u_envFootMax;            // levels the footprint may add. window.ENVFOOTMAX
+uniform float u_reflMat;               // 1 = reflected body shaded as its own material. window.REFLMAT
 uniform float u_edgeGate;              // 1 = metals refuse the additive edge, 0 = old. window.EDGEGATE
 uniform float u_reflTrace;             // 1 = ray-traced self-reflection, 0 = cheap path. window.REFLTRACE
 uniform vec3  u_f0Tint;                // metal reflectance colour: gold is not chrome lit yellow
@@ -2134,7 +2136,7 @@ void main(){
     // How far the reflection sweeps across the room per pixel, as a mip level. See envFootLod:
     // this is the anti-aliasing for the LOOKUP, distinct from the Toksvig widening of rgh
     // above, which is the anti-aliasing for the LOBE.
-    float eFoot=envFootLod(nturn)*u_envFoot;
+    float eFoot=min(envFootLod(nturn), u_envFootMax)*u_envFoot;
     // REFLECTION OCCLUSION. env() is sampled as if the whole room were visible from this
     // point, so concave areas reflect light the geometry actually blocks — which is what makes
     // chrome read as a thin shell instead of a solid object. March a short ray along R and
@@ -2205,11 +2207,30 @@ void main(){
            and the prefiltered HDRI skipped entirely even when it was loaded. The mismatch is
            invisible on a shape that never sees itself and unmissable on one that does, which is
            exactly what the kaleidoscope makes: a ring of lobes all facing each other. */
-        vec3 rc = base*( keyC*(0.95*rNoL*mix(0.35,1.0,calcSha(hp,L,min(u_shaN,40))))*mix(0.35,1.0,rAO)
-                       + envL(rn,1.0)*1.22*mix(0.22,1.0,rAO) );
-        // one cheap gloss term so the reflected surface is not flat matte inside the reflection
-        rc += envL(reflect(R,rn), min(1.0,rgh+0.22), eFoot)*0.22*mix(0.3,1.0,rAO);
-        refl = rc;
+        /* THE REFLECTED BODY HAS TO BE THE SAME MATERIAL, and it was not. What was here shaded
+           it with a diffuse lambert plus an irradiance ambient, then added the mirror at 0.22 --
+           three terms, two of which a metal does not possess at all. kD is correctly zeroed by
+           (1-u_metal) for the primary hit and nothing did the same here, so chrome reflected
+           itself as grey plastic. On an ordinary form that is a small area and the note above
+           was right to call it invisible; the kaleidoscope makes nearly every visible surface a
+           reflection of the petal next to it, so nearly the whole object went matte grey. That
+           is the reported "strange" flat face, and it is why raising the hit epsilon (which made
+           the trace find MORE of these) read as losing quality rather than gaining it.
+           Same construction as the primary hit: diffuse gated by (1-metal), and the mirror
+           weighted by the material's own Fresnel instead of a flat 0.22. f0 is the one computed
+           for the primary hit -- it is the same material, so it is the same reflectance.
+           rgh+0.12 rather than rgh: there is no second bounce, so a perfectly sharp one-bounce
+           mirror would show a hard-edged proxy of the room where a real surface would show the
+           room reflected twice. A small widening is the honest stand-in for the bounce that is
+           not there, and it is much less than the 0.22 blur this replaces. */
+        float rNoV=max(1e-4, dot(rn,-R));
+        vec3 rF=f0+(max(vec3(1.0-rgh),f0)-f0)*pow(1.0-rNoV,5.0);
+        vec3 rDiff = base*(1.0-u_metal*u_reflMat)
+                     *( keyC*(0.95*rNoL*mix(0.35,1.0,calcSha(hp,L,min(u_shaN,40))))*mix(0.35,1.0,rAO)
+                      + envL(rn,1.0)*1.22*mix(0.22,1.0,rAO) );
+        vec3 rSpec = envL(reflect(R,rn), min(1.0,rgh+0.12), eFoot)
+                     *mix(vec3(0.22), rF, u_reflMat)*mix(0.3,1.0,rAO);
+        refl = rDiff + rSpec;
       } else {
         refl = envL(R,rgh,eFoot)*mix(0.35,1.0,clamp(rocc,0.0,1.0));
       }
@@ -5241,7 +5262,16 @@ function frame(){
   // camera feel like it has weight instead of stopping dead with the pointer.
   if(!dragging){ userAzV *= Math.exp(-3.2*dt); userElV *= Math.exp(-3.2*dt);
                  userAz += userAzV*dt; userEl += userElV*dt; }
-  userEl = Math.max(-1.15, Math.min(1.15, userEl));   // never past the poles, where up flips
+  /* NO ELEVATION LIMIT. This used to clamp to +/-1.15 rad -- about 66 degrees -- with the reason
+     given as "never past the poles, where up flips". The flip is real but it is not a reason to
+     stop: it happens because the right vector below is built from a world up of +Y, which
+     degenerates when the view direction becomes vertical. Flipping that up with the crossing (see
+     upSign) carries the basis through the pole and out the other side, which is what a full orbit
+     is. The angles are wrapped rather than clamped so a long session cannot grind away float
+     precision by accumulating turns; 2*PI is invisible to sin and cos. */
+  const TAU=6.283185307179586;
+  userEl = ((userEl % TAU) + TAU) % TAU; if(userEl > Math.PI) userEl -= TAU;
+  userAz = ((userAz % TAU) + TAU) % TAU; if(userAz > Math.PI) userAz -= TAU;
   const spin = formSpin;
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
   // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
@@ -5375,7 +5405,20 @@ function frame(){
   const cosE=Math.cos(ce);
   const roX=Math.sin(ca)*dolly*cosE, roY=CM.height+Math.sin(ce)*dolly, roZ=Math.cos(ca)*dolly*cosE;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
-  let rx=fz,ry=0,rz=-fx; const rl=Math.hypot(rx,ry,rz)||1; rx/=rl;ry/=rl;rz/=rl;
+  /* THE UP FLIPS WITH THE POLE CROSSING. rx,rz are the world-up cross forward, with up pinned to
+     +Y -- which is why elevation had to be clamped short of vertical: at the pole this is the zero
+     vector and past it the handedness inverts, so the image mirrors. Taking the sign from cos(ce)
+     flips up at exactly the crossing, so the basis stays right-handed all the way round and the
+     orbit is continuous through the top and the bottom.
+     The epsilon is for the pole itself, where forward is exactly vertical and this cross product
+     is degenerate: hypot returns 0, the ||1 guard leaves an unnormalised zero vector, and the
+     frame has no right vector at all. One frame in a full turn, but it is a black frame if it
+     lands, so it is nudged rather than guarded after the fact. */
+  const upSign = (Math.cos(ce) >= 0) ? 1 : -1;
+  let rx=fz*upSign, ry=0, rz=-fx*upSign;
+  let rl=Math.hypot(rx,ry,rz);
+  if(rl < 1e-6){ rx=1; ry=0; rz=0; rl=1; }
+  rx/=rl;ry/=rl;rz/=rl;
   let ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
   // emotional camera: tension leans the horizon (a held lean, never a rocking motion),
   // epicness opens the lens out so big moments feel wider
@@ -5543,6 +5586,8 @@ function frame(){
   // window.ENVFOOT=0 turns the footprint env LOD off, so the two sides of it can be compared
   // on the SAME frame. Every A/B in this file has to compare one frame; see POSE and VARPIN.
   gl.uniform1f(US('u_envFoot'),(window.ENVFOOT!==undefined)?window.ENVFOOT:1.0);
+  gl.uniform1f(US('u_envFootMax'),(window.ENVFOOTMAX!==undefined)?window.ENVFOOTMAX:7.0);
+  gl.uniform1f(US('u_reflMat'),(window.REFLMAT!==undefined)?window.REFLMAT:1.0);
   gl.uniform1f(US('u_edgeGate'),(window.EDGEGATE!==undefined)?window.EDGEGATE:1.0);
   gl.uniform1f(US('u_reflTrace'),(window.REFLTRACE!==undefined)?window.REFLTRACE:1.0);
   // f0 is per material and defaults to white (a dielectric's f0 comes from the 0.04 side of the
@@ -6258,7 +6303,7 @@ async function loadSVGShape(text, name) {
     // any window size.
     const k = 3.0 / Math.max(1, innerHeight);
     userAz -= dx * k;
-    userEl = Math.max(-1.15, Math.min(1.15, userEl + dy * k));
+    userEl = userEl + dy * k;            // unbounded; wrapped in the frame loop, see there
     // Release velocity from the REAL time between events, not an assumed 60Hz frame. Dividing
     // by a hardcoded 1/60 makes the throw a function of the pointer's report rate rather than
     // the hand's actual speed: on a slow event stream it over-scales enormously (a two-event
