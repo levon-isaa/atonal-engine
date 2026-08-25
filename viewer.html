@@ -324,7 +324,9 @@ out vec4 o;
 uniform vec2 u_res; uniform float u_time;
 uniform vec3 u_ro,u_rt,u_up,u_fw; uniform float u_fov;
 uniform float u_spin;
-uniform float u_wob,u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
+// u_wob is gone: the surface-noise amplitude it drove was removed with the trembling (see the
+// note above formScale), which left the uniform declared and uploaded with nothing reading it.
+uniform float u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform float u_edgeVar,u_thickVar,u_chamf;   // shape refinement; see extr()
 /* HARD-SURFACE LOOK. Three levers, all zero in every other look, so this costs nothing when off.
    The target is what makes a flat-shaded product render legible: each face holds ONE tone, and
@@ -340,7 +342,7 @@ uniform float u_hardAmbK;  // flat-ambient gain, and u_hardKeyK the key gain: to
 uniform float u_hardKeyK;
 uniform float u_segN,u_pEdge,u_pDepth;        // user shape parameters
 uniform float u_room;                         // reflected room structure, 0 = plain gradient
-uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_flux,u_bgAmt;
+uniform vec3 u_mood; uniform float u_energy,u_tension,u_arousal,u_darkness,u_env,u_pulse,u_bgAmt;
 uniform float u_metal,u_rough,u_reflect,u_iridAmt,u_transl,u_emis,u_trans;
 uniform float u_cc,u_ccRough,u_sssD;   // clearcoat weight/roughness; subsurface extinction
 // Thin-film BAND FREQUENCY. This was hard-coded at 1.7, which puts roughly ONE colour cycle
@@ -365,7 +367,13 @@ uniform float u_twoTone;                               // colourway separation a
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
 uniform float u_fig;      // figure-ground: darkens the backdrop behind the subject, see bg()
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
-uniform float u_hSub,u_hLow,u_hMid,u_hHigh,u_hAir;
+/* THREE OF THE FIVE BANDS ARE NOT HERE ANY MORE. sub, low and mid reach the shader through
+   the LIGHT RIG instead -- u_ambPulse, u_keyPulse and u_fillPulse, each computed in JS from its
+   own band -- so the raw envelopes had no reader left once formScale stopped punching the size.
+   They were still uploaded every frame, which is the shape a dead uniform takes: no error, no
+   effect, and a name that reads as if the band were wired. high and air stay because they ARE
+   read here directly, for the surface glint and the silhouette rim respectively. */
+uniform float u_hHigh,u_hAir;
 uniform float u_bLow,u_bAir;   // u_bHigh drove the surface noise's frequency and has no other reader
 // emotion -> geometry: these drive the construction parameters of the forms
 uniform float u_gTwist,u_gDense,u_gThick,u_gCut;
@@ -996,24 +1004,25 @@ float evalForm(vec3 p){
    get no kaleidoscope, which is the honest answer for a shape the operation cannot survive.
 
    Reasoning alone had already got this wrong twice in this file, in both directions. */
-/* NO LONGER DRIVES THE FOLD -- kalOrder() below takes the order from u_kalSeg instead. Kept
-   because it is the record of which profile is symmetric under what, which the Segments row and
-   the notes below still refer to. */
-float foldOrder(float m){
-  if(u_volOn>0.5 || u_svgOn>0.5) return 0.0;
-  float n=clamp(floor(u_segN+0.5),2.0,8.0);
-  if(m<1.5)      return n;                       // Tris, Clover
-  else if(m<2.5) return 0.0;                     // Arc -- fragments, see the table
-  else if(m<5.5) return 1.0;                     // Chevron, Wave, Plate -- one mirror, measured safe
-  else if(m<6.5) return n;                       // Gear: C_2n contains C_n
-  else if(m<7.5) return clamp(n,2.0,6.0);        // Knot, at its own clamp
-  return 0.0;                                    // Lattice -- fragments
-}
+/* WHICH PROFILE IS SYMMETRIC UNDER WHAT. This was a function, foldOrder(), until the fold order
+   became a setting (see kalOrder below); it has been uncalled ever since, so it is a comment now.
+   The table is the part with value, and a dead function is a thing the next reader has to prove
+   is dead before they can ignore it:
+
+       Tris, Clover          C_n, n = the Segments count
+       Arc                   none -- a broken ring, it fragments
+       Chevron, Wave, Plate  one mirror line only
+       Gear                  C_n (its C_2n contains C_n)
+       Knot                  C_n, clamped to 2..6
+       Lattice               none -- it fragments
+       mesh, SVG             none -- neither is a generated profile at all
+
+   The Segments row still keys off this same split -- see SEG_SHAPES in the panel code. */
 /* The order the FOLD may use, which is the order the whole evaluated field has. evalForm blends
    two modes whenever u_mix is live, and a blend of a C_3 and a C_5 form is neither -- so the two
    have to agree before anything may be folded. */
-/* THE ORDER IS A SETTING NOW, NOT THE PROFILE'S OWN SYMMETRY. foldOrder() above ties N to what
-   each profile happens to be symmetric under, because a wedge cut through a form that is not
+/* THE ORDER IS A SETTING NOW, NOT THE PROFILE'S OWN SYMMETRY. The table above records what each
+   profile happens to be symmetric under, and the fold used to be tied to it, because a wedge cut through a form that is not
    C_N slices its arms apart. The table is honest about the cost: Arc and Lattice return 0, so
    the kaleidoscope did NOTHING on them, and Chevron/Wave/Plate return 1 -- a single mirror line,
    which doubles the form into a bilaterally symmetric lump rather than making a rosette. That is
@@ -2337,8 +2346,9 @@ vec3 fxaa(vec2 uv,vec2 r){
   vec3 b=a*0.5+0.25*(texture(u_tex,uv+dir*(-0.5)).rgb+texture(u_tex,uv+dir*0.5).rgb);
   float lb=luma(b); return (lb<lmin||lb>lmax)?a:b;
 }
-float r2(vec2 p){return fract(dot(p,vec2(0.7548776662,0.5698402909)));}
-/* r2() IS NOT A HASH, AND BOTH NOISE TERMS BELOW USED IT AS ONE. It is the R2 low-discrepancy
+/* r2() WAS NOT A HASH, AND BOTH NOISE TERMS BELOW USED IT AS ONE. It is gone now -- gh21 below
+   replaced both call sites -- but the reasoning is kept, because the mistake is an easy one to
+   make a second time. It was the R2 low-discrepancy
    SEQUENCE: fract(dot(p,alpha)), a linear ramp wrapped by fract. That is the right tool for
    spreading N samples over a unit square and the wrong one for per-pixel noise, because over a
    pixel LATTICE a wrapped ramp is a set of parallel stripes. Measured at the grain's own scale
@@ -3281,6 +3291,28 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
    with the track. A multiplier keeps the lock and still lets the whole thing be slowed to a
    crawl or stopped. Zero is a legitimate setting: it is how you hold a pose. */
 const MOT={spin:1, tumble:1, swirl:1, orbit:1}; window.MOT=MOT;
+/* SELF-SPIN. A constant turn about the form's own axis, ADDED to whatever the Director is doing
+   rather than replacing it -- so the object is always visibly rotating around itself, and the
+   music modulates that rather than owning it outright.
+   WHY IT WAS NEEDED. The Director's rate is now properly ranked against the track (see
+   driveSpan), which means a quiet section genuinely lands on the ladder's slow floor: measured
+   at 22 beats per revolution, about 32 deg/s at 120bpm, and the outro of the test track holds
+   that for its last 22 seconds. That is correct as a musical decision and still reads as barely
+   moving if it is the ONLY thing turning the form.
+   IT IS A RATE, IN BEATS, like everything else here, so it stays locked to the grid and a faster
+   track self-spins faster. 36 beats is 18s per revolution at 120bpm, about 20 deg/s.
+   SCALED BY MOT.spin, which is the panel dial -- so Freeze (which sets every dial to 0) still
+   holds the form completely still. A baseline that Freeze could not stop would be a bug, not a
+   feature: Freeze exists so a still frame can be looked at.
+   THE COST is that it compresses the dynamic range the ladder just bought, because a constant
+   added to every rate raises the quiet end proportionally more than the loud one. The constant
+   is measured: idle went from 45.0 to 64.7 deg/s, so it is +19.7, and being a constant it is the
+   same in every section. Applied to the measured section means of the test track, 32.6 -> 138.3
+   deg/s becomes 52 -> 158 and the spread falls from 4.24x to 3.0x -- that second pair is
+   arithmetic on the first, not a second measurement. That is the trade this feature IS;
+   SELFSPIN.beats is the dial for it, and a larger number means a slower baseline and less
+   compression. Set SELFSPIN.on=false to get the pure Director behaviour back. */
+const SELFSPIN={on:true, beats:36}; window.SELFSPIN=SELFSPIN;
 const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, off:0, org:[0,0], ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
 let filtBands=8, filtFolds=6, thermOff=0;   // held counts; see the drive block for why
 /* ======================= ROUTING MATRIX =======================
@@ -3415,8 +3447,16 @@ const modPeak=t=>MODB.reduce((a,r)=>a+(r.t===t?Math.abs(r.a):0),0);
    later session started with an empty patch and an engine that looked broken. The routes are
    derived from the track, so they are rebuilt on load and there is nothing worth carrying over.
    The old keys are cleared so an existing install does not keep a stale patch around. */
+/* CALLED ONCE, AT LOAD. This clears the two keys the routing panel used to persist, and it was
+   written when that panel was removed -- but nothing ever called it, so the keys are still sitting
+   in the localStorage of every browser that ran a build with the panel in it (confirmed: a fresh
+   profile here still had atonal.mod and atonal.modmode). Nothing reads them any more, so they are
+   harmless, but they are also a saved setting for a feature that no longer exists, which is
+   exactly the kind of thing that confuses the next person to open the storage inspector.
+   A dead function whose job still needs doing is worth wiring rather than deleting. */
 function modSave(){ try{ localStorage.removeItem('atonal.mod');
   localStorage.removeItem('atonal.modmode'); }catch(e){} }
+modSave();
 /* CELL SIZE IS PER MODE, and it starts at the bottom of the range.
    One shared value starting at 14 was wrong at both ends. On the halftones and Pixelate a cell
    that size is coarse enough to destroy the subject -- the form stops being readable and the
@@ -3485,11 +3525,12 @@ function kalPhaseFor(t0){
   const h=Math.abs(Math.sin(t0*12.9898)*43758.5453)%1;
   return 0.35+h*1.30;
 }
-// Ribbon twist: integer only (see the shader note), latched and cross-faded so it never pops.
-// Vestigial: the Ribbon it cross-faded is gone. Kept only because the section-change handler
-// and the uniform upload still reference it; the shader no longer declares u_twA/u_twB, so
-// those uploads resolve to a null location and are silent no-ops.
-let twA=3, twB=3, twMix=0;
+/* THE RIBBON TWIST IS GONE, all of it. The Ribbon profile it cross-faded was removed long ago;
+   what was left was twA/twB/twMix being latched on every section boundary, eased on every frame,
+   and uploaded to u_twA/u_twB/u_twMix -- which the shader has not declared for just as long, so
+   getUniformLocation returned null and every one of those uploads was a silent no-op. It had
+   been kept "because the section handler and the uniform upload still reference it", which is
+   circular: the only thing it fed was itself. */
 let scene=0;                                          // 0 colour field (default), 1 studio
 let groundY=-1.05;
 let camKick=0;                      // decaying angular OFFSET from low/sub onsets (never velocity)
@@ -3673,8 +3714,14 @@ function motionPeriodsFor(s){
   return {spin:base, tumble:base*nT, swirl:base*Math.max(1.2,nS)};
 }
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
-const VAR ={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
-const VART={tilt:0,twist:0,ring:0,wob:0,hue:0,countMul:1,thickMul:1};
+/* FOUR OF THESE SEVEN WERE ROLLED AND NEVER READ. twist, ring, countMul and thickMul were
+   re-rolled on every section boundary and eased toward their targets on every frame, and no
+   uniform, no shader term and no other JS ever looked at them -- countMul had even been written
+   up as "rolled every section and never read by anything" in the note below, which describes the
+   state it was left in rather than one that was fixed. wob goes with them: the shader term it
+   fed was removed with the trembling. What is left is the two that do something. */
+const VAR ={tilt:0,hue:0};
+const VART={tilt:0,hue:0};
 let lastSecKey='';
 function rerollVariant(){
   // VARPIN neutralises the per-section random variant. It has to exist for the same reason POSE
@@ -3682,16 +3729,10 @@ function rerollVariant(){
   // two builds timed across separate page loads are otherwise being compared on two different
   // scenes. A frame-time A/B without this is not a comparison. (Learned the hard way: a 73 ms
   // vs 50 ms result that looked like a clean win was two different variants.)
-  if(window.VARPIN||location.search.indexOf('varpin')>=0){ VART.tilt=0; VART.twist=0; VART.ring=0; VART.wob=0; VART.hue=0.5;
-                     VART.countMul=1; VART.thickMul=1; return; }
+  if(window.VARPIN||location.search.indexOf('varpin')>=0){ VART.tilt=0; VART.hue=0.5; return; }
   const R=Math.random;
   VART.tilt=(R()-0.5)*0.5;
-  VART.twist=(R()-0.5)*0.9;
-  VART.ring=R()<0.45?0:(0.4+R()*0.6);
-  VART.wob=R()<0.5?0:(0.25+R()*0.6);
   VART.hue=R();
-  VART.countMul=0.8+R()*0.7;
-  VART.thickMul=0.85+R()*0.5;
 }
 /* SEGMENT COUNT, ON SECTION BOUNDARIES, FROM THE MUSIC.
    The reference's most visible motion is not its rotation, it is its DENSITY: over eight seconds
@@ -4795,8 +4836,7 @@ function frame(){
       // base mid-bloom is the jump the old note warns about -- what is safe is the sweep, not a
       // new starting point under a form that is already folded.
       if(kalAmt<0.02) kalBase=kalPhaseFor(s.t0);
-      const want=2+Math.round(Math.max(0,Math.min(1,s.energy))*2);   // 2..4 twists, per SECTION
-      if(want!==twA && twMix===0){ twB=want; twMix=1e-4; } }
+      }
     // predictive anticipation: ramp before a drop
     const p=nextPrediction(t);
     if(p){ const eta=p.t-t;
@@ -4889,7 +4929,6 @@ function frame(){
   // per-band envelopes: decay the transient, then smooth its attack so hits land soft
   for(const b of BANDS){ HIT[b]*=Math.exp(-DECAY[b]*dt);
     HITS[b]+=(HIT[b]-HITS[b])*(1-Math.exp(-ATTACK[b]*dt)); }
-  if(twMix>0){ twMix=Math.min(1,twMix+dt/1.4); if(twMix>=1){ twA=twB; twMix=0; } }
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
   // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
   // individual sounds nudge the rotation — articulate, but damped so it never jitters
@@ -4959,7 +4998,9 @@ function frame(){
      the integration variable should be beats -- see beatsAtTime for the three ways the old
      seconds-times-estimated-bpm version lost the grid. Same rates, same feel, locked clock. */
   const dBeats=musicalStep(dt, rawMs/1000);
-  formSpin   += 2*Math.PI*dBeats/MOTP.spin  *rSpin;
+  // The Director's rate plus the baseline, as one integration -- see SELFSPIN above.
+  const selfRate = (SELFSPIN.on && SELFSPIN.beats>0) ? MOT.spin/SELFSPIN.beats : 0;
+  formSpin   += 2*Math.PI*dBeats*(rSpin/MOTP.spin + selfRate);
   formTumble += 2*Math.PI*dBeats/MOTP.tumble*rTum;       // second axis, about X
   formSwirl  += 2*Math.PI*dBeats/MOTP.swirl *rSwi;       // third axis, about Z
   /* SYNC READOUT, console-only. tBeats is where the MUSIC is, in beats, straight off the audio
@@ -5020,7 +5061,9 @@ function frame(){
   // spinKick is gone. Feeding onsets into the rotation at all — as velocity OR as a decaying
   // offset — is what read as jiggle: something in the mix hits on almost every frame, so the
   // form sat permanently trembling around its own axis instead of turning. The beat still
-  // lands, via scale (u_pulse / u_hLow), which is radial and so does not fight the rotation.
+  // lands, via the light rig (u_keyPulse and the rest), which changes how the form is LIT rather
+  // than where it is, and so does not fight the rotation. It used to land via scale, which is
+  // what the note above formScale is about.
   // AUTO-ROTATE is a gate on the Director's orbit only. Everything else the Director decides —
   // framing distance, height, roll, the dolly on the kick — keeps running, because those are
   // composition decisions rather than "movement the user might want to take over".
@@ -5148,10 +5191,15 @@ function frame(){
         extrusion, which neither of those two numbers knows about.
 
      2. THE SCALE WAS THE BASE ONE. sBase deliberately leaves out the beat terms, because the
-        camera must not cancel the punch it is framing (see the dolly below). But formScale() in
-        the shader DOES include them -- u_pulse, u_hLow, u_hSub, up to +16% together -- so on a
+        camera must not cancel the punch it is framing (see the dolly below), while formScale()
+        in the shader included them -- u_pulse, u_hLow, u_hSub, up to +16% together -- so on a
         kick the body grew by up to a sixth past the height the floor had been placed for. Which
         is exactly why it dipped through on beats and looked fine between them.
+        THOSE BEAT TERMS ARE GONE from formScale now (see the note there), so the +0.10 in sCeil
+        below is buying headroom against a swell that no longer happens. It is left in because a
+        ceiling that is too generous places the floor slightly low and nothing else -- whereas
+        trimming it to match would put the plane exactly on the deepest reachable point, with no
+        margin for the next term someone adds to formScale.
 
      Both are fixed by asking a different question. The FIELD already guarantees a bound: map()
      early-outs on length(p) - 1.45, so no form, at any orientation, extends past 1.45 object
@@ -5216,12 +5264,6 @@ function frame(){
   // the section's held lean plus the tumble, as ONE angle -- see TUMBLE_BEATS for why they are
   // not two uniforms
   gl.uniform1f(US('u_tilt'),VAR.tilt+formTumble);
-  // u_wob was declared, read by map()'s surface-noise amplitude, and never uploaded — so it read
-  // 0 forever and its term was dead, while rerollVariant kept choosing a value for it every
-  // section. Either the variation was meant to exist or the uniform was not; this wires it, which
-  // is what the reroll and the shader both already assume. Amplitude is unchanged: it enters the
-  // same na budget at 0.010, alongside terms of 0.030 and 0.014.
-  gl.uniform1f(US('u_wob'),VAR.wob);
   gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_swirl'),formSwirl);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
@@ -5306,7 +5348,7 @@ function frame(){
   if(Math.abs(hRot)>0.001) MK=hueRot(MK,hRot*6.2831853);   // turns -> radians
   gl.uniform3f(US('u_mood'),MK[0],MK[1],MK[2]);
   gl.uniform1f(US('u_energy'),energy); gl.uniform1f(US('u_tension'),tension); gl.uniform1f(US('u_arousal'),arousal);
-  gl.uniform1f(US('u_pulse'),pulseS); gl.uniform1f(US('u_flux'),flux);
+  gl.uniform1f(US('u_pulse'),pulseS);
   // PACE from the beat envelope and the kick; EMOTION sets how hard each beat lands. A calm
   // section barely breathes, a high-arousal one throws the key a third brighter on every hit.
   // pulseS is already tempo-locked (it is driven by the beat list), so the rate follows the
@@ -5344,8 +5386,9 @@ function frame(){
   gl.uniform1f(US('u_keyPulse'),keyPulse); gl.uniform1f(US('u_rimPulse'),rimPulse);
   gl.uniform1f(US('u_fillPulse'),fillPulse); gl.uniform1f(US('u_ambPulse'),ambPulse);
   gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
-  gl.uniform1f(US('u_hSub'),HITS.sub); gl.uniform1f(US('u_hLow'),HITS.low);
-  gl.uniform1f(US('u_hMid'),HITS.mid); gl.uniform1f(US('u_hHigh'),HITS.high);
+  // sub / low / mid are not uploaded: they drive the light rig from JS instead. See the
+  // uniform block for which band goes where.
+  gl.uniform1f(US('u_hHigh'),HITS.high);
   gl.uniform1f(US('u_hAir'),HITS.air);
   gl.uniform1f(US('u_bLow'),BND.low);
   gl.uniform1f(US('u_bAir'),BND.air);
@@ -5483,8 +5526,6 @@ function frame(){
   gl.uniform1f(US('u_groundY'),groundY);
   // brighter, more positive sections separate further into two colourways
   gl.uniform1f(US('u_twoTone'), 0.30+valence*0.45+epic*0.15);
-  gl.uniform1f(US('u_twA'),twA); gl.uniform1f(US('u_twB'),twB);
-  gl.uniform1f(US('u_twMix'), twMix>0 ? twMix*twMix*(3-2*twMix) : 0);
   gl.uniform1f(US('u_darkness'),darkness);
   gl.uniform1f(US('u_env'),1.0-darkness*0.5);
   // Finish blends the material's roughness toward a target rather than replacing it, so a matte
@@ -6176,12 +6217,41 @@ addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/s
    "this is broken". Checked against the shaders rather than remembered: the four listed here are
    exactly the p2* functions with no u_segN in them. */
 const SEG_SHAPES={'0':1,'1':1,'6':1,'7':1,'8':1};
+/* WHAT EACH FORM SOURCE CAN ACTUALLY USE. Three of the shape sources are not generated profiles
+   at all, and the controls that only make sense for a profile do nothing on them -- silently,
+   until now. Read from the field functions rather than from intent:
+
+     generated   evalMode -> the p2* profiles. Everything applies, except Segments, which only
+                 two profiles are built to repeat (SEG_SHAPES; the row was already greyed).
+     Custom SVG  mSVG reads u_svgDepth and u_svgBevel -- so Depth and Edge reach it -- and
+                 nothing else. Segments and Mass have no term in it. Mass feeds u_gDense, which
+                 belongs to the profile code mSVG replaces.
+     Reference   mVol is a lookup into a baked volume texture. NONE of the four shape parameters
+     mesh        appear in it, and kalOrder() returns 0 whenever u_volOn is set, so Kaleido does
+                 nothing either -- the mesh's primary ray is a BVH traversal that never calls
+                 map(), so a fold would move the shadows and not the surface.
+
+   Greying is the honest signal and it is already the pattern here: .inert dims the row to 38%
+   and takes the pointer events off, so the control still reads but cannot be moved. Better than
+   disabling it outright, which loses the value it is showing. */
 function segRow(){
   const v=$('selShape').value;
-  const uses = SEG_SHAPES[v] || v==='auto';        // Auto can land on any of them
-  $('pSeg').parentElement.classList.toggle('inert', !uses);
+  const mesh = (v==='mesh'), svg = (v==='svg');
+  // Auto can land on any generated profile, so it is treated as "uses everything".
+  const seg = !mesh && !svg && (SEG_SHAPES[v] || v==='auto');
+  const inert=(id,dead)=>{ const el=$(id); if(el) el.parentElement.classList.toggle('inert', !!dead); };
+  inert('pSeg',   !seg);
+  inert('pMass',  mesh || svg);      // u_gDense is a profile term; neither source has one
+  inert('pEdge',  mesh);             // reaches the SVG as its bevel, nothing on the mesh
+  inert('pDepth', mesh);             // reaches the SVG as its half-depth, nothing on the mesh
+  inert('selKal', mesh);             // kalOrder() returns 0 for u_volOn -- see the table above
 }
 $('selShape').addEventListener('change',e=>{ const v=e.target.value;
+  /* FIRST, not last. segRow() used to be the final statement of this handler, and both the mesh
+     and the SVG branch return before reaching it -- so the one place its greying mattered most
+     (the mesh, where all four shape parameters AND the kaleidoscope are inert) was the one place
+     it never ran. It only reads the select's value, which is already updated here. */
+  segRow();
   if(v==='mesh'){
     // BOTH: the BVH draws the primary ray exactly, while the baked field still answers the
     // ambient-occlusion, shadow and reflection-occlusion marches, which only need an
@@ -6204,7 +6274,7 @@ $('selShape').addEventListener('change',e=>{ const v=e.target.value;
   if(v==='svg'){ if(svgTex){ svgOn=true; autoShape=false; } else $('svgfile').click(); return; }
   svgOn=false;
   if(v==='auto'){ autoShape=true; } else { autoShape=false; setMode(+v); }
-  segRow(); });
+  });
 segRow();
 $('selMat').addEventListener('change',e=>{ const m=MATS[e.target.value]; if(m){ Object.assign(MATT,m); matName=e.target.value; } });
 $('selFinish').addEventListener('change',e=>{ const f=FINISHES[e.target.value]; if(f) Object.assign(FINT,f); });
@@ -6370,7 +6440,7 @@ function rollAll(seedStr){
   // ---- things every family gets, rolled BEFORE the recipe so the recipe can override them
   setCtl('selPal', pick(r,['auto','auto','auto','blood','acid','ultra','cyber','solar','mono']));
   /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count and only two of the six
-     profiles use it (p2Tris and p2Clover -- see foldOrder()); on the others the
+     profiles use it (p2Tris and p2Clover -- see the symmetry table in the shader); on the others the
      slider is inert, so rolling a high count there is a roll that did nothing. And the Arc is a
      broken ring: repeated eight times it stops reading as a single stroke. */
   const shape=pick(r,['0','1','2','3','4','5','6','7','8','6','7','8']);   // the complex three, twice as often
