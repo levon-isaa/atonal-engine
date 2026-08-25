@@ -4155,10 +4155,41 @@ let lastBeatT=-1, lastBeatDown=false;   // last beat crossed and whether it was 
    an event if there was time to settle into what it interrupted. 32 puts the floor at 16s at
    120bpm and leaves the boundaries as the thing that usually fires. */
 const REFORM_MIN_BEATS=32;
-const MORPH_BEATS=8;             // two bars at 4/4; see the morph advance
+/* AND A FLOOR IN SECONDS, because a beat is not a fixed amount of time. Every limit here was in
+   beats, which is right for WHERE a change lands -- on a downbeat -- and wrong for HOW OFTEN one
+   happens. How often a form should change is a compositional question answered in seconds; the
+   music decides the moment, not the rate. Left in beats alone the spacing scales with 60/bpm:
+
+       bpm    min gap (32 beats)   at a boundary (16)   morph (8)
+        88          21.8s                10.9s            5.5s
+       120          16.0s                 8.0s            4.0s
+       146          13.2s                 6.6s            3.3s
+       176          10.9s                 5.5s            2.7s
+
+   Two tracks uploaded to this build analysed at 146 and 176. At 176 a new shape every 5.5s with
+   a 2.7s melt leaves the form in transition half the time, which is the reported "changing very
+   quickly" -- and nothing about the code was different from the 120bpm case that reads as calm.
+   14s matches what 32 beats buys at 120bpm, so a fast track now gets the pacing a moderate one
+   always had, while a slow track keeps its own longer spacing (the beat rule still binds below
+   about 137bpm). Both gates must pass. */
+const REFORM_MIN_SECS=14;
 const REFORM_MAX_WAIT=4;         // beats a pending change may wait for its downbeat
+let lastReformSec=-1e9;
+/* THE MELT IS A WHOLE NUMBER OF BARS, chosen for how long that is. 8 beats is two bars, which
+   was picked against 4 seconds at 120bpm -- but the same 8 beats is 2.7s at 176 and 5.5s at 88,
+   so the one duration that was actually chosen only holds at one tempo. Picking whichever of
+   1, 2 or 4 bars lands closest to 4 seconds keeps the transition bracketed by the music, which
+   is the whole point of counting it in beats, and keeps it the length it was designed to be. */
+function morphBeats(){
+  const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
+  let best=8, err=1e9;
+  for(const b of [4,8,16]){ const e=Math.abs(b*60/bpm-4.0); if(e<err){ err=e; best=b; } }
+  return best;
+}
 function requestReform(energy,beatNow){
   if(beatNow-lastReformBeat < REFORM_MIN_BEATS) return;
+  const nowSec=(typeof pos==='function')?pos():0;
+  if(nowSec-lastReformSec < REFORM_MIN_SECS) return;
   reformWant={energy, at:beatNow};
 }
 /* THE PACE ARRIVES WITH THE FORM. The section's motion periods used to be applied the instant
@@ -4178,7 +4209,8 @@ function commitReform(beatNow){
      landed inside the first one and restarted it. The form never settled into either shape.
      The request stays pending instead and takes the first downbeat after the morph finishes. */
   if(phase===1) return;
-  lastReformBeat=beatNow; const e=reformWant.energy; reformWant=null; triggerReform(e);
+  lastReformBeat=beatNow; lastReformSec=(typeof pos==='function')?pos():0;
+  const e=reformWant.energy; reformWant=null; triggerReform(e);
 }
 function triggerReform(energy){ const nm=chooseMode(energy); if(nm===mode&&phase===0) return; mode2=nm; mix=0; phase=1; }
 function setMode(m){ if(m===mode&&phase===0) return; mode2=m; mix=0; phase=1; }   // manual morph to a chosen style
@@ -5074,7 +5106,11 @@ function frame(){
          form was in transition two thirds of the time and never held a shape long enough to be
          one. Half the normal spacing still lets every real section change through while keeping
          a bar of stillness on either side of it. */
+      // A boundary gets priority on BOTH gates, at half spacing each -- relaxing only the beat
+      // one would leave the seconds floor blocking every boundary change on a fast track,
+      // which is the opposite of what the priority is for.
       if(autoShape){ lastReformBeat=Math.min(lastReformBeat, beatsAtTime(t)-REFORM_MIN_BEATS/2);
+                     lastReformSec =Math.min(lastReformSec,  t-REFORM_MIN_SECS/2);
                      requestReform(s.energy, beatsAtTime(t)); }
       secERef=s.energy;
       // held for the same downbeat the shape change lands on; see commitReform
@@ -5082,7 +5118,19 @@ function frame(){
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
       sectRand=Math.random();                       // the matrix's 'Section step' source
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
-      segNow=segForSection(s);                        // one step, on the boundary
+      /* ONE RUNG PER BOUNDARY, not a jump to wherever the mapping points. The mapping spans the
+         whole 2..8 the profiles allow, so two consecutive sections can ask for 3 and then 7 --
+         and because the count is an integer the profiles read through int(), that arrives as a
+         single-frame pop from three broad blades to seven fine ones. Stepping toward the target
+         instead lets the density DRIFT across a few sections, which is the gesture the note above
+         describes ("six broad petals to about twenty fine spikes and back") rather than a cut.
+         Nothing is lost: sections are 10-15s apart, so the full range is still reachable inside
+         a minute, and the drive keeps pointing at the same place until it gets there.
+         A DROP KEEPS ITS CUT. That is the one moment the form is supposed to change instantly,
+         and the Director already labels it. */
+      { const segWant=segForSection(s);
+        segNow = (s.label==='drop') ? segWant
+               : segNow + Math.max(-1, Math.min(1, segWant-segNow)); }
       // The section's hash is the STARTING angle now, not the whole story: kalSpin carries it on
       // from there every frame. Still gated on the form being unfolded, because re-seeding the
       // base mid-bloom is the jump the old note warns about -- what is safe is the sweep, not a
@@ -5407,7 +5455,7 @@ function frame(){
      12fps it trades a slightly late landing for a morph that still reads as continuous. The
      governor fix above is the real cure; this is what keeps a GC pause or a tab switch from
      tearing a transition in half. */
-  else if(phase===1){ mix+=Math.min(dBeats/MORPH_BEATS, 0.02); if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  else if(phase===1){ mix+=Math.min(dBeats/morphBeats(), 0.02); if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   /* THE MORPH'S RESOLUTION STEP, applied on the two edges of the transition and nowhere else --
      see MORPH_RSCALE. Driven off `phase` rather than off mix, so it is exactly one step down when
      the morph starts and one back up when it lands; applyScale reallocates, which is fine twice
