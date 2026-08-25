@@ -4114,25 +4114,215 @@ const ATK_OLD={sub:9,low:10,mid:13,high:19,air:25};      // what the gains are m
 const ATK_GAIN={}; for(const b in ATTACK)
   ATK_GAIN[b]=envPeak(ATK_OLD[b],DECAY[b])/envPeak(ATTACK[b],DECAY[b]);
 const PULSE_GAIN=envPeak(16,6.0)/envPeak(160,6.0);   // the beat pulse decays at 6/s
+/* ---- READ THE TIMELINE WHERE THE EYE WILL BE, NOT WHERE THE SPEAKER IS ----
+   The attack fix took the envelope lag from 111-170ms down to 13-37ms, and 13-37ms is still not
+   zero. Nothing before this compensated for it, and two more delays sit downstream of it that
+   nothing compensated for either:
+
+     the onset is CONSUMED on the first frame at or after its time, so it is injected half a
+     frame late on average;
+     the frame this loop draws is not on the glass until the next vsync at the earliest.
+
+   MEASURED, this build, against the analyser's own onset lists over a whole 40s track by
+   cross-correlation (positive = the picture is late), at a 16.0ms median frame:
+
+       band    lag     theory (peak of the envelope)   residual
+       sub    +55ms         37.3ms                      +18ms
+       low    +55ms         33.5ms                      +22ms
+       mid    +48ms         25.5ms                      +23ms
+       high   +45ms         17.4ms                      +28ms
+       air    +39ms         13.1ms                      +26ms
+       pulse  +50ms         21.3ms                      +29ms
+
+   The residual is the same 18-29ms in every band -- about 1.5 frames, which is exactly the two
+   delays above (half a frame of injection quantisation, one frame of presentation) -- while the
+   part that DOES vary between bands is predicted by the envelope maths to within a few ms. Two
+   independent terms, both identified, neither of them noise.
+
+   ITU-R BT.1359 puts the threshold at which a viewer notices the picture trailing the sound at
+   about 45ms. Every band here was at or past it, before the display added its own.
+
+   The analysis is PRECOMPUTED, so the fix is to read it slightly ahead: sample the timeline at
+   pos() + lead, and let each delay downstream carry the signal back to where the sound is. Each
+   band leads by its own envelope peak, because each band's envelope is a different length; they
+   share the 1.5 frames, because that part is the frame loop and not the band.
+
+   Leading is also the safe direction to be wrong in. The same recommendation puts the threshold
+   for the picture running EARLY at about 125ms -- nearly three times the tolerance for late --
+   so a lead that overshoots by a frame costs far less than one that undershoots. */
+const PEAK={}; for(const b in ATTACK) PEAK[b]=Math.log(ATTACK[b]/DECAY[b])/(ATTACK[b]-DECAY[b]);
+const PEAK_PULSE=Math.log(160/6.0)/(160-6.0);
+/* The frame interval, smoothed, and deliberately NOT frameAvg. frameAvg is the quality
+   governor's input and is meant to be jerked about by a single stall -- that is what makes it a
+   governor. A lead built on it would swing the whole picture forward and back by tens of
+   milliseconds every time one frame ran long, which is a worse fault than the lag it corrects.
+   Clamped to a range a display can actually be running at: 8ms is a 120Hz panel, 40ms is 25fps,
+   and outside that the number is a stall rather than a rate. */
+let frameEMA=16.7;
+const visLead=()=>Math.min(0.040,Math.max(0.008,frameEMA/1000))*1.5;
 const OCUR={sub:0,low:0,mid:0,high:0,air:0};          // per-band cursor into the onset list
+/* Placed at the same instant the walk below reads to, PEAK[b] and all -- a cursor left behind the
+   read point replays every onset in the gap on the next frame, which after a seek is a burst of
+   every band firing at once. */
 function resetOnsetCursors(t){                         // after a seek, re-place every cursor
   const on=director&&director.events&&director.events.onsets; if(!on) return;
+  const L=visLead();
   for(const b of BANDS){ const a=on[b]; if(!a){OCUR[b]=0;continue;}
-    let lo=0,hi=a.length; while(lo<hi){ const m=(lo+hi)>>1; if(a[m][0]<=t) lo=m+1; else hi=m; }
+    const tb=t+L+PEAK[b];
+    let lo=0,hi=a.length; while(lo<hi){ const m=(lo+hi)>>1; if(a[m][0]<=tb) lo=m+1; else hi=m; }
     OCUR[b]=lo; }
 }
 function genreModes(){ const g=(director&&director.genre&&director.genre.primary)||''; return GENRE_MODES[g]||[0,1,2,3,4,5]; }
-function chooseMode(energy){
+/* ====================== WHICH SHAPE, AND WHY ======================
+   This used to end in Math.random(). Filter the nine profiles by genre, filter again by the
+   fold, bucket them by energy into CALM/MID/HOT, then draw one out of the hat. Every constraint
+   in it was sound and the last step threw the information away.
+
+   What that produced, simulated over the uploaded 176bpm track (17 sections), three different
+   seeds -- which is to say, three plays of the same file:
+
+       seed 1   Clover Knot Gear Clover Chevron Gear Triskelion Lattice Chevron Knot ...
+       seed 2   Knot Triskelion Lattice Knot Arc Chevron Gear Triskelion Chevron Gear ...
+       seed 3   Clover Knot Triskelion Knot Chevron Arc Triskelion Gear Arc Clover ...
+
+   Four faults, and they are the reported "looks weird":
+
+   NO TRACK HAS A LOOK. Three plays, three unrelated visual narratives. Nothing about the film
+   belongs to the song, so there is no such thing as being right about it.
+
+   THE MUSIC REPEATS AND THE PICTURE DOES NOT. This track has six grooves, seven breakdowns and
+   two drops. A listener hears the drop return; the form had no idea it had been there before,
+   and answered it with whatever came up. Repetition is most of how music is BUILT, and the one
+   structural fact the visuals never used.
+
+   THE SIZE OF THE CHANGE CARRIED NOTHING. Two adjacent breakdowns at 0.40 and 0.49 could jump
+   from Arc to Gear; the quietest breakdown to the biggest drop could land on two shapes that
+   read alike. The picture changed by an amount unrelated to how much the music changed.
+
+   THE BUCKETS WERE CLIFFS. energy<0.38 and energy>0.68 as hard thresholds meant 0.379 and 0.381
+   drew from different vocabularies, and a track that happens to live near a threshold flickered
+   between two worlds while a track that lives between them could never reach either.
+
+   ---- The replacement: one axis, and the track's own spread along it ----
+
+   The nine profiles go in ONE order, calm to intense. It is not a new judgement -- it is the
+   CALM/MID/HOT tables above, read as a ladder instead of as three buckets, ordered inside each
+   band by how busy the silhouette reads (the same reading the FOLD_FRIENDLY note already makes:
+   Gear is "the most aggressive silhouette in the set", Knot "an intricate middle", Lattice "a
+   quiet regular grid").
+
+       Arc  Chevron  Lattice | Clover  Knot | Plate  Wave  Triskelion  Gear
+       \______ CALM ________/  \__ MID ___/  \__________ HOT __________/
+
+   Where a section stands on that ladder is where its energy stands AMONG THIS TRACK'S OWN
+   SECTIONS -- half linear against the track's range, half its tied-average rank, the identical
+   weighting segForSection uses on density and for the identical reason. A rank guarantees the
+   whole ladder gets used on a track with a narrow dynamic range; the linear half keeps absolute
+   loudness meaning something. Ties AVERAGE, so two sections the analyser reads the same come out
+   on the same rung -- segRank's note makes this point already and it matters more here.
+
+   Then three rules, and no hat:
+
+     1. THE SAME MUSIC GETS THE SAME FORM. A section is keyed by its label and its rung; the
+        first time that key appears its shape is remembered, and every later section with the
+        same key gets it back. The drop returns as the drop. If the shape is the one already on
+        screen, no change fires at all -- a repeat should look like a repeat, not like an event.
+     2. A CHANGE MOVES THE WAY THE MUSIC MOVED. Louder goes up the ladder, quieter comes down,
+        and how far it moves is how far the music moved.
+     3. A CHANGE HAS TO CHANGE SOMETHING. If the rung lands on the shape already showing and
+        the key is new, take the next rung along in the direction of travel.
+
+   There is no Math.random left in it, so a track has ONE film and it is the same one every time.
+
+   Simulated over the same 17 sections, every play (r = rung):
+
+       intro     0.46 r3.3  Clover        groove    0.81 r7.3  Triskelion  (held)
+       breakdown 0.45 r3.0  Knot          breakdown 0.13 r0.0  Arc
+       build     0.70 r5.4  Triskelion    breakdown 0.40 r2.4  Lattice     (repeat, same form)
+       groove    0.57 r4.4  Knot          breakdown 0.49 r3.7  Knot
+       breakdown 0.40 r2.4  Lattice       groove    0.72 r5.8  Triskelion
+       breakdown 0.21 r0.7  Chevron       drop      0.83 r7.6  Gear
+       groove    0.77 r6.8  Triskelion    breakdown 0.22 r1.0  Chevron
+                                          drop      0.85 r8.0  Gear        (both drops, Gear)
+                                          groove    0.77 r6.6  Triskelion
+                                          groove    0.74 r6.1  Triskelion  (held)
+
+   Quiet breakdowns are strokes, loud grooves are arms, both drops are the Gear, and the two
+   0.40 breakdowns are the same Lattice. Four of the seventeen fire no change at all, because
+   the music was repeating and so was the picture. */
+const SHAPE_LADDER=[2,3,8,1,7,5,4,0,6];
+const LADDER_AT=(()=>{ const o={}; SHAPE_LADDER.forEach((m,i)=>{o[m]=i;}); return o; })();
+let _eSort=null, _eFor=null;
+function energySorted(){
+  if(_eFor===director && _eSort) return _eSort;
+  _eFor=director;
+  _eSort=((director&&director.sections)||[]).map(x=>x.energy).sort((a,b)=>a-b);
+  return _eSort;
+}
+/* Where this energy sits among the track's own sections, ties averaged -- see segRank, which
+   does the same job for density and carries the argument for why ties may not be ordered. */
+function energyRank(e){
+  const a=energySorted(), n=a.length;
+  if(n<2) return 0.5;
+  let below=0, atOrBelow=0;
+  for(const x of a){ if(x<e) below++; if(x<=e) atOrBelow++; }
+  return (below+atOrBelow-1)/(2*(n-1));
+}
+function shapeRung(e){
+  const a=energySorted();
+  if(!a.length) return (SHAPE_LADDER.length-1)*0.5;
+  const lo=a[0], hi=a[a.length-1];
+  const lin=Math.max(0,Math.min(1,(e-lo)/Math.max(1e-6,hi-lo)));
+  return (lin*0.5+energyRank(e)*0.5)*(SHAPE_LADDER.length-1);
+}
+/* WITH THE FOLD OPEN, PICK SOMETHING THE FOLD CAN USE. Only while it is actually blooming --
+   below that the full set is in play, so this narrows the vocabulary during folded passages
+   rather than permanently. Falls back to the full set if the genre's own list and this one do
+   not intersect, so it can never leave nothing to choose from. Returned in LADDER order, which
+   is the order every rule below walks. */
+function allowedModes(){
   let allowed=genreModes();
-  /* WITH THE FOLD OPEN, PICK SOMETHING THE FOLD CAN USE. Only while it is actually blooming --
-     below that the full set is in play, so this narrows the vocabulary during folded passages
-     rather than permanently. Falls back to the full set if the genre's own list and this one do
-     not intersect, so it can never leave nothing to choose from. */
   if(kalAmt>0.35){ const ff=allowed.filter(m=>FOLD_FRIENDLY.includes(m)); if(ff.length) allowed=ff; }
-  const pref = energy<0.38?CALM : energy>0.68?HOT : MID;
-  let cand=allowed.filter(m=>pref.includes(m)); if(!cand.length) cand=allowed;
-  let m=cand[(Math.random()*cand.length)|0];
-  if(m===mode){ const alt=allowed.filter(x=>x!==mode); if(alt.length) m=alt[(Math.random()*alt.length)|0]; }
+  return allowed.slice().sort((a,b)=>LADDER_AT[a]-LADDER_AT[b]);
+}
+let shapeMemo=null, shapeMemoFor=null, lastShapeE=null;
+/* `opening` is the track's FIRST shape, which is not a change and must not be nudged off itself:
+   rule 3 exists so that a transition transitions, and there is no transition here -- the form has
+   not shown anything for this track yet. Without it, loading a track whose opening rung happens to
+   land on whatever the previous track ended on would step one rung away for no reason. */
+function chooseMode(energy, sec, opening){
+  const allowed=allowedModes();
+  if(!allowed.length) return mode;
+  const rung=shapeRung(energy);
+  if(shapeMemoFor!==director){ shapeMemoFor=director; shapeMemo=new Map(); }
+  /* Keyed on the rung rather than on the raw energy, so "the same music" means the same PLACE ON
+     THE LADDER -- 0.77 and 0.81 are the same passage returning and must not be two keys. Only a
+     real section can repeat; an in-section departure has no key and is never remembered. */
+  const key = sec ? (sec.label+'@'+Math.round(rung)) : null;
+  if(key && shapeMemo.has(key)){
+    const m=shapeMemo.get(key);
+    // ...unless the fold has since closed the door on it, in which case fall through and re-pick
+    if(allowed.indexOf(m)>=0){ lastShapeE=energy; return shapeTap(m,rung,key,energy,allowed,true); }
+  }
+  let i=0, bd=1e9;
+  for(let j=0;j<allowed.length;j++){ const d=Math.abs(LADDER_AT[allowed[j]]-rung); if(d<bd){ bd=d; i=j; } }
+  if(!opening && allowed[i]===mode && allowed.length>1){
+    const dir = (lastShapeE===null || energy>lastShapeE+0.02) ? 1
+              : (energy<lastShapeE-0.02 ? -1 : 1);
+    i = (i+dir>=0 && i+dir<allowed.length) ? i+dir : i-dir;
+  }
+  lastShapeE=energy;
+  const out=allowed[i];
+  if(key) shapeMemo.set(key,out);
+  return shapeTap(out,rung,key,energy,allowed,false);
+}
+/* Calibration tap, same contract as window.__SEG: the ladder is only as good as the spread the
+   track's energies actually occupy, and that has to be read off real material. On EVERY path
+   including the memo hit -- a tap that goes quiet on the one branch whose whole purpose is to
+   repeat itself cannot answer the question it exists for, which is whether repeats are landing. */
+function shapeTap(m,rung,key,energy,allowed,memo){
+  window.__SHAPE={mode:m, rung:+rung.toFixed(2), key, energy:+energy.toFixed(3),
+                  allowed:allowed.slice(), from:mode, memo:!!memo, held:(m===mode)};
   return m;
 }
 /* SHAPE CHANGES LAND ON A DOWNBEAT, AND CAN HAPPEN INSIDE A SECTION.
@@ -4186,11 +4376,13 @@ function morphBeats(){
   for(const b of [4,8,16]){ const e=Math.abs(b*60/bpm-4.0); if(e<err){ err=e; best=b; } }
   return best;
 }
-function requestReform(energy,beatNow){
+function requestReform(energy,beatNow,sec){
   if(beatNow-lastReformBeat < REFORM_MIN_BEATS) return;
   const nowSec=(typeof pos==='function')?pos():0;
   if(nowSec-lastReformSec < REFORM_MIN_SECS) return;
-  reformWant={energy, at:beatNow};
+  // sec is the SECTION this request came from, and only a boundary has one -- chooseMode keys its
+  // repeat memory on it, and an in-section departure is not a repeat of anything.
+  reformWant={energy, at:beatNow, sec:sec||null};
 }
 /* THE PACE ARRIVES WITH THE FORM. The section's motion periods used to be applied the instant
    the boundary was crossed, while the shape change waited for the next downbeat -- so the form
@@ -4210,9 +4402,9 @@ function commitReform(beatNow){
      The request stays pending instead and takes the first downbeat after the morph finishes. */
   if(phase===1) return;
   lastReformBeat=beatNow; lastReformSec=(typeof pos==='function')?pos():0;
-  const e=reformWant.energy; reformWant=null; triggerReform(e);
+  const e=reformWant.energy, sc=reformWant.sec; reformWant=null; triggerReform(e,sc);
 }
-function triggerReform(energy){ const nm=chooseMode(energy); if(nm===mode&&phase===0) return; mode2=nm; mix=0; phase=1; }
+function triggerReform(energy,sec){ const nm=chooseMode(energy,sec); if(nm===mode&&phase===0) return; mode2=nm; mix=0; phase=1; }
 function setMode(m){ if(m===mode&&phase===0) return; mode2=m; mix=0; phase=1; }   // manual morph to a chosen style
 /* AUTO IS THE DEFAULT, and the Shape select agrees with it -- its first option is the selected
    one now, where `value="4" selected` used to pin the menu to Wave. The two halves of that were
@@ -4703,7 +4895,48 @@ async function loadFile(file){
   const nOn=onsets ? BANDS.reduce((a,b)=>a+((onsets[b]||[]).length),0) : 0;
   showStat(director.sections.length+' sections · '+director.genre.primary
     +(nOn?' · '+nOn+' sounds':'')); hideStat(1800);
+  openOnFirstSection();            // the track OPENS on its own shape -- see below
   pausedAt=0; prevT=-1; resetOnsetCursors(0); play();
+}
+/* A TRACK OPENS ON ITS OWN SHAPE, IT DOES NOT MELT INTO ONE.
+   The form sat on the Wave, the first section boundary fired on the first frame of playback, and
+   so every track began by dissolving out of a default that had nothing to do with it. That is
+   wrong twice.
+
+   It is wrong to look at: a transition is a response to something, and there is nothing before
+   the first bar for it to be responding to.
+
+   And it is the startup stall. MEASURED, this build, on the 176bpm upload, per second of
+   playback from the moment the file is decoded:
+
+       second   median frame   fps   phase   rscale   dpr
+         0          29.3ms      33   morph    0.84    1.00
+         1          72.9ms      14   morph    0.84    1.00
+         2          64.3ms      16   morph    0.84    1.00
+         3          57.3ms      17   --       0.84    0.94
+         4          58.6ms      17   --       0.68    0.94
+         5          24.8ms      40   --       0.574   0.94
+         6          19.1ms      52   --       0.614   0.88
+
+   Three things land on the same frames and each makes the others worse. A morph evaluates the
+   form TWICE per map() call. The kaleidoscope opens from nothing to 0.96 across the same three
+   seconds, which is the expensive path. And the quality governor is switched off for the whole
+   of a morph (phase!==1, and rightly -- see the note there), so the one thing that could have
+   answered a 73ms frame was not looking.
+
+   Worse, it fed itself: the morph advanced by a capped FRACTION per frame, so slower frames made
+   the transition last longer in wall clock, which kept the governor blind for longer. Three
+   seconds of nominal melt took five.
+
+   Choosing the opening shape here, before the first sample plays, removes the morph from the
+   worst frames in the track. The gates are primed at the same time so the boundary that fires on
+   frame one asks for nothing -- REFORM_MIN_BEATS and REFORM_MIN_SECS are measured from here. */
+function openOnFirstSection(){
+  const s=director&&director.sections&&director.sections[0]; if(!s) return;
+  if(autoShape){ const m=chooseMode(s.energy, s, true); mode=m; mode2=m; }
+  mix=0; phase=0; reformWant=null;
+  segNow=segForSection(s);         // and its density, rather than one rung of drift per boundary
+  lastReformBeat=0; lastReformSec=0; secERef=s.energy; lastShapeE=s.energy;
 }
 function buildTimelineUI(){
   const el=$('tlS'); el.innerHTML=''; const d=director.meta.duration;
@@ -4812,13 +5045,21 @@ function frame(){
      first draw at the new size on the next. */
   if(scaleSettle>0) scaleSettle--;
   else frameAvg += (Math.min(200,rawMs)-frameAvg)*0.1;
+  frameEMA += (Math.min(50,rawMs)-frameEMA)*0.05;   // the LEAD's frame interval -- see visLead
   /* NOT DURING A MORPH. Every branch below can reallocate, and a shape change is precisely the
      two seconds the viewer is watching most closely -- five reallocations inside one transition
      is the reported "shape change is not smooth". It costs nothing to wait: measured, the frames
      DURING a morph run at 12.6ms p50, faster than the 14.8ms median, because the morph already
      drops the march itself (MORPH_RSCALE). lastQ is deliberately not touched here, so the first
      check after the morph lands immediately rather than waiting out another 500ms. */
-  if(now-lastQ>500 && phase!==1){ lastQ=now;
+  /* ...AND THE COURTESY HAS A LIMIT. Holding the governor off for the whole of a morph is right
+     while the frames are merely expensive; it is not right at 14fps, which is what the startup
+     measurement in openOnFirstSection found it sitting through. Above 30ms -- under 33fps -- a
+     reallocation costs less than the frames do, so the morph stops being a reason to look away.
+     Only the DEGRADING branches can run here: every raise below requires frameAvg<14.5, which
+     cannot be true at the same time as this, so the hunting the blind spot was added to prevent
+     still cannot happen inside a transition. */
+  if(now-lastQ>500 && (phase!==1 || frameAvg>30.0)){ lastQ=now;
     // ceiling is 1.45: above 1.0 the march genuinely supersamples, which the post pass
     // resolves with a real 4-tap tent — the cleanest edges available for the cost
     // Threshold must sit ABOVE the vsync interval (16.7ms @60Hz) or quality can never rise:
@@ -4895,7 +5136,8 @@ function frame(){
     // Ultra's canvas stays native, and if the band's own floor cannot hold the frame the answer
     // is to pick a lower tier, not to blur the panel the UI is drawn on.
     else if(SMIN>0){
-      if(frameAvg>18.0 && rscale>SMIN){ rscale=Math.max(SMIN,rscale-0.08); applyScale(); }
+      if(frameAvg>36.0 && rscale>SMIN){ rscale=Math.max(SMIN, rscale*Math.max(0.5,Math.sqrt(17.0/frameAvg))); applyScale(); }   // see the proportional step below
+      else if(frameAvg>18.0 && rscale>SMIN){ rscale=Math.max(SMIN,rscale-0.08); applyScale(); }
       else if(frameAvg<14.5 && rscale<SMAX){ rscale=Math.min(SMAX,rscale+0.06); applyScale(); }
     }
     else if(TIERS[TIER].scale>0){}
@@ -4917,6 +5159,24 @@ function frame(){
        55ms stays as the emergency rung -- a frame that bad should shed pixels immediately without
        waiting for rscale to walk down first -- but the floored-and-still-slow case now reaches
        the same lever at the ordinary 18ms threshold. */
+    /* A DEFICIT THIS BIG IS SOLVED, NOT WALKED TOWARD. Every step in this governor is a fixed
+       0.08, which is the right shape for correcting a frame that is a little slow and the wrong
+       shape for one that is three times over budget: from 1.0 it takes five ticks -- two and a
+       half seconds -- to reach the floor, and the viewer watches every one of them.
+       The cost model this file already fitted is frame = fixed + k*rscale^2, so the scale that
+       lands on the target is rscale*sqrt(target/frameAvg). MEASURED at load on the 176bpm upload,
+       second 1 of playback ran 36.1ms with rscale still walking down from 1.0; one proportional
+       step reaches the same place the five ticks were heading for, in one tick.
+       Bounded to halving per step so a single stall cannot empty the whole budget, and only
+       above 36ms -- twice the top of the dead band -- so ordinary running is untouched and still
+       walks. The asymmetry is deliberate and is the whole point: falling is what the eye sees,
+       climbing back is invisible, so overshoot downward and recover gently.
+       It sits ABOVE the 55ms canvas rung, and that does not contradict the note there. What that
+       note refuses is walking down the cheap levers one 0.08 at a time before touching anything
+       that matters; this reaches the march's floor in a single step, so the canvas rung below is
+       live on the very next tick if the frame is still bad. The march still goes first, which is
+       the order the whole chain is built on. */
+    else if(frameAvg>36.0 && rscale>SFLOOR) { rscale=Math.max(SFLOOR, rscale*Math.max(0.5,Math.sqrt(17.0/frameAvg))); applyScale(); }
     /* 55ms stays the EMERGENCY rung and keeps its place at the head of the chain: a frame that
        bad should shed pixels immediately rather than walk down the cheap levers first. */
     else if(dprScale>0.66 && frameAvg>55 && now-lastDpr>2000){
@@ -5001,7 +5261,11 @@ function frame(){
   let release=0.0, dynamics=0.5, atmos=0.5, density=0.5;
   let compTarget=COMPS.radial, camTarget=CAM.orbit, secLabel='—', moodName='—', intent='';
   if(director&&isPlaying){
-    const t=pos();
+    /* THE READ POINT, not the play head. See visLead: everything downstream of this line adds
+       delay, so the timeline is sampled slightly ahead and the delay carries it back. The
+       envelopes add their own PEAK[b] on top at the point they are fed; curves and section
+       boundaries take the frame lead alone, because nothing smooths them on the way out. */
+    const t=pos()+visLead();
     energy=sampleCurve('energy',t); tension=sampleCurve('tension',t); arousal=sampleCurve('arousal',t);
     darkness=sampleCurve('darkness',t); bright=sampleCurve('brightness',t); valence=sampleCurve('valence',t);
     flux=sampleCurve('flux',t); warmth=sampleCurve('warmth',t); epic=sampleCurve('epicness',t);
@@ -5026,7 +5290,10 @@ function frame(){
        the one that actually showed. Beat -> accent, tempo -> rate of turn, and nothing beat-driven
        touches the rotation itself. */
     if(prevT>=0 && t>prevT){
-      for(let bi=0;bi<beats.length;bi++){ if(beats[bi]>prevT && beats[bi]<=t){
+      // The beat window carries PEAK_PULSE on BOTH ends, so it stays exactly as wide as the
+      // frame -- shifting one end would drop or repeat a beat at the seam.
+      const bLo=prevT+PEAK_PULSE, bHi=t+PEAK_PULSE;
+      for(let bi=0;bi<beats.length;bi++){ if(beats[bi]>bLo && beats[bi]<=bHi){
         beatCount++;
         /* THE REAL DOWNBEAT, when the analyser knows one. Counting beatCount&3 put the bar on
            whichever beat the tracker happened to return first -- an arbitrary phase, and the two
@@ -5058,9 +5325,11 @@ function frame(){
     // ---- fire the individual sounds: walk each band's onset list up to now ----
     const on=director.events.onsets;
     if(on){
-      if(prevT<0 || t<prevT || t-prevT>0.5) resetOnsetCursors(prevT<0?0:Math.min(t,prevT));
+      if(prevT<0 || t<prevT || t-prevT>0.5) resetOnsetCursors(Math.max(0,(prevT<0?t:Math.min(t,prevT))-visLead()));
       for(const b of BANDS){ const a=on[b]; if(!a) continue;
-        while(OCUR[b]<a.length && a[OCUR[b]][0]<=t){
+        // ...each band up to its OWN read point: see PEAK, the lead is the envelope's peak time
+        const tb=t+PEAK[b];
+        while(OCUR[b]<a.length && a[OCUR[b]][0]<=tb){
           const s=a[OCUR[b]][1];
           HIT[b]=Math.max(HIT[b],s*ATK_GAIN[b]);   // see ATK_GAIN: timing change, not a level change
           OCUR[b]++; } }
@@ -5111,7 +5380,7 @@ function frame(){
       // which is the opposite of what the priority is for.
       if(autoShape){ lastReformBeat=Math.min(lastReformBeat, beatsAtTime(t)-REFORM_MIN_BEATS/2);
                      lastReformSec =Math.min(lastReformSec,  t-REFORM_MIN_SECS/2);
-                     requestReform(s.energy, beatsAtTime(t)); }
+                     requestReform(s.energy, beatsAtTime(t), s); }
       secERef=s.energy;
       // held for the same downbeat the shape change lands on; see commitReform
       periodWant=motionPeriodsFor(s);
@@ -5324,6 +5593,8 @@ function frame(){
     window.ROUTES=MODB; window.MVNOW={scale:MV('scale'),bloom:MV('bloom'),sat:MV('sat'),swirl:MV('swirl')};
     const bt=(typeof beatsAtTime==='function')?beatsAtTime(pos()):pos()*bpm/60;
     window.SYNC={t:+pos().toFixed(3), playing:isPlaying, bpm:+bpm.toFixed(2),
+      lead:+(visLead()*1000).toFixed(1), frameEMA:+frameEMA.toFixed(1),   // see visLead
+      audioLag:+((ctx?(ctx.outputLatency>0?ctx.outputLatency:(ctx.baseLatency||0)):0)*1000).toFixed(1),
       tBeats:+bt.toFixed(4),
       spinBeats:+(formSpin/(2*Math.PI)*MOTP.spin).toFixed(4),
       errBeats:+(formSpin/(2*Math.PI)*MOTP.spin - bt).toFixed(4),
@@ -5455,7 +5726,17 @@ function frame(){
      12fps it trades a slightly late landing for a morph that still reads as continuous. The
      governor fix above is the real cure; this is what keeps a GC pause or a tab switch from
      tearing a transition in half. */
-  else if(phase===1){ mix+=Math.min(dBeats/morphBeats(), 0.02); if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  /* AND THE CAP IS IN TIME, NOT IN FRAMES. 0.02 per frame reads as "2% of the transition per
+     frame", which sounds like a stall clip and is not one: it binds whenever the honest step is
+     larger, and the honest step grows with BOTH the tempo and the frame interval. At 176bpm over
+     8 beats a 90ms frame wants 0.033 and was given 0.02, so the melt ran at 60% speed exactly
+     when frames were slow -- and because the governor is blind for the whole of a morph, a
+     stretched morph kept it blind for longer, which kept the frames slow. The measurement in
+     openOnFirstSection is that loop closing: a 2.7s melt taking 5s.
+     dt is already clamped to 50ms upstream, so bounding the step by dt/0.9 -- no faster than
+     nine tenths of a second for the whole transition -- keeps the anti-teleport guarantee this
+     cap exists for while removing the coupling to frame COUNT that never belonged in it. */
+  else if(phase===1){ mix+=Math.min(dBeats/morphBeats(), dt/0.9); if(mix>=1){ mix=0; mode=mode2; phase=0; } }
   /* THE MORPH'S RESOLUTION STEP, applied on the two edges of the transition and nowhere else --
      see MORPH_RSCALE. Driven off `phase` rather than off mix, so it is exactly one step down when
      the morph starts and one back up when it lands; applyScale reallocates, which is fine twice
