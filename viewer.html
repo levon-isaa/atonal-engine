@@ -408,6 +408,7 @@ uniform float u_keyG,u_fillG,u_ambG;   // key/fill/ambient gains; their RATIO is
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
 uniform float u_envFoot;               // 1 = footprint env LOD on, 0 = off. window.ENVFOOT, for A/B
 uniform float u_envFootMax;            // levels the footprint may add. window.ENVFOOTMAX
+uniform float u_envClamp;              // ceiling on environment radiance. window.ENVCLAMP
 uniform float u_reflMat;               // 1 = reflected body shaded as its own material. window.REFLMAT
 uniform float u_edgeGate;              // 1 = metals refuse the additive edge, 0 = old. window.EDGEGATE
 uniform float u_reflTrace;             // 1 = ray-traced self-reflection, 0 = cheap path. window.REFLTRACE
@@ -1556,6 +1557,27 @@ vec3 envL(vec3 d,float rough,float lodMin){
   // A sqrt() curve here would be a guess that disagrees with the bake.
   float lod=max(clamp(rough,0.0,1.0)*(ENV_LEVELS-1.0), lodMin);
   vec3 e=textureLod(u_envMap, envDir(d), min(lod, ENV_LEVELS-1.0)).rgb;
+  /* A CEILING ON WHAT THE ROOM MAY BE. The bake is a real HDRI, so its windows and lamps carry
+     radiances in the hundreds. A mirror reflecting one of those clips, which is physically
+     correct and looks wrong: ACES asymptotes to 1, so everything past about 16 lands on the same
+     flat white, and a bright source reflected across a curved surface paints a large plateau of
+     it rather than a highlight with a shape. That plateau is the reported glow.
+     MEASURED on a frozen chrome frame, no mask needed -- the colour field never exceeds ~160, so
+     pixels over 250 are unambiguously blown:
+         clamp     none    16      10      6       4
+         blown %   0.155   0.145   0.137   0.012   0.001
+         contrast  32.1    32.2    32.5    32.8    32.9
+         detail    7.12    7.12    7.14    7.15    7.15
+     The knee is between 10 and 6: the blown area collapses 92% while the form's mean moves 0.2%
+     and its contrast and detail both go UP, because a plateau carries neither. The energy does
+     not vanish, it moves from "clipped" to "very bright" -- the 210-250 band rises 0.200 to 0.311
+     over the same step, which is the highlight getting its shape back.
+     6.0 is the raw texel ceiling, before u_env and the warmth tint, so the reflection still
+     reaches roughly 4.8 against a scene whose diffuse sits near 0.2-1.0. It is still far and away
+     the brightest thing in the frame. It does not bind on the ambient lookup: that reads level 7,
+     which is the cosine-convolved irradiance and orders of magnitude below this.
+     This is the standard firefly clamp on indirect specular, and window.ENVCLAMP unclamps it. */
+  e=min(e, vec3(u_envClamp));
   return e*u_env*mix(vec3(0.86,0.93,1.12), vec3(1.12,0.98,0.82), u_warmth);
 }
 vec3 envL(vec3 d,float rough){ return envL(d,rough,0.0); }
@@ -5623,6 +5645,7 @@ function frame(){
   // on the SAME frame. Every A/B in this file has to compare one frame; see POSE and VARPIN.
   gl.uniform1f(US('u_envFoot'),(window.ENVFOOT!==undefined)?window.ENVFOOT:1.0);
   gl.uniform1f(US('u_envFootMax'),(window.ENVFOOTMAX!==undefined)?window.ENVFOOTMAX:7.0);
+  gl.uniform1f(US('u_envClamp'),(window.ENVCLAMP!==undefined)?window.ENVCLAMP:6.0);
   gl.uniform1f(US('u_reflMat'),(window.REFLMAT!==undefined)?window.REFLMAT:1.0);
   gl.uniform1f(US('u_edgeGate'),(window.EDGEGATE!==undefined)?window.EDGEGATE:1.0);
   gl.uniform1f(US('u_reflTrace'),(window.REFLTRACE!==undefined)?window.REFLTRACE:1.0);
