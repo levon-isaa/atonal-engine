@@ -3683,12 +3683,128 @@ let kalPhase=1.0;                                     // mirror angle, in units 
 const KAL_BEATS=32;
 let kalBase=1.0, kalSpin=0, kalKick=0;
 const KAL_SECS=1.2;
-const KAL_LO=0.66, KAL_HI=0.92;                       // fractions of kalRef: off below, full above
+/* ---- WHETHER THE FOLD IS OPEN AT ALL IS A DECISION, NOT A READING ----
+   The drive was a pure instantaneous function of the live energy curve: rescale it against the
+   track's peak, smoothstep it, subtract a 12% deadzone. One threshold, no memory, no commitment.
+   The note above kalMode argues that this is safe because the 1.2s SLEW stops anything snapping,
+   and it is right that nothing snaps. What it does not stop is the drive crossing the line over
+   and over, which is a different fault and the one that shows.
+
+   MEASURED, simulating the shipped drive against the full analysed energy curve of the uploaded
+   176bpm track (250s) and of the 120bpm bench track:
+
+       track      open episodes   median length   under 2s        open   at 0.02-0.30
+       176bpm          32             1.3s        21 of 32 (66%)  60.6%     11.3%
+       120bpm          11             1.1s        10 of 11 (91%)  39.8%      9.7%
+
+   A full traverse takes 1.2s, so an episode of 1.3s is a fold that starts opening, gets about
+   halfway, and turns straight back around. Two thirds of every bloom on a real track was that:
+   the form budges, pays for the two-evaluation path in map(), shows a smeared half-rosette that
+   never resolves, and retreats. Only five of the thirty-two were real blooms.
+
+   And 11% of the track sat between 0.02 and 0.30 -- above the line where map() doubles its work,
+   below the amount where the fold is legible. Full cost, nothing to show for it.
+
+   The deadzone was meant to prevent exactly this and could not, because a deadzone is still one
+   threshold: it moves where the flutter happens without removing it.
+
+   ---- Hysteresis, dwell, and a floor ----
+
+   OPEN and CLOSED become a state with three rules, which is what the shape changes already have
+   (they land on downbeats and are rate-limited; the fold had neither):
+
+     HYSTERESIS  it opens above kalOpen and closes only KAL_HYST BELOW it, so noise around the
+                 line cannot toggle it. A Schmitt trigger, for the reason one is always used.
+     DWELL       once open it stays open KAL_HOLD seconds, and once closed it stays closed
+                 KAL_REST. The fold is the biggest gesture the renderer has; a gesture that
+                 lasts 1.3 seconds is not one. Seconds, not beats -- see REFORM_MIN_SECS for
+                 why how-long is answered in seconds even when where is answered in beats.
+     A FLOOR     while open, the curve drives KAL_FLOOR..1 rather than 0..1. Open now MEANS
+                 open. The band that cost everything and showed nothing is only crossed on the
+                 way in and the way out.
+
+   A drop still overrides all three: it opens the fold immediately whatever the dwell says, and
+   pins it full.
+
+   AND THE THRESHOLD IS A QUANTILE OF THE TRACK'S OWN CURVE, not a fraction of one section's
+   mean. kalRef was the loudest SECTION, so the test read "within 66% of this track's peak" --
+   and by definition a lot of any track is. Measured on a synthetic track with a deliberately
+   flat energy profile the old rule held the fold open for 99.9% of it: the single most expensive
+   state in the renderer, permanently on, on a track with nothing to mark. A quantile splits
+   whatever distribution it is given, so the fold opens for the loudest part of THIS track
+   whether the track has a wide dynamic range or none.
+
+   MEASURED after, same simulation, same tracks:
+
+       track      open episodes   median length   under 2s   open    at 0.02-0.30
+       176bpm       32 -> 19       1.3 -> 6.8s    21 -> 0   61->53%   11.3 -> 5.0%
+       120bpm       11 ->  4       1.1 -> 7.6s    10 -> 0   40->39%    9.7 -> 3.4%
+       flat          2 ->  5      19.8 -> 6.5s     1 -> 1  100->70%    3.2 -> 7.5%
+
+   Every twitch is gone, the blooms are five times longer, and the track that was folded from
+   end to end now breathes.
+
+   ONE HONEST LIMIT: analyze.py normalises the energy curve per track, so its maximum is 1.0
+   whatever was recorded. "Loud" here can only ever mean loud FOR THIS TRACK -- a quiet ambient
+   piece still reaches 1.0 and still gets its blooms. That is a property of the analysis, not
+   something this decision can recover, and an absolute threshold on a normalised curve would
+   only look like one. */
+const KAL_DUTY=0.22;    // the fold's threshold is set here on the track's own energy curve
+const KAL_HYST=0.10;    // ...and it closes this far BELOW the level that opened it
+const KAL_HOLD=6.0;     // seconds a bloom must last once committed
+const KAL_REST=3.0;     // ...and seconds it must stay shut before another
+const KAL_FLOOR=0.34;   // open means open: the curve drives this..1, never 0..this
+let kalOpen=0.7, kalFull=0.9;          // the two levels, calibrated per track below
+let kalHeld=false, kalSince=-1e9;      // the state, and when it last changed
+/* THE DECISION ITSELF, lifted out of the frame loop so it can be replayed over a whole analysed
+   curve without a soundcard -- which is how the before/after in the note above was measured on
+   the shipped code rather than on a restatement of it. `swell` is the beat's contribution, passed
+   in because it comes from envelopes the decision has no business reaching into. */
+function kalStep(energy, epic, t, swell){
+  const forced = kalBoost>0;                       // a drop overrides the hysteresis and the dwell
+  // the LIVE curve, not the section's mean -- the point is that the fold keeps moving with the
+  // music inside a section. What the curve no longer decides on its own is WHETHER it is open.
+  const want = forced || energy > (kalHeld ? kalOpen-KAL_HYST : kalOpen);
+  if(kalHeld){ if(!want && t-kalSince>=KAL_HOLD){ kalHeld=false; kalSince=t; } }
+  else       { if(want && (forced || t-kalSince>=KAL_REST)){ kalHeld=true; kalSince=t; } }
+  if(!kalHeld) return 0;
+  let kd=(energy-kalOpen+KAL_HYST)/Math.max(1e-6,(kalFull-kalOpen+KAL_HYST));
+  kd=Math.min(1,Math.max(0,kd)); kd=kd*kd*(3-2*kd);
+  kd=Math.min(1, Math.max(kd, kalBoost) + epic*0.22);
+  /* THE BEAT SHOWS IN THE AMOUNT TOO, but only once the fold is already open -- which is now a
+     state rather than a threshold, so this can no longer be what tips it over. map() takes the
+     two-evaluation path for ANY u_kal over 0.002, and inside a bloom that path is already paid
+     for, so the swell is free. */
+  return Math.min(1, KAL_FLOOR + (1-KAL_FLOOR)*kd + (swell||0));
+}
+function kalQuantile(a,q){             // a is already sorted ascending
+  if(!a.length) return 0;
+  const x=Math.min(a.length-1, Math.max(0, q*(a.length-1)));
+  const i=Math.floor(x), f=x-i;
+  return i>=a.length-1 ? a[a.length-1] : a[i]*(1-f)+a[i+1]*f;
+}
 function kalCalibrate(){
   let mx=0; for(const s of director.sections) mx=Math.max(mx, s.energy||0);
   // A floor on the reference, or a track the analyser reads as uniformly quiet divides by almost
   // nothing and blooms permanently.
   kalRef=Math.max(0.25, mx);
+  const E=(director.curves&&director.curves.energy)||null;
+  if(E&&E.length>8){
+    const a=E.slice().sort((x,y)=>x-y);
+    kalOpen=kalQuantile(a, 1-KAL_DUTY);
+    kalFull=kalQuantile(a, 1-KAL_DUTY*0.30);
+    /* THE TOP OF THE RANGE HAS TO BE REACHABLE. The two levels must not collapse onto each other,
+       or every bloom is full and the curve stops modulating anything once it is open -- but
+       opening the gap by pushing kalFull UP put it past the curve's own maximum on a track whose
+       energy is concentrated near the top (measured: kalOpen 0.995, kalFull 1.055 on the flat
+       bench track, so the fold peaked at 0.63 and the loudest moment in the track never got the
+       full gesture). The gap is made by lowering kalOpen instead, and kalFull is pinned to what
+       the curve actually reaches, so full bloom is always attainable and always means the same
+       thing: this is as loud as this track gets. */
+    kalFull=Math.min(kalFull, a[a.length-1]);
+    if(kalFull-kalOpen<0.06) kalOpen=kalFull-0.06;
+  } else { kalOpen=kalRef*0.66; kalFull=kalRef*0.92; }
+  kalHeld=false; kalSince=-1e9;
 }
 // A deterministic per-section angle: same track, same sequence, every play.
 function kalPhaseFor(t0){
@@ -4280,18 +4396,36 @@ function shapeRung(e){
    rather than permanently. Falls back to the full set if the genre's own list and this one do
    not intersect, so it can never leave nothing to choose from. Returned in LADDER order, which
    is the order every rule below walks. */
-function allowedModes(){
+function allowedModes(foldOpen){
   let allowed=genreModes();
-  if(kalAmt>0.35){ const ff=allowed.filter(m=>FOLD_FRIENDLY.includes(m)); if(ff.length) allowed=ff; }
+  /* kalHeld, not just kalAmt. kalAmt is the SLEWED value and lags the decision by up to KAL_SECS,
+     so a shape chosen on the downbeat that opens a bloom was choosing for a fold that had not
+     arrived yet. kalHeld is the decision itself. foldOpen overrides both, for a caller that knows
+     from the analysed curve what the fold is about to do -- see kalOpenShare. */
+  const folded = (foldOpen!==undefined) ? foldOpen : (kalHeld || kalAmt>0.35);
+  if(folded){ const ff=allowed.filter(m=>FOLD_FRIENDLY.includes(m)); if(ff.length) allowed=ff; }
   return allowed.slice().sort((a,b)=>LADDER_AT[a]-LADDER_AT[b]);
+}
+/* What share of a span the fold will be open for, read off the analysed curve rather than off the
+   live one. The opening shape is chosen before a sample has played, when kalAmt is 0 and kalHeld
+   is false by construction -- so asking the live state whether the fold is open gets the answer
+   "no" on every track, including one that blooms in its first bar. That put a profile the fold
+   flattens (see FOLD_FRIENDLY) under the first bloom of the track, every time. */
+function kalOpenShare(t0,t1){
+  const c=director&&director.curves, E=c&&c.energy, fps=director&&director.meta&&director.meta.director_fps;
+  if(!E||!E.length||!fps) return 0;
+  const i0=Math.max(0,Math.floor(t0*fps)), i1=Math.min(E.length, Math.ceil(t1*fps));
+  if(i1<=i0) return 0;
+  let n=0; for(let i=i0;i<i1;i++) if(E[i]>kalOpen) n++;
+  return n/(i1-i0);
 }
 let shapeMemo=null, shapeMemoFor=null, lastShapeE=null;
 /* `opening` is the track's FIRST shape, which is not a change and must not be nudged off itself:
    rule 3 exists so that a transition transitions, and there is no transition here -- the form has
    not shown anything for this track yet. Without it, loading a track whose opening rung happens to
    land on whatever the previous track ended on would step one rung away for no reason. */
-function chooseMode(energy, sec, opening){
-  const allowed=allowedModes();
+function chooseMode(energy, sec, opening, foldOpen){
+  const allowed=allowedModes(foldOpen);
   if(!allowed.length) return mode;
   const rung=shapeRung(energy);
   if(shapeMemoFor!==director){ shapeMemoFor=director; shapeMemo=new Map(); }
@@ -4933,7 +5067,8 @@ async function loadFile(file){
    frame one asks for nothing -- REFORM_MIN_BEATS and REFORM_MIN_SECS are measured from here. */
 function openOnFirstSection(){
   const s=director&&director.sections&&director.sections[0]; if(!s) return;
-  if(autoShape){ const m=chooseMode(s.energy, s, true); mode=m; mode2=m; }
+  // ...and it is chosen for the fold the section is GOING to have, not the one on screen now
+  if(autoShape){ const m=chooseMode(s.energy, s, true, kalOpenShare(s.t0,s.t1)>0.35); mode=m; mode2=m; }
   mix=0; phase=0; reformWant=null;
   segNow=segForSection(s);         // and its density, rather than one rung of drift per boundary
   lastReformBeat=0; lastReformSec=0; secERef=s.energy; lastShapeE=s.energy;
@@ -5325,7 +5460,10 @@ function frame(){
     // ---- fire the individual sounds: walk each band's onset list up to now ----
     const on=director.events.onsets;
     if(on){
-      if(prevT<0 || t<prevT || t-prevT>0.5) resetOnsetCursors(Math.max(0,(prevT<0?t:Math.min(t,prevT))-visLead()));
+      // A seek moves t by an arbitrary amount in either direction, which the fold's dwell reads as
+      // an elapsed time it never elapsed -- backwards it goes negative and neither branch can ever
+      // fire again. The clock the dwell counts against restarts with the cursors.
+      if(prevT<0 || t<prevT || t-prevT>0.5){ resetOnsetCursors(Math.max(0,(prevT<0?t:Math.min(t,prevT))-visLead())); kalSince=t; }
       for(const b of BANDS){ const a=on[b]; if(!a) continue;
         // ...each band up to its OWN read point: see PEAK, the lead is the envelope's peak time
         const tb=t+PEAK[b];
@@ -5337,22 +5475,11 @@ function frame(){
     for(const b of BANDS) BND[b]=sm(BND[b],sampleCurve(b,t),8.0,dt);
     prevT=t;
     const s=currentSection(t);
-    /* THE DRIVE. energy against the track's own peak, mapped through KAL_LO..KAL_HI, smoothed,
-       then lifted by epicness and pinned to full on a drop. The deadzone at the bottom is what
-       keeps the cheap one-evaluation path in use for the quiet part of a track -- see the note
-       above kalMode for why any nonzero value costs the same as a full bloom. */
-    { // the LIVE curve, not the section's mean -- the point is that the fold keeps moving with the
-      // music inside a section, not that it steps once at each boundary
-      let kd=(Math.max(0,energy)/kalRef - KAL_LO)/(KAL_HI-KAL_LO);
-      kd=Math.min(1,Math.max(0,kd)); kd=kd*kd*(3-2*kd);
-      kd=Math.min(1, Math.max(kd, kalBoost) + epic*0.22);
-      kalDrive = kd<0.12 ? 0 : (kd-0.12)/0.88;
-      /* THE BEAT SHOWS IN THE AMOUNT TOO, but only once the fold is already open. The deadzone
-         above exists because map() takes the two-evaluation path for ANY u_kal over 0.002, so a
-         drive that idles just above zero costs a full bloom and shows nothing; letting a kick
-         push it over that line would spend the quiet two thirds of a track on the expensive path.
-         Inside a bloom the path is already paid for and the swell is free. */
-      if(kalDrive>0) kalDrive=Math.min(1, kalDrive + pulseS*0.16 + HITS.low*0.12); }
+    /* THE DRIVE. Whether the fold is open is a latched state with hysteresis and a dwell, and the
+       live curve then drives KAL_FLOOR..1 inside it, lifted by epicness and pinned to full on a
+       drop -- see kalCalibrate for the measurement that made it a state rather than a threshold,
+       and the note above kalMode for why any nonzero value costs a full bloom. */
+    kalDrive=kalStep(energy, epic, t, pulseS*0.16 + HITS.low*0.12);
     /* IN-SECTION CHANGE, ON MUSICAL DEPARTURE. secERef is where the section's energy was when
        it last produced a shape; when the live curve has moved far enough from that, the form is
        allowed to answer without waiting for the next boundary. The threshold is on a SUSTAINED
@@ -5594,6 +5721,8 @@ function frame(){
     const bt=(typeof beatsAtTime==='function')?beatsAtTime(pos()):pos()*bpm/60;
     window.SYNC={t:+pos().toFixed(3), playing:isPlaying, bpm:+bpm.toFixed(2),
       lead:+(visLead()*1000).toFixed(1), frameEMA:+frameEMA.toFixed(1),   // see visLead
+      kalAmt:+kalAmt.toFixed(3), kalHeld, kalOpen:+kalOpen.toFixed(3), kalFull:+kalFull.toFixed(3),
+      kalDrive:+kalDrive.toFixed(3), kalBoost, kalSince:+kalSince.toFixed(2),   // see kalCalibrate
       audioLag:+((ctx?(ctx.outputLatency>0?ctx.outputLatency:(ctx.baseLatency||0)):0)*1000).toFixed(1),
       tBeats:+bt.toFixed(4),
       spinBeats:+(formSpin/(2*Math.PI)*MOTP.spin).toFixed(4),
