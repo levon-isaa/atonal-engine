@@ -4091,7 +4091,29 @@ const BND ={sub:0,low:0,mid:0,high:0,air:0};          // sustained band level
 // rather than a snap. The ORDERING is what carries the pace (lows hang, highs snap), and that
 // is preserved exactly — this slows the gesture, not the groove.
 const DECAY ={sub:3.6,low:4.0,mid:5.4,high:8.0,air:11.0};
-const ATTACK={sub:9,low:10,mid:13,high:19,air:25};
+/* A SLOW ATTACK DOES NOT MAKE A HIT SOFT, IT MAKES IT LATE -- and this was the sync fault.
+   These envelopes chase a value that is set on an onset and then decays. Smoothing the rise at
+   rate k against a decay lam puts the PEAK at ln(k/lam)/(k-lam) seconds after the onset, which
+   for the old rates is 59ms on air and 170ms on sub. MEASURED against the analyser's own onset
+   lists, over a whole track: low 114ms, sub 111ms, and the beat pulse 86ms. At 120bpm a beat is
+   500ms, so the picture was landing a fifth of a beat behind the music, on every hit, on every
+   track. That is what "not synced" was.
+   Ten times faster puts every band between 13 and 37ms -- under 8% of a beat, and within about
+   two frames at 60fps. The softness was never coming from the attack anyway: it comes from
+   DECAY, which is untouched, and a fast rise onto a slow fall is what a percussive envelope IS.
+   THE PEAK IS NORMALISED so this is a timing change and nothing else. A faster attack also
+   reaches HIGHER -- the old rates only ever got to about 54% of the injected amplitude before
+   the decay overtook them, the new ones reach 87% -- so without this the whole light rig would
+   have brightened by half and the fix would have arrived as a look change. ATK_GAIN is the ratio
+   of the two peaks, applied to the injection, so the envelope peaks exactly where it used to. */
+const ATTACK={sub:90,low:100,mid:130,high:190,air:250};
+/* peak of an exponentially-smoothed exponential decay, as a fraction of the injected amplitude */
+function envPeak(k,lam){ const t=Math.log(k/lam)/(k-lam);
+  return (k/(k-lam))*(Math.exp(-lam*t)-Math.exp(-k*t)); }
+const ATK_OLD={sub:9,low:10,mid:13,high:19,air:25};      // what the gains are measured against
+const ATK_GAIN={}; for(const b in ATTACK)
+  ATK_GAIN[b]=envPeak(ATK_OLD[b],DECAY[b])/envPeak(ATTACK[b],DECAY[b]);
+const PULSE_GAIN=envPeak(16,6.0)/envPeak(160,6.0);   // the beat pulse decays at 6/s
 const OCUR={sub:0,low:0,mid:0,high:0,air:0};          // per-band cursor into the onset list
 function resetOnsetCursors(t){                         // after a seek, re-place every cursor
   const on=director&&director.events&&director.events.onsets; if(!on) return;
@@ -4500,13 +4522,34 @@ function play(){ if(!audioBuffer)return; if(ctx.state==='suspended')ctx.resume()
   // button still read Pause. Leaves the playhead at the end; play() above sends it back to 0.
   source.onended=()=>{ isPlaying=false; pausedAt=audioBuffer.duration;
                        $('play').textContent='Play'; };
-  source.start(0,pausedAt); startedAt=ctx.currentTime-pausedAt; isPlaying=true; $('play').textContent='Pause'; }
+  /* SCHEDULED, NOT "NOW". start(0) means "at the next render quantum", which is up to one
+     quantum after ctx.currentTime -- and startedAt was then computed AS IF it had begun exactly
+     at currentTime, baking that error into every position for the rest of the track. Naming the
+     time makes the two agree: the source starts at t0 and startedAt is derived from the same t0.
+     The lead-in is one quantum plus a margin, which is inaudible and cannot be missed. */
+  const t0=ctx.currentTime+0.03;
+  source.start(t0,pausedAt); startedAt=t0-pausedAt; isPlaying=true; $('play').textContent='Pause'; }
 function pause(){ if(!source)return;
   // Clamped, as seek() already was. pos() runs free of the buffer, so an unclamped store here
   // handed play() an offset past the end.
   pausedAt=Math.max(0,Math.min(audioBuffer?audioBuffer.duration:pos(),pos()));
   stopSource(); isPlaying=false; $('play').textContent='Play'; }
-const pos=()=>isPlaying?ctx.currentTime-startedAt:pausedAt;
+/* WHERE THE LISTENER IS, NOT WHERE THE GRAPH IS. ctx.currentTime is the audio graph's clock,
+   which runs AHEAD of what leaves the speakers by the output latency -- so a position taken
+   straight from it describes sound that has been computed but not yet heard, and every visual
+   keyed to it fires early by exactly that much. Built-in output is usually 5-30ms, which is
+   small; Bluetooth is routinely 150-300ms, which is most of a beat at 120bpm and would read as
+   badly out of sync on a machine where nothing is wrong with the code.
+   outputLatency is the number that describes this and is what the spec provides for it;
+   baseLatency is the fallback where a browser does not report it (Safari), and 0 is the last
+   resort. Measured in the pane this was developed in: outputLatency 0, baseLatency 5.3ms, so it
+   changes nothing here -- which is exactly why it had to be reasoned about rather than observed. */
+const audioLag=()=>{ if(!ctx) return 0;
+  const L=ctx.outputLatency; return (typeof L==='number'&&L>0)?L:(ctx.baseLatency||0); };
+// Floored at 0: between the call to play() and the scheduled start the graph has not reached
+// t0 yet, so the raw expression is negative for those few milliseconds, and beatsAtTime would
+// be asked for a negative beat index at the top of a track.
+const pos=()=>isPlaying?Math.max(0,ctx.currentTime-startedAt-audioLag()):pausedAt;
 function seek(x){ if(!audioBuffer)return; const was=isPlaying; if(isPlaying){stopSource();isPlaying=false;}
   pausedAt=Math.max(0,Math.min(audioBuffer.duration-0.1,x));
   prevT=-1; resetOnsetCursors(pausedAt); if(was)play(); }
@@ -4961,7 +5004,8 @@ function frame(){
            Falls back to the old count when a track yields no downbeats. */
         const isDown = dbSet ? dbSet.has(beats[bi]) : ((beatCount&3)===0);
         const inBar = isDown ? 0 : 1;
-        pulse = isDown ? 1.0 : 0.62;                 // downbeat lands harder than the rest
+        // PULSE_GAIN normalises the peak against the old 16/s attack -- see ATK_GAIN.
+        pulse = (isDown ? 1.0 : 0.62)*PULSE_GAIN;    // downbeat lands harder than the rest
         lastBeatT=beats[bi]; lastBeatDown=isDown;   // for the SYNC readout
         // Where the bar starts, for the matrix's bar LFO -- see modUpdate. Only from a real
         // analysed downbeat: the &3 fallback counts from the tracker's first beat, which is the
@@ -4986,7 +5030,7 @@ function frame(){
       for(const b of BANDS){ const a=on[b]; if(!a) continue;
         while(OCUR[b]<a.length && a[OCUR[b]][0]<=t){
           const s=a[OCUR[b]][1];
-          HIT[b]=Math.max(HIT[b],s);
+          HIT[b]=Math.max(HIT[b],s*ATK_GAIN[b]);   // see ATK_GAIN: timing change, not a level change
           OCUR[b]++; } }
     }
     for(const b of BANDS) BND[b]=sm(BND[b],sampleCurve(b,t),8.0,dt);
@@ -5133,7 +5177,9 @@ function frame(){
              geometryDeformation:Math.min(1,energy*0.5+tension*0.5),
              materialReflectivity:MAT.reflect, sceneComplexity:Math.min(1,0.3+energy*0.5+epic*0.3) }, dt, 0.55);
   pulse*=Math.exp(-6.0*dt);
-  pulseS += (pulse-pulseS)*(1-Math.exp(-16*dt));      // smoothed attack -> no hard beat snap
+  // Same change, same reason, same normalisation as the per-band envelopes above: 16 -> 160 puts
+  // the beat pulse's peak 21ms after the beat instead of 98ms, and PULSE_GAIN holds its height.
+  pulseS += (pulse-pulseS)*(1-Math.exp(-160*dt));
   // per-band envelopes: decay the transient, then smooth its attack so hits land soft
   for(const b of BANDS){ HIT[b]*=Math.exp(-DECAY[b]*dt);
     HITS[b]+=(HIT[b]-HITS[b])*(1-Math.exp(-ATTACK[b]*dt)); }
