@@ -2117,10 +2117,17 @@ void main(){
         float rNoL=max(0.0,dot(rn,L));
         // Shaded with the SAME material terms as the primary hit, so the reflected body reads as
         // the same object rather than as a grey proxy pasted into the surface.
+        /* envL, NOT env. These two calls were the only place in the shader that read the raw
+           analytic room instead of the lit one -- so when a glossy form reflected ITSELF, the
+           reflected body was lit by a different room from the one lighting the body doing the
+           reflecting: no u_env (the Director's level, which rides darkness), no u_warmth tint,
+           and the prefiltered HDRI skipped entirely even when it was loaded. The mismatch is
+           invisible on a shape that never sees itself and unmissable on one that does, which is
+           exactly what the kaleidoscope makes: a ring of lobes all facing each other. */
         vec3 rc = base*( keyC*(0.95*rNoL*mix(0.35,1.0,calcSha(hp,L,min(u_shaN,40))))*mix(0.35,1.0,rAO)
-                       + env(rn,1.0)*1.22*mix(0.22,1.0,rAO) );
+                       + envL(rn,1.0)*1.22*mix(0.22,1.0,rAO) );
         // one cheap gloss term so the reflected surface is not flat matte inside the reflection
-        rc += env(reflect(R,rn), min(1.0,rgh+0.22))*0.22*mix(0.3,1.0,rAO);
+        rc += envL(reflect(R,rn), min(1.0,rgh+0.22))*0.22*mix(0.3,1.0,rAO);
         refl = rc;
       } else {
         refl = envL(R,rgh)*mix(0.35,1.0,clamp(rocc,0.0,1.0));
@@ -2872,8 +2879,14 @@ const MARCH_MAX_PX = 26e6;                          // ~26 Mpx: 2x on a 3.4k can
    visible fault for another. This buys most of the frame rate back for a softness that lands
    while the silhouette is in motion, which is where it is least readable. */
 let morphScale=1.0;
+// Declared HERE, above applyScale, not with the rest of the governor's state further down:
+// applyScale runs once during setup (the mip-support probe calls it), which is before a `let`
+// declared later in the module has initialised -- a temporal dead zone throw that takes the
+// whole script with it, and it does not reproduce on a hot reload, only on a cold load.
+let scaleSettle=0;             // frames the governor must not measure -- see frameAvg
 const MORPH_RSCALE=0.74;           // linear; pixels fall to ~0.55 -- see the measurement above
 function applyScale(){
+  scaleSettle=2;                 // see frameAvg: the governor may not measure its own resize
   const s=rscale*morphScale;
   let w=Math.max(2,Math.round(glc.width*s)), h=Math.max(2,Math.round(glc.height*s));
   const maxDim=gl.getParameter(gl.MAX_TEXTURE_SIZE)||4096;
@@ -3200,7 +3213,7 @@ const KALSET={seg:6, off:0.30, pump:0.10, drift:0.16, core:0.075};  window.KALSE
 // Breathing on the bar, sweeping across the phrase. 4 and 14 rather than 4 and 16 so the two
 // never repeat together into a single pulse the eye can predict.
 const KAL_PUMP_BEATS=4, KAL_DRIFT_BEATS=14;
-let frameAvg=16, lastQ=0, QLOCK=false;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
+let frameAvg=16, lastQ=0, QLOCK=false, lastDpr=0;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
 // composition presets -> continuous shape params (eased between sections)
@@ -4553,8 +4566,27 @@ function frame(){
   // switch, the analyse pass) dominating the average, rather than hiding the steady state.
   // TFREEZE zeroes dt but not rawMs, so a pinned frame still measures — it used to drag frameAvg
   // toward zero exactly while someone was holding a heavy frame still in order to look at it.
-  frameAvg += (Math.min(200,rawMs)-frameAvg)*0.1;
-  if(now-lastQ>500){ lastQ=now;
+  /* THE GOVERNOR MUST NOT MEASURE THE COST OF ITS OWN CORRECTION. Reallocating the targets is
+     expensive -- MEASURED at 537ms median on the frame a canvas resize lands, against a 14.8ms
+     median frame -- and that frame was going straight into frameAvg, which is the input the
+     governor reads to decide whether to resize again. One resize clamps to 200 and enters at
+     0.1, so it lifts frameAvg by about +18ms in a single sample: more than the entire 14.5-18
+     dead band, and therefore a GUARANTEE that the next check degrades too.
+     Measured consequence, with the kaleidoscope open and a shape change running: five canvas
+     steps back to back at t=54.86, 55.50, 56.14, 56.78, 57.40, each frame 537-553ms. The form
+     froze five times in 2.5 seconds and came out the other side at 70% canvas. That is a
+     feedback loop, not a measurement: the governor was reading its own footprints.
+     Two frames are skipped rather than one, because the allocation lands on one frame and the
+     first draw at the new size on the next. */
+  if(scaleSettle>0) scaleSettle--;
+  else frameAvg += (Math.min(200,rawMs)-frameAvg)*0.1;
+  /* NOT DURING A MORPH. Every branch below can reallocate, and a shape change is precisely the
+     two seconds the viewer is watching most closely -- five reallocations inside one transition
+     is the reported "shape change is not smooth". It costs nothing to wait: measured, the frames
+     DURING a morph run at 12.6ms p50, faster than the 14.8ms median, because the morph already
+     drops the march itself (MORPH_RSCALE). lastQ is deliberately not touched here, so the first
+     check after the morph lands immediately rather than waiting out another 500ms. */
+  if(now-lastQ>500 && phase!==1){ lastQ=now;
     // ceiling is 1.45: above 1.0 the march genuinely supersamples, which the post pass
     // resolves with a real 4-tap tent — the cleanest edges available for the cost
     // Threshold must sit ABOVE the vsync interval (16.7ms @60Hz) or quality can never rise:
@@ -4648,14 +4680,25 @@ function frame(){
        the same lever at the ordinary 18ms threshold. */
     /* 55ms stays the EMERGENCY rung and keeps its place at the head of the chain: a frame that
        bad should shed pixels immediately rather than walk down the cheap levers first. */
-    else if(dprScale>0.66 && frameAvg>55){ dprScale=Math.max(0.66,dprScale-0.06); resize(); }
+    else if(dprScale>0.66 && frameAvg>55 && now-lastDpr>2000){
+      lastDpr=now; dprScale=Math.max(0.66,dprScale-0.06); resize(); }
     /* THEN THE CHEAPEST QUALITY IN THE FRAME, before anything that costs sharpness. See SHA_FLOOR
        for the cost and error measurements. Four ticks takes the taps from 128 to the floor, which
        is 2s at the governor's 500ms cadence -- fast enough for a section change, and deliberately
        not instant, because a tap count that jumps with every transient would pump the grain. */
     else if(frameAvg>18.0 && shaScale>0.001){ shaScale=Math.max(0,shaScale-0.25); }
-    else if(dprScale>0.66 && frameAvg>18.0 && rscale<=SFLOOR+1e-3){
-      dprScale=Math.max(0.66,dprScale-0.06); resize(); }
+    /* THE CANVAS LEVER GETS ITS OWN, MUCH SLOWER CADENCE. Every other branch here is cheap to
+       act on; this one reallocates the canvas and every target behind it, measured at 537ms on
+       the frame it lands -- 36x the median frame. A lever that costs half a second cannot be
+       pulled on the same 500ms tick as one that costs nothing, because five ticks of it is 2.5
+       seconds of frozen image, which is what the kaleidoscope was producing: the fold relaxes
+       SFLOOR to 0.574 (0.82 x KFL), rscale reaches it quickly, and this branch then became live
+       and stepped five times in a row.
+       2s between steps lets the frame settle at the new size and be judged on its own cost
+       rather than on the cost of getting there. Combined with the settle frames on frameAvg, one
+       step is now one step. */
+    else if(dprScale>0.66 && frameAvg>18.0 && rscale<=SFLOOR+1e-3 && now-lastDpr>2000){
+      lastDpr=now; dprScale=Math.max(0.66,dprScale-0.06); resize(); }
     // The floor is the TIER's, not a constant. It was hard-coded at 1.00, which meant no tier
     // could ever render fewer pixels than the native grid however slow the frame got -- so the
     // one lever that measurably moves this renderer was unavailable to the tier that exists to
@@ -4704,7 +4747,8 @@ function frame(){
        at 21fps: with the degrade rule above now reachable at 18ms, that pair would have hunted
        against each other every 500ms -- shed pixels at 18, take them back at 48, forever. Both
        ends read the same 14.5ms headroom gate the rest of the governor uses. */
-    else if(frameAvg<14.5 && rscale>=1.0 && dprScale<DCAP){ dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
+    else if(frameAvg<14.5 && rscale>=1.0 && dprScale<DCAP && now-lastDpr>2000){
+      lastDpr=now; dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
     /* AND THE TAPS COME BACK LAST OF THE THREE, for the same reason they went first: this is the
        loss nobody can see, so it is the one worth living with longest. Only once the canvas is at
        full dpr and the march is at native -- restoring grain while the image is still upscaled
