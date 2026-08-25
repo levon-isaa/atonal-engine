@@ -417,7 +417,7 @@ uniform float u_wear;                  // edge wear, 0..1; see the WEAR note in 
 uniform float u_nobound;               // 1 = march unbounded, as before the ray/sphere test (A/B)
 uniform float u_bmarg;                 // extra bounding radius, for testing whether the bound clips
 uniform float u_kal,u_kalPh,u_kalSeg,u_kalOff;   // amount 0..1, mirror angle, order, ring offset
-uniform float u_kalPump,u_kalDrift,u_kalScl;      // the sample point breathing and sweeping; see kalEval
+uniform float u_kalPump,u_kalScl;                 // the sample point's radial push; see kalEval
 uniform float u_kalBev,u_kalCore;                // bevel compensation, and the axis cut; see kalEval
 const float KAL_REACH=1.15;   // the profile reach in this normalised space; see REACH[] in JS
 uniform float u_swirl;                 // third rotation axis (xy / about z); see formRot
@@ -1071,10 +1071,15 @@ vec3 kalFold(vec3 p,float N){
    So the richness cannot come from which slice is chosen. It comes from the slice MOVING. A real
    kaleidoscope is not a fixed pattern being spun; it is a fixed set of mirrors with the source
    drifting past them, and the mandala reconfigures continuously as it goes -- petals grow, meet,
-   merge and separate. u_kalPump breathes the sample radially and u_kalDrift sweeps it sideways
-   across the mirror line, both on musical periods, and that sideways sweep is the one that makes
-   the pattern reconfigure rather than merely turn. A C_N form turning about its own symmetry axis
-   is invisibly turning; this is what gives it something to do instead.
+   merge and separate. u_kalPump pushes the sample radially, and what makes the pattern
+   RECONFIGURE rather than merely turn is u_kalPh sweeping the mirror line underneath it. A C_N
+   form turning about its own symmetry axis is invisibly turning; those two are what give it
+   something to do instead.
+   There was a third, u_kalDrift, offsetting the sample TANGENTIALLY on a 14-beat sine. It is
+   gone: a tangential offset that keeps growing is a copy travelling round the ring, which is
+   what u_kalPh already does monotonically and on the beat grid, so this was a second and
+   reversing copy of a motion the fold already had. See KAL_PUMP_DECAY for why the reversal is
+   the part that mattered.
    THE SILHOUETTE STILL DOES NOT GROW: the scale subtracts the pump's full amplitude as well as
    the offset, so f*REACH + pump + S*REACH <= REACH at every point in the cycle. Framing, the
    march bound and the studio floor all still hold, and f=0 with no drive collapses to the old
@@ -1096,8 +1101,8 @@ float kalEval(vec3 p,float N){
      u_kalOff >= 0.34 at the phase that happened to be live, and changed shape as the phase
      drifted. Along the bisector each copy is centred in its own wedge at every phase. */
   float w=PI/N, b=u_kalPh+w*0.5;
-  vec2 dir=vec2(cos(b),sin(b)), tang=vec2(-dir.y,dir.x);
-  q.xy-=dir*(f*KAL_REACH+u_kalPump)+tang*u_kalDrift;
+  vec2 dir=vec2(cos(b),sin(b));
+  q.xy-=dir*(f*KAL_REACH+u_kalPump);
   float d=evalForm(q/S)*S;
   /* PUNCH OUT THE FOLD AXIS. Every wedge meets at r=0, so a polar fold puts a CONE SINGULARITY
      there -- N surfaces converging on one point, which renders as the little spiked umbrella with
@@ -3366,10 +3371,36 @@ const MORPH={k:0.10, comp:0.94, blob:0.62, r:0.92};  window.MORPH=MORPH;
    (Arc) closes into a continuous ring. Past about 0.4 the thin profiles stop touching and break
    into scattered chips -- their copies still overlap by bounding radius, but a hollow ring has no
    material where its neighbour arrives. */
-const KALSET={seg:6, off:0.30, pump:0.10, drift:0.16, core:0.075};  window.KALSET=KALSET;
-// Breathing on the bar, sweeping across the phrase. 4 and 14 rather than 4 and 16 so the two
-// never repeat together into a single pulse the eye can predict.
-const KAL_PUMP_BEATS=4, KAL_DRIFT_BEATS=14;
+const KALSET={seg:6, off:0.30, pump:0.055, core:0.075};  window.KALSET=KALSET;
+/* ---- THE FOLD'S SAMPLE MOVEMENT: A TRANSIENT, NOT AN OSCILLATION ----
+   pump and drift were a pair of sines on the sample point -- pump breathing it radially every 4
+   beats, drift sweeping it sideways every 14. That is the reported "wobble", and it is the same
+   construction this file has already identified and removed twice:
+
+     the spin  "Everything that oscillated here -- spinKick's onset offsets, the bar-locked orbit
+                sway -- was removed for reading as wobble; a monotonic turn cannot"
+     the camera "the camera did not sway, it REVERSED, twice a bar, every bar. That is the wobble"
+
+   pump reversed twice a bar, every bar. Identical construction, identical period, still shipping
+   -- because it only shows while the fold is open, and until the fold became a latched state the
+   average bloom lasted 1.3s and nobody saw a full cycle of it. Six-second blooms show it plainly.
+
+   Its size is the other half. The ring offset is 0.30 and the pump swung +/-0.115 of it after the
+   kMove and 1.15 factors: a 38% swell and collapse of the whole rosette, 1.4 seconds apart at
+   176bpm. That is not a breath, it is a pulse the eye cannot help tracking.
+
+   DRIFT IS GONE ENTIRELY, and nothing replaces it because something already had. It offsets the
+   copy TANGENTIALLY, and a tangential offset that keeps growing is a copy travelling round the
+   ring -- which is exactly what kalSpin does to u_kalPh, monotonically, locked to the beat grid,
+   for reasons written up at KAL_BEATS. Oscillating the same motion underneath it was a second,
+   reversing copy of a movement the fold already had.
+
+   PUMP STAYS, AS A TRANSIENT. The alternative to a sine is not stillness, it is the shape this
+   file already reached for at kalKick: a decaying nudge on the low onsets, which reads as the
+   music landing rather than as motion of its own. Same argument, same envelope, and it cannot
+   reverse because a decay has no other side. Halved as well, since a transient peaks where a sine
+   only passes through. */
+const KAL_PUMP_DECAY=3.4;
 let frameAvg=16, lastQ=0, QLOCK=false, lastDpr=0;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
@@ -3681,7 +3712,7 @@ let kalPhase=1.0;                                     // mirror angle, in units 
    churns, and the seams read as part of the form again. The beat itself is carried by kalKick
    below, which is transient and therefore reads as the music landing rather than as motion. */
 const KAL_BEATS=32;
-let kalBase=1.0, kalSpin=0, kalKick=0;
+let kalBase=1.0, kalSpin=0, kalKick=0, kalPumpE=0;
 const KAL_SECS=1.2;
 /* ---- WHETHER THE FOLD IS OPEN AT ALL IS A DECISION, NOT A READING ----
    The drive was a pure instantaneous function of the live energy curve: rescale it against the
@@ -3908,14 +3939,64 @@ const SWIRL_BEATS=SPIN_BEATS*1.5;                    // 24 beats, about Z
    Note that part of the reported "too quick" was not the ladder at all but the catch-up snaps
    documented at the morph step and the governor -- this is the other part, and it is the half
    that survives once the frame is smooth. */
-const SPIN_LADDER=[6,8,11,16,22];                    // beats per revolution, fast -> slow
+/* ---- AND THE LADDER IS IN SECONDS, BECAUSE THAT IS WHAT IT WAS ALWAYS ARGUED IN ----
+   Read the note above this one: "at 129 BPM is a revolution every FIFTEEN SECONDS... 16 halves
+   that to ~7s, which is slow enough to hold a pose and fast enough that the turn is the movement
+   you notice." Every word of that reasoning is in SECONDS, and the number it produced was stored
+   in BEATS -- so the one duration anybody actually chose only holds at one tempo. This file has
+   now made the same mistake three times (the reform gates, the morph length, and here); the rule
+   it keeps rediscovering is that WHERE a motion lands is a question for beats and HOW FAST it
+   goes is a question for seconds.
+
+   What the beat ladder meant in wall clock, seconds per revolution of the primary axis:
+
+       bpm       6      8     11     16     22
+        88     4.1    5.5    7.5   10.9   15.0
+       120     3.0    4.0    5.5    8.0   11.0
+       176     2.0    2.7    3.8    5.5    7.5
+
+   At 176 the whole ladder is faster than the design target, and its top rung is three and a half
+   times faster. MEASURED on the 176bpm upload, sampling the form's own angle every frame: the
+   spin ran at a median of 2.73 SECONDS per revolution and touched 1.47. The stated target is 7.
+
+   So the rungs are seconds now, and the beat count is whichever whole number of bars lands
+   closest -- the same construction morphBeats uses, and for the same reason. The turn stays
+   phase-locked to the grid, which is the entire point of counting it in beats; what no longer
+   happens is the wall-clock rate scaling with 60/bpm behind the choice.
+
+   The band is built around the 7s the note above chose: 7.5s in the middle, out to 4.5s where the
+   music is at its most driven and 15s where it is at its calmest. */
+const SPIN_SECS=[4.5,5.8,7.5,10.5,15.0];             // seconds per revolution, fast -> slow
+/* Whole numbers of bars only, so every period stays commensurate with every other and the pair of
+   off-axes still returns the form to a pose the eye can recognise -- see TUMBLE_BEATS. All of
+   these are multiples of 4, which the old ladder's 6, 11 and 22 were not, so the recurrence that
+   note describes is actually guaranteed now rather than merely intended. */
+const SPIN_BEAT_STEPS=[4,8,12,16,24,32,48,64];
+function beatsForSecs(secs){
+  const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
+  let best=SPIN_BEAT_STEPS[0], err=1e9;
+  for(const b of SPIN_BEAT_STEPS){ const e=Math.abs(b*60/bpm-secs); if(e<err){ err=e; best=b; } }
+  return best;
+}
+const snapBeats=b=>{ let best=SPIN_BEAT_STEPS[0], err=1e9;
+  for(const x of SPIN_BEAT_STEPS){ const e=Math.abs(x-b); if(e<err){ err=e; best=x; } } return best; };
 /* And the off-axes come closer in. At [3,1.5]..[4,3] the tumble ran three to four times the
    spin PERIOD, i.e. three to four times slower, which is why it measured at 7 deg/s while the
    spin was at 30. Keeping the pairs varied preserves the point of the table -- no two sections
    move alike -- but none of them is allowed to be nearly still any more. */
-const RATIO_PAIRS=[[2,1.5],[1.5,2],[2.5,1.5],[1.5,1.25],[1.25,2],[2,2.5]];   // [tumble, swirl] as multiples
+/* THE OFF-AXES ARE SUBORDINATE AGAIN. The note above is right that at [3,1.5]..[4,3] some pairs
+   left an axis nearly still, and tightening them fixed that -- but it went past the middle: at
+   1.25 the tumble runs at 80% of the spin RATE, and three near-equal rotations about three
+   different axes is not a turn with a lean in it, it is a tumble. MEASURED on the 176bpm upload,
+   spin 0.366 rev/s against tumble 0.183 and swirl 0.178 -- half the form's movement was off-axis,
+   which is the second half of the reported wobble (the fold's own sine being the first, see
+   KAL_PUMP_DECAY).
+   2 to 3.5 keeps every pair moving -- the fault the tightening was for -- while putting the
+   primary axis clearly in charge, which is what makes the motion read as one gesture. */
+const RATIO_PAIRS=[[2.5,2],[2,2.5],[3,2],[2,3.5],[2.5,3],[3.5,2.5]];   // [tumble, swirl] as multiples
 const MOTP ={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // live, eased
 let eFlow=null;        // the energy curve's own recent mean -- see `flow` in the frame loop
+let aFlow=1;           // ...and flow's own running mean, which is what re-centres it
 const MOTPT={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // target
 function hashAt(x){ return Math.abs(Math.sin(x*127.1+311.7)*43758.5453)%1; }
 /* Derive a section's three periods. Percussive material spins; harmonic and atmospheric material
@@ -3974,7 +4055,7 @@ function motionPeriodsFor(s){
   const sp=driveSpan();
   const dn = Math.max(0,Math.min(1,(drive-sp.lo)/Math.max(0.12, sp.hi-sp.lo)));
   // A high drive picks a SHORT period, i.e. a fast revolution: index runs down the ladder.
-  let i = Math.round((1-dn)*(SPIN_LADDER.length-1));
+  let i = Math.round((1-dn)*(SPIN_SECS.length-1));
   /* THE TEMPO-STABILITY STEP IS GONE. It read "a track whose tempo wanders is one where a
      neighbouring period will not read as a mistake, so it is allowed to step off the drive's
      pick" -- variety, bought with a hashed +/-1 on the rung. But a random step on a five-entry
@@ -3986,8 +4067,8 @@ function motionPeriodsFor(s){
      What it was reaching for is now bought continuously and musically by `flow` (see the frame
      loop), which varies the rate inside every section from the energy curve rather than dicing
      for it once at the boundary. A coarse randomiser on top of that is noise on a signal. */
-  i = Math.max(0,Math.min(SPIN_LADDER.length-1,i));
-  const base = SPIN_LADDER[i];
+  i = Math.max(0,Math.min(SPIN_SECS.length-1,i));
+  const base = beatsForSecs(SPIN_SECS[i]);   // seconds chosen, bars delivered -- see SPIN_SECS
   // Ratio pair from the section's own hash, biased by what the material is made of: percussive
   // sections take the tighter pairs (the body leads), harmonic ones the wider (the plane leads).
   const bias = Math.max(0,Math.min(1, 0.5 + (harm-perc)*0.6));
@@ -3997,7 +4078,8 @@ function motionPeriodsFor(s){
   const [mT,mS]=RATIO_PAIRS[k];
   // A narrow mix pulls the two off-axes toward each other so they read as one gesture.
   const nT = mT, nS = mS + (1-w)*(mT-mS)*0.35;
-  return {spin:base, tumble:base*nT, swirl:base*Math.max(1.2,nS)};
+  // Snapped, so the three periods are whole numbers of bars and their ratios stay rational.
+  return {spin:base, tumble:snapBeats(base*nT), swirl:snapBeats(base*Math.max(1.2,nS))};
 }
 // per-section random VARIANT -> unpredictable, different every play, eased so it stays smooth
 /* FOUR OF THESE SEVEN WERE ROLLED AND NEVER READ. twist, ring, countMul and thickMul were
@@ -5683,7 +5765,27 @@ function frame(){
      fault than a still one. Ceiling 1.55 so a swell cannot outrun the rung above it. */
   eFlow = (eFlow===null || !isPlaying) ? energy : eFlow + (energy-eFlow)*(1-Math.exp(-dt/5.0));
   const dEf  = energy-eFlow;
-  const flow = Math.max(0.78, Math.min(1.55, 1 + (dEf>0 ? dEf*1.15 : dEf*0.55)));
+  /* CENTRED, so the accent cannot become a permanent speed-up. flow is a DEVIATION multiplier:
+     the music pulls ahead of its own recent mean, the form answers, it settles back. Its centre
+     therefore has to be 1, and two things can push it off -- the gains are asymmetric on purpose
+     (a rise should read harder than a fall), and an energy curve that sits high with occasional
+     deep dips is left-skewed, so `energy - eFlow` comes out positive more often than not whatever
+     the gains are. Tracking the running mean of the result and removing the offset it shows fixes
+     both at once, on any distribution, without having to model the distribution. 8s, longer than
+     eFlow's 5: this cancels drift, not the answer to a phrase, and a sustained change of pace is
+     the section ladder's job.
+
+     HONESTLY, THIS IS A SMALL TERM AND THE FIRST MEASUREMENT OF IT WAS WRONG. It read p50 1.248
+     and looked like a quarter of the form's speed was DC offset -- but that was taken on the
+     synthetic 176bpm click fixture, whose curve drops to silence between hits and is therefore
+     the most skewed input this term will ever see. Replayed over REAL analysed curves the
+     uncentred median was already 1.009 on the 176bpm upload and 0.999 on the 120bpm track; only
+     the fixture showed 1.209. So this is a correctness fix worth keeping and it is NOT where the
+     excess movement was coming from -- that is SPIN_SECS and RATIO_PAIRS. Recorded because a
+     fixture that exaggerates the very effect being measured will mislead again otherwise. */
+  const fRaw = 1 + (dEf>0 ? dEf*1.15 : dEf*0.55);
+  aFlow += (fRaw-aFlow)*(1-Math.exp(-dt/8.0));
+  const flow = Math.max(0.78, Math.min(1.55, fRaw - (aFlow-1)));
   /* The off-axes take it at reduced strength rather than in full. All three swelling by the same
      factor is ONE gesture seen three times, which reads as the whole object throbbing; giving
      the body the swell and the off-axes about half of it keeps the three rates from locking
@@ -5746,7 +5848,7 @@ function frame(){
          the form's angle stopped being a pure function of the beat count the moment the rate
          was allowed to answer the music. Read them together: errBeats drifting WITH flow off
          1.0 is the design; errBeats drifting with flow pinned at 1.0 is a clock fault. */
-      flow:+flow.toFixed(3), eFlow:+eFlow.toFixed(3), barOrigin:+barOrigin.toFixed(2)};
+      flow:+flow.toFixed(3), eFlow:+eFlow.toFixed(3), aFlow:+aFlow.toFixed(3), barOrigin:+barOrigin.toFixed(2)};
   }
   // SLEW, not a spring: at most one full scale per KAL_SECS in either direction, so the drive
   // can move as fast as it likes and the shape still takes 1.2s to travel. This is what makes a
@@ -5768,8 +5870,11 @@ function frame(){
        against a near-static base whipped the seams across the form on every kick. 0.06 puts it
        near 11 degrees -- a nudge on the beat rather than a jump. */
     kalKick += (HITS.low*0.06+HITS.mid*0.04)*dt*8.0;
-  } else { kalSpin=0; kalKick=0; }        // a closed fold resets, so each bloom starts on its hash
-  kalKick *= Math.exp(-2.6*dt);
+    // ...and the sample's radial push rides the same kind of envelope -- see KAL_PUMP_DECAY
+    kalPumpE += HITS.low*dt*8.0;
+  } else { kalSpin=0; kalKick=0; kalPumpE=0; }   // a closed fold resets, so each bloom starts on its hash
+  kalKick  *= Math.exp(-2.6*dt);
+  kalPumpE  = Math.min(1.0, kalPumpE*Math.exp(-KAL_PUMP_DECAY*dt));
   kalPhase = kalBase + kalSpin + kalKick;
   // spinKick is gone. Feeding onsets into the rotation at all — as velocity OR as a decaying
   // offset — is what read as jiggle: something in the mix hits on almost every frame, so the
@@ -6042,15 +6147,13 @@ function frame(){
   {
     const kf=(KALO.off!==undefined?KALO.off:KALSET.off);
     const kMove=Math.max(0,Math.min(1, 0.22+arousal*0.78));
-    // window.KALBT forces the sweep's musical position, so the sample movement can be isolated
-    // from everything else the Director is doing on a frozen frame.
-    const bts=(window.KALBT!==undefined)?window.KALBT
-             :(director&&isPlaying)?beatsAtTime(pos()):(performance.now()/1000)*2;
-    const pump = KALSET.pump *kMove*Math.sin(2*Math.PI*bts/KAL_PUMP_BEATS);
-    const drift= KALSET.drift*kMove*Math.sin(2*Math.PI*bts/KAL_DRIFT_BEATS+1.7);
-    const rMax = Math.hypot(kf*1.15+KALSET.pump, KALSET.drift);
+    /* A TRANSIENT, NOT A SINE -- see KAL_PUMP_DECAY. kalPumpE is the decaying envelope, so this
+       only ever pushes the sample OUT and lets it fall back; there is no other side for it to
+       swing to. window.KALBT still pins it for a frozen-frame comparison, now by pinning the
+       envelope rather than a phase. */
+    const pump = KALSET.pump*kMove*((window.KALBT!==undefined)?window.KALBT:kalPumpE);
+    const rMax = kf*1.15+KALSET.pump;      // drift is gone: kalSpin carries the tangential move
     gl.uniform1f(US('u_kalPump'), pump*1.15);
-    gl.uniform1f(US('u_kalDrift'),drift*1.15);
     const kS=Math.max(0.10, 1.0-rMax/1.15);
     gl.uniform1f(US('u_kalScl'), kS);
     // 1/S, faded in with the bloom: at kalAmt 0 this is exactly 1, so an unfolded frame is
