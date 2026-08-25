@@ -73,10 +73,19 @@ SEG_KMAX_LO, SEG_KMAX_HI = 6, 16
 def _fold_tempo(bpm):
     """Fold a tempo into TEMPO_LO..TEMPO_HI by octaves.
 
-    Beat trackers routinely report a tempo one octave out (half- or double-time). Folding is
-    safe because a half-time reading describes the same beat grid at a different metrical level,
-    so the visual pacing is what changes, not the alignment. Guarded against a runaway loop on a
-    degenerate input (silence can yield 0 or inf).
+    Beat trackers routinely report a tempo one octave out (half- or double-time), and folding
+    brings a stray reading back into the range dance music lives in.
+
+    ONLY FOR A TEMPO WITH NO GRID BEHIND IT. The docstring used to claim folding was "safe
+    because a half-time reading describes the same beat grid at a different metrical level, so
+    the visual pacing is what changes, not the alignment". That was true when this number was the
+    only clock. It is not true now: the renderer interpolates events.beats for its musical time
+    and reads tempo.bpm for everything else, so if the two disagree by an octave the client is
+    running two contradictory clocks. Measured on a real upload -- a 176 BPM hardcore track whose
+    grid ships at 176.4 and whose reported tempo came back 88.16, exactly half, because the fit
+    landed above TEMPO_HI and was folded. See the call site.
+
+    Guarded against a runaway loop on a degenerate input (silence can yield 0 or inf).
     """
     if not np.isfinite(bpm) or bpm <= 1e-3:
         return 120.0
@@ -312,12 +321,23 @@ def layer1_signal(mono, stereo, sr, prog=None):
     # not a second opinion about the tempo: it is the spacing of the grid that actually ships, and
     # the client interpolates that grid, so the two must describe the same thing. Guarded only
     # against a degenerate fit (too few beats, or a slope outside any plausible tempo).
+    # AND THE FIT IS NOT FOLDED. _fold_tempo brings a stray octave back into 70..160, which is
+    # right for a bare estimate and wrong for this one: the fit measures the spacing of the grid
+    # that ships in events.beats, and the client interpolates that grid. Folding it makes the
+    # reported tempo describe a different metrical level from the beats beside it, and the
+    # renderer uses both -- the grid for musical time, the scalar for the kaleidoscope's sweep,
+    # the HUD, the genre heuristics and every grid-less fallback.
+    # MEASURED on a real upload: a hardcore track whose grid spans 734 beats over 249.3s, i.e.
+    # 176.4 BPM, reported 88.16 -- exactly half, because 176.4 is above TEMPO_HI and got folded
+    # once. The grid was right and the number beside it was an octave out.
+    # The fold stays for the path with no grid to be consistent with.
+    fitted = None
     if len(beat_times) >= 4:
         k = np.arange(len(beat_times), dtype=np.float64)
         slope = float(np.polyfit(k, beat_times, 1)[0])
         if slope > 1e-3 and 20.0 <= 60.0 / slope <= 400.0:
-            bpm = 60.0 / slope
-    f["tempo"] = _fold_tempo(bpm)
+            fitted = 60.0 / slope
+    f["tempo"] = round(fitted, 2) if fitted is not None else _fold_tempo(bpm)
     f["beat_frames"] = beats
     # ---- DOWNBEATS ----
     # The module docstring has always advertised events.downbeats and the payload has never
