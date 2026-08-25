@@ -407,6 +407,7 @@ uniform float u_fill;                  // directional fill leg of the rig; 0 abl
 uniform float u_keyG,u_fillG,u_ambG;   // key/fill/ambient gains; their RATIO is the modelling
 uniform float u_kvar;                  // cap on the Toksvig specular-AA roughness widening
 uniform float u_envFoot;               // 1 = footprint env LOD on, 0 = off. window.ENVFOOT, for A/B
+uniform float u_edgeGate;              // 1 = metals refuse the additive edge, 0 = old. window.EDGEGATE
 uniform vec3  u_f0Tint;                // metal reflectance colour: gold is not chrome lit yellow
 uniform float u_wear;                  // edge wear, 0..1; see the WEAR note in the shading
 uniform float u_nobound;               // 1 = march unbounded, as before the ray/sphere test (A/B)
@@ -2111,7 +2112,22 @@ void main(){
        little epicness or arousal there was nothing there to multiply, and the measured response
        to a full hi-hat was 0.09 of one 8-bit level. As an additive term the hat lights the edge
        whatever the section is doing, which is the point: a hat is a hat in a quiet passage too. */
-    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12+u_hAir*2.60)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec)*(1.0-u_furnace)*(1.0-u_hardAmb);
+    /* A METAL DOES NOT TAKE AN ADDITIVE EDGE, because its edge is already at the maximum the
+       physics allows: Fresnel goes to 1 at grazing, so a mirror's silhouette is the brightest
+       part of it before anything here is added. MEASURED on chrome, against a geometry mask so
+       the numbers are of the silhouette and not of a colour key:
+           at rest        the rim adds +17.7 levels to the ring and +2.7 to the body
+           on a hat peak  the ring lifts +79.8 and LANDS AT 240 of 255
+       That is the reported glow: two additive terms stacked on a Fresnel edge that had no room
+       left, clipping the outline to white on every transient. Without the rim the edge is still
+       77% brighter than the interior (145 against 82), so the metals do not go flat -- the
+       brightening they lose is the part that was never theirs to have.
+       NOT ZERO, at 0.15. The rim is how the section's valence reaches the form at all (see the
+       u_spec scaling beside it), and a metal that ignores the Director's mood entirely is a
+       different fault from one that glows. 0.15 leaves a trace of the section's colour on the
+       silhouette -- about 2.7 levels, which is where the body already sat -- without the halo. */
+    float edgeAdd=mix(1.0, 1.0-0.85*u_metal, u_edgeGate);
+    c+=rimC*pow(1.0-NoV,3.2)*(0.08+u_epic*0.34+u_arousal*0.12+u_hAir*2.60)*u_rimPulse*mix(0.4,1.0,occ)*mix(0.4,1.0,u_spec)*edgeAdd*(1.0-u_furnace)*(1.0-u_hardAmb);
     // environment reflection (fresnel + textured roughness) — specular occlusion
     vec3 R=reflect(-v,n);
     // How far the reflection sweeps across the room per pixel, as a mip level. See envFootLod:
@@ -2280,7 +2296,11 @@ void main(){
     // emissive glow (neon) — high-band stabs flare it, desaturated so it cannot band
     // HIGH is the surface glint. Raised from 0.30 and the mid term dropped, because mid now has
     // the fill leg -- two bands sharing one emission term was part of what made them indistinct.
-    c += base*fr*(u_emis*1.6+u_hHigh*3.20)*(1.0-u_furnace);
+    // Same gate, same reason: fr is pow(1-NoV,2.6), so this is a second additive glow sitting on
+    // the same already-saturated silhouette. Measured, it was the LARGER of the two on a hat peak
+    // -- 27.9 levels against the rim's 8.8. u_emis rides along with it, which costs nothing here:
+    // no metal in the set is emissive (chrome, gold and holo are all emis 0).
+    c += base*fr*(u_emis*1.6+u_hHigh*3.20)*edgeAdd*(1.0-u_furnace);
     // Direct specular: Cook-Torrance GGX (roughness still comes from the TEXTURED field, so the
     // lobe breaks up instead of reading as plastic). Blinn-Phong's pow(NoH,k) was the single
     // biggest "not a real render" cue here — its lobe has the wrong falloff and no geometry
@@ -5081,7 +5101,18 @@ function frame(){
   /* ADVANCED IN BEATS, NOT SECONDS. One revolution per MOTP.spin beats is the whole design, so
      the integration variable should be beats -- see beatsAtTime for the three ways the old
      seconds-times-estimated-bpm version lost the grid. Same rates, same feel, locked clock. */
-  const dBeats=musicalStep(dt, rawMs/1000);
+  /* TFREEZE HAS TO REACH THIS TOO, and it did not. Its contract is that it pins the clock AND
+     every dt-integrated value, which is what makes an A/B on a single frame possible -- and the
+     idle path of musicalStep was given its own rawSec argument (so that a slow frame could not
+     scale the turn rate down; see the note there), which TFREEZE deliberately does NOT zero
+     because frameAvg still has to measure a pinned frame. The two changes were each right on
+     their own and wrong together: with a form loaded but no track, the object kept rotating while
+     frozen.
+     MEASURED, and this is how it was found: with TFREEZE set, QLOCK on, u_time pinned and
+     identical uniform overrides, 52.3% of pixels still differed between two consecutive captures,
+     mean delta 36 levels. Every "frozen frame" comparison made against the idle path was reading
+     two different poses. Passing 0 for the idle step restores the contract. */
+  const dBeats=musicalStep(dt, (window.TFREEZE!=null) ? 0 : rawMs/1000);
   // The Director's rate plus the baseline, as one integration -- see SELFSPIN above.
   const selfRate = (SELFSPIN.on && SELFSPIN.beats>0) ? MOT.spin/SELFSPIN.beats : 0;
   formSpin   += 2*Math.PI*dBeats*(rSpin/MOTP.spin + selfRate);
@@ -5487,6 +5518,7 @@ function frame(){
   // window.ENVFOOT=0 turns the footprint env LOD off, so the two sides of it can be compared
   // on the SAME frame. Every A/B in this file has to compare one frame; see POSE and VARPIN.
   gl.uniform1f(US('u_envFoot'),(window.ENVFOOT!==undefined)?window.ENVFOOT:1.0);
+  gl.uniform1f(US('u_edgeGate'),(window.EDGEGATE!==undefined)?window.EDGEGATE:1.0);
   // f0 is per material and defaults to white (a dielectric's f0 comes from the 0.04 side of the
   // mix, so the value is only read when metal>0). MAT is eased toward MATT every frame, but f0
   // is a discrete identity rather than a level, so it is read straight off the preset.
