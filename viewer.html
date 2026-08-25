@@ -2440,6 +2440,7 @@ precision highp float;
 out vec4 o;
 uniform sampler2D u_tex, u_brt; uniform vec2 u_res, u_texel;
 uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
+uniform float u_bloomTent;             // 1 = tent per bloom level, 0 = single fetch. window.BLOOMTENT
 uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
 uniform float u_flat;     // 1 = flat-shaded look: no dither, no grain (see the dither line)
 uniform float u_dbg;
@@ -2476,6 +2477,18 @@ float gh21(vec2 p){
   q+=dot(q,q.yzx+19.19);
   return fract((q.x+q.y)*q.z);
 }
+/* One bloom level, tent-filtered. See the note at the call sites for why a single bilinear
+   fetch is not enough. u_texel is the MARCH texel; the bright buffer is half that resolution, so
+   one of ITS texels at level L spans 2*u_texel*exp2(L) in uv and half of one is u_texel*exp2(L).
+   u_bloomTent=0 restores the single fetch, for A/B on one frame. */
+vec3 btap(vec2 uv,float lod){
+  if(u_bloomTent<0.5) return textureLod(u_brt,uv,lod).rgb;
+  vec2 h=u_texel*exp2(lod);
+  return (textureLod(u_brt,uv+vec2( h.x, h.y),lod).rgb
+        + textureLod(u_brt,uv+vec2(-h.x, h.y),lod).rgb
+        + textureLod(u_brt,uv+vec2( h.x,-h.y),lod).rgb
+        + textureLod(u_brt,uv+vec2(-h.x,-h.y),lod).rgb)*0.25;
+}
 // Bloom now reads an ALREADY-thresholded buffer, so this is a pure gather: wide, soft, and
 // energy-preserving. No knee here — doing it per mip sample was the bug.
 vec3 bloom(vec2 uv,vec2 t){
@@ -2486,9 +2499,25 @@ vec3 bloom(vec2 uv,vec2 t){
     // A wider tap gathers from a much larger area of a large bright subject, so it deposits more
     // energy everywhere including the bands right next to the silhouette. The threshold, not the
     // tap radius, is the lever that controls how much of the form enters the bloom at all.
-    return textureLod(u_brt,uv,1.2).rgb*0.42
-         + textureLod(u_brt,uv,3.0).rgb*0.34
-         + textureLod(u_brt,uv,5.0).rgb*0.24; }   // 3 taps, same total weight
+    /* A TENT PER LEVEL, NOT ONE BILINEAR FETCH. Three textureLod calls is the cheap way to
+       gather a bloom and it has one artifact: a bilinear fetch from a magnified mip is only C0.
+       Inside a texel the value is a bilinear patch, and across a texel boundary the SLOPE jumps
+       -- so once the level is blown up to screen size the patch joins show as a regular lattice
+       of creases. That is the reported "low-res glow": not the glow being too wide or too
+       bright, but visibly built out of blocks.
+       MEASURED: the bloom's own contribution (frame with bloom minus frame without, on a frozen
+       chrome frame) has autocorrelation peaks in its second difference at lags 4, 5 and 6
+       pixels. The level-1.2 tap of a 1135-wide bright buffer magnified to a 2366 canvas has a
+       predicted texel spacing of 4.8 pixels. That is the lattice, and it is the tap itself.
+       Averaging four fetches offset by half a texel AT THAT LEVEL puts a tent over the bilinear
+       patch, which is C1: the slope no longer jumps at the joins, so there is no lattice to see.
+       The half-texel offset has to be computed per level -- u_texel is the MARCH texel and the
+       bright buffer is half that, so one of its texels at level L spans 2*u_texel*exp2(L) in uv
+       and half of one is u_texel*exp2(L). Getting that wrong either does nothing (too small) or
+       widens the bloom (too large), and widening it was measured to more than double the halo:
+       see the note above.
+       12 fetches where there were 3, in the post pass. */
+    return btap(uv,1.2)*0.42 + btap(uv,3.0)*0.34 + btap(uv,5.0)*0.24; }
   vec3 sum=vec3(0.); float w=0.;
   for(int i=-2;i<=2;i++)for(int j=-2;j<=2;j++){
     vec2 of=vec2(float(i),float(j)); float g=exp(-dot(of,of)*.22);
@@ -4752,6 +4781,13 @@ function frame(){
     // that has already been paid in full. smoothstep rather than a step so the floor does not
     // snap rscale up the instant the bloom starts to release.
     const kOn=Math.min(1,Math.max(0,(kalAmt-0.0)/0.15)); 
+    /* 0.30 STAYS, having been tested against the suspicion that it was the cause of a soft rim.
+       It is not: measured across a whole track with the fold open, sampling rscale and frame time
+       every frame and comparing the two settings at MATCHED track positions (11 buckets of 5s),
+       the median rscale is 1.18 either way -- the march is SUPERSAMPLING, not sitting on the
+       floor, so the floor is not what binds. Removing the relaxation entirely changed the median
+       rscale not at all and cost 7 fps (69.9 -> 62.5). A one-off reading of 0.574 that suggested
+       otherwise was a single moment in a busy section, not the steady state. */
     const KFL=1.0-0.30*(kOn*kOn*(3-2*kOn));
     const SMIN=(TIERS[TIER].scaleMax?(TIERS[TIER].scaleMin||0):0)*KFL, SMAX=TIERS[TIER].scaleMax||0;
     const SFLOOR=(TIERS[TIER].scaleMin||1.00)*KFL;   // banded tiers use SMIN above; the rest use this
@@ -5842,6 +5878,7 @@ function frame(){
     // RELEASE -> the exhale. Bloom lifts as tension is actively let go, which is the payoff
     // frame. Deliberately on RELEASE and not on low tension: a calm passage should look calm,
     // not blown — the lift belongs to the moment of letting go, not to the quiet that follows.
+    gl.uniform1f(UP('u_bloomTent'),(window.BLOOMTENT!==undefined)?window.BLOOMTENT:1.0);
     gl.uniform1f(UP('u_bloom'),Math.max(0,(0.34+energy*0.6+pulseS*0.24+HITS.high*0.22+HITS.air*0.14+release*0.20+MV('bloom')*0.9)*DX.bloom));
     gl.uniform1f(UP('u_sat'),Math.max(0,0.82+valence*0.25+LK.sat+MV('sat')*0.8));
     gl.uniform1f(UP('u_vig'),0.75+darkness*0.35);
