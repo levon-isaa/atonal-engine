@@ -5809,6 +5809,13 @@ function frame(){
      mean delta 36 levels. Every "frozen frame" comparison made against the idle path was reading
      two different poses. Passing 0 for the idle step restores the contract. */
   const dBeats=musicalStep(dt, (window.TFREEZE!=null) ? 0 : rawMs/1000);
+  /* MUSICAL SECONDS: how much of the TRACK went by, not how much of the wall clock did.
+     dBeats is the audio clock's own step, so this is the same number of seconds at steady
+     playback and a different number in the three cases that matter -- it is 0 while paused, it
+     survives a stall that clamps dt, and a seek moves it by exactly what the seek moved.
+     For anything whose SPEED was chosen in seconds but which must still belong to the music,
+     this is the variable to integrate against; see camAng. */
+  const mSec = dBeats*60/((director&&director.tempo&&director.tempo.bpm)||120);
   // The Director's rate plus the baseline, as one integration -- see SELFSPIN above.
   const selfRate = (SELFSPIN.on && SELFSPIN.beats>0) ? MOT.spin/SELFSPIN.beats : 0;
   formSpin   += 2*Math.PI*dBeats*(rSpin/MOTP.spin + selfRate);
@@ -5834,6 +5841,7 @@ function frame(){
       rscale:+rscale.toFixed(3), dprScale:+dprScale.toFixed(2), tier:TIER, frameAvg:+frameAvg.toFixed(1),
       shaScale:+shaScale.toFixed(2), shaTaps:shaTaps(),
       spin:formSpin, tumble:formTumble, swirl:formSwirl,
+      camAng:+camAng.toFixed(4), kalSpin:+kalSpin.toFixed(4),   // the two on the wall clock
       pSpin:+MOTP.spin.toFixed(2), pTum:+MOTP.tumble.toFixed(2), pSwi:+MOTP.swirl.toFixed(2),
       pulseS:+pulseS.toFixed(3), energy:+energy.toFixed(3), arousal:+arousal.toFixed(3),
       spinPeriod:+MOTP.spin.toFixed(2), pendingReform:!!reformWant,
@@ -5864,7 +5872,13 @@ function frame(){
     // NOT scaled by MOT.spin. The mirror angle is a form parameter, not a fourth rotation axis:
     // Freeze holds the form still so you can look at it, and the whole point of this change is
     // that the rosette keeps answering the music while you do.
-    kalSpin += (bpm/60)/KAL_BEATS*dt*(0.55+energy*1.20);
+    /* ON THE GRID, NOT ON A SCALAR TIMES SECONDS. This was (bpm/60)*dt -- an ESTIMATED beat rate
+       multiplied by wall-clock seconds, which is precisely the construction beatsAtTime exists to
+       replace and which was fixed for the form's own spin and left here. KAL_BEATS is written up
+       as "beats per unit of mirror angle", so the mirror is supposed to be locked to the grid;
+       dBeats is that lock. Same rate wherever the estimate was right, and now correct where it
+       was not -- including through a stall, where dt's clamp was quietly slowing the sweep. */
+    kalSpin += dBeats/KAL_BEATS*(0.55+energy*1.20);
     /* THE KICK CARRIES THE BEAT NOW that the sweep underneath it is slow, so it is deliberately
        small: at the old 0.16 a full-strength low hit swung the mirror about 29 degrees, which
        against a near-static base whipped the seams across the form on every kick. 0.06 puts it
@@ -5885,7 +5899,28 @@ function frame(){
   // AUTO-ROTATE is a gate on the Director's orbit only. Everything else the Director decides —
   // framing distance, height, roll, the dolly on the kick — keeps running, because those are
   // composition decisions rather than "movement the user might want to take over".
-  if(autoRotate) camAng += (CM.spin*(0.45+energy*0.45) + 0.008)*dt*MOT.orbit;
+  /* THE CAMERA IS ON THE MUSIC'S CLOCK TOO. This integrated wall-clock dt, and it was the last
+     thing in the renderer that did. Three consequences, all of them the reported "movement that
+     is not matching the music":
+
+       IT DID NOT STOP. MEASURED: playing, the orbit ran at 0.1019 rad/s; PAUSED, with the track
+       frozen and formSpin correctly at 0, it carried on at 0.0994 rad/s -- 98% of full speed with
+       no music at all. The form standing still while the camera keeps circling it is the most
+       visible mismatch the frame can produce, and it happened on every pause.
+
+       IT WAS ON A DIFFERENT CLOCK FROM THE FORM. formSpin advances on the analysed beat grid; this
+       advanced on seconds. Two clocks that do not tick together beat against each other, and the
+       phase between the form's turn and the camera's drifts continuously through a track.
+
+       IT LOST TIME IN A STALL, for the reason musicalStep is written up for: dt is clamped to
+       50ms, so every frame slower than that under-advanced the orbit while the music did not.
+
+     mSec rather than dBeats, deliberately: the orbit's rate was chosen in seconds and should stay
+     the length it was chosen to be, so this is tempo-INVARIANT in wall clock while still being
+     driven by the audio clock. A fast track does not get a faster camera -- it gets a camera that
+     stops when it stops, and that never drifts against the form. Same rate at steady playback,
+     so nothing about the look changes except in the cases above. */
+  if(autoRotate) camAng += (CM.spin*(0.45+energy*0.45) + 0.008)*mSec*MOT.orbit;
   /* NO CAMERA SWAY. There was a bar-locked oscillation here -- a sine on the orbit angle with a
      period of exactly one bar, plus the same phase at half rate on the roll -- and it was sized
      against nothing at all. MEASURED against the orbit it was added to:
