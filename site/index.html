@@ -22,8 +22,8 @@
   --line-3:rgba(255,255,255,.26);
   --ink:#F3F3F8; --ink-2:#9498A8; --ink-3:#5E6272;
   --mag:#FF3E8E; --vio:#8257FF; --amb:#FFB454;
-  --col:min(1180px, calc(100vw - 48px));
-  --pad:clamp(18px,3.2vw,34px);
+  --col:min(1560px, calc(100vw - 56px));
+  --pad:clamp(18px,2.6vw,40px);
   --ease:cubic-bezier(.22,.86,.28,1);
 }
 *{box-sizing:border-box}
@@ -1409,7 +1409,7 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
   var hF=document.getElementById('hForm'), hM=document.getElementById('hMat'),
       hK=document.getElementById('hKal'), hFps=document.getElementById('hFps');
 
-  var st={ mode:0, mode2:0, mix:0, li:LADDER.indexOf(0), lastBar:-1, pinned:false };
+  var st={ mode:0, mode2:0, mix:0, li:LADDER.indexOf(0), lastBar:-1, pinned:false, matI:0 };
   var drag={on:false, x:0, y:0, ox:0, oy:0};
   var dpr=Math.min(devicePixelRatio||1,2), steps=118, ema=16.7, last=performance.now(), t0=last;
   var vis=true, fpsShow=0, fEma=16.7;
@@ -1460,14 +1460,25 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
 
     /* ---- direction, on the bar grid ---- */
     var bar=Math.floor(beat/4);
-    if(!st.pinned && bar!==st.lastBar && bar%4===0 && bar>0){
+    /* Every eight bars, not every four. A form that changes every five seconds
+       never settles long enough to be looked at. */
+    if(!st.pinned && bar!==st.lastBar && bar%8===0 && bar>0){
       st.li=(st.li+1)%LADDER.length;
       st.mode2=LADDER[st.li];
       st.mix=0.0001;
     }
     st.lastBar=bar;
     if(st.mix>0){
-      st.mix+=dt/(SPB*2.6);                        /* the morph lasts about two beats */
+      var was=st.mix;
+      /* SIX BEATS, about two seconds. It was two beats, and the melt through the
+         ball is the interesting part of a shape change -- run it that fast and
+         the eye reads a cut rather than a transformation. */
+      st.mix+=dt/(SPB*6.0);
+      /* The material swaps at the MIDPOINT, where blendField has passed the form
+         through a sphere and there is no recognisable surface to see it happen
+         on. Materials do not ease here (they are an index, not a curve), so the
+         only way to hide the step is to put it where nothing is legible. */
+      if(was<0.5 && st.mix>=0.5) st.matI=(st.matI+1)%9;
       if(st.mix>=1){ st.mode=st.mode2; st.mix=0; }
     }
 
@@ -1502,7 +1513,7 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
       spin:  0.58*Math.sin(beat/16*Math.PI*2) + drag.ox,
       tilt: -0.20 + 0.42*Math.sin(beat/24*Math.PI*2) + drag.oy,
       swirl: beat/48*Math.PI*2,
-      mat:   Math.floor(beat/64)%9,
+      mat:   st.matI,
       hue:   (beat/220)%1,
       /* FRAMING, DERIVED NOT GUESSED. The ray is normalize(vec3(uv*1.05,-1.55))
          from z=3.35/zoom, so a point at object radius r lands at
@@ -1533,7 +1544,7 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
       if(hFps) hFps.textContent=(1000/Math.max(1,fEma)).toFixed(1)+' fps';
       if(hK) hK.textContent=kal.toFixed(2);
       if(hF) hF.textContent=NAMES[st.mix>0.5?st.mode2:st.mode];
-      if(hM) hM.textContent=MATS[Math.floor(beat/64)%9];
+      if(hM) hM.textContent=MATS[st.matI];
     }
   }
   requestAnimationFrame(frame);
@@ -1699,7 +1710,7 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
     requestAnimationFrame(loop);
     if(!live) return;
     var t=REDUCE?3.0:(now-t0)/1000;
-    if(mix>0){ mix+=1/60/0.85; if(mix>=1) mix=0; }          // the step change morphs
+    if(mix>0){ mix+=1/60/1.7; if(mix>=1) mix=0; }           // the step change morphs, unhurried
     var a=LOOK[cur], b=LOOK[from];
     var m=mix>0?mix:1, e=m*m*m*(m*(m*6-15)+10);
     var lerp=function(x,y){ return y+(x-y)*e; };
