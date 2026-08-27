@@ -534,6 +534,7 @@ uniform float u_bmarg;                 // extra bounding radius, for testing whe
 uniform float u_kal,u_kalPh,u_kalSeg,u_kalOff;   // amount 0..1, mirror angle, order, ring offset
 uniform float u_kalPump,u_kalScl;                 // the sample point's radial push; see kalEval
 uniform float u_kalBev,u_kalCore;                // bevel compensation, and the axis cut; see kalEval
+uniform float u_glassTMin;   // refraction fade-in path length; 0 = old behaviour. window.GLASSTMIN
 const float KAL_REACH=1.15;   // the profile reach in this normalised space; see REACH[] in JS
 uniform float u_swirl;                 // third rotation axis (xy / about z); see formRot
 #define PI 3.14159265
@@ -2454,7 +2455,31 @@ void main(){
       // number rather than another branch.
       vec3 att=exp(-(vec3(1.0)-clamp(base,0.,1.))*thick*u_absorb);
       float F=clamp(max(Fr.r,max(Fr.g,Fr.b)),0.,1.);
-      c=mix(c, through*att*1.04, u_trans*(1.0-F));
+      /* FADE THE REFRACTION IN WITH THICKNESS -- this is the raw edge on glass.
+         The mix had no thickness term, so the refracted sample was taken at full weight right up
+         to the silhouette. At the silhouette the interior path length goes to zero, which means
+         the 18-step march above terminates almost immediately and the exit normal n2 it returns
+         is ill-conditioned exactly there. Adjacent rim pixels then sample the backdrop along
+         wildly different directions, and the rim fills with contrast that is not structure.
+         The note inside that march already names this failure: "rays that stop before converging
+         give scattered exit normals, and scattered normals produce contrast that looks like
+         detail and is noise." It was written about cutting the step COUNT, and the fix there was
+         to keep the steps -- but no step count helps at the silhouette, where it is the geometry
+         that is degenerate rather than the budget.
+         It is also what glass does. A sliver thin enough to have no path length has nothing to
+         refract THROUGH; what you see at the edge of a real pane is the reflection, which is
+         where the (1.0-F) term is already sending it. So this agrees with the Fresnel rather
+         than fighting it, and the two together carry the edge.
+         0.055 object units against a form whose reach is about 1.0 -- a twentieth of the body.
+         Smootherstep rather than smoothstep so the fade has no second-derivative step of its own
+         to show up as a band.
+         THE REFLECTION PATH ALREADY HAD ITS EDGE AA AND THIS ONE HAD NONE: envL takes eFoot, a
+         footprint LOD from nturn, so a mirror widens its lookup as the normal turns faster across
+         a pixel. bg() is analytic and has no LOD to widen, so the equivalent here is to stop
+         trusting the sample when the path that produced it is too short to be conditioned. */
+      float tF=clamp(thick/max(1e-4,u_glassTMin),0.0,1.0);
+      tF=tF*tF*tF*(tF*(tF*6.0-15.0)+10.0);
+      c=mix(c, through*att*1.04, u_trans*(1.0-F)*tF);
     }
     // translucent backlight (frosted)
     // SUBSURFACE. What was here was dot(n,-L)*0.18 — a flat back-lambert with no notion of how
@@ -6489,6 +6514,7 @@ function frame(){
   gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
   // sub / low / mid are not uploaded: they drive the light rig from JS instead. See the
   // uniform block for which band goes where.
+  gl.uniform1f(US('u_glassTMin'), window.GLASSTMIN!==undefined?window.GLASSTMIN:0.055);
   gl.uniform1f(US('u_hHigh'),HITS.high);
   gl.uniform1f(US('u_hAir'),HITS.air);
   gl.uniform1f(US('u_bLow'),BND.low);
