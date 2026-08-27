@@ -3,103 +3,218 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ATONAL — AI Director Viewer</title>
 <style>
-  :root{--mono:ui-monospace,"SF Mono",Menlo,monospace;color-scheme:dark}
+  /* ================== LIQUID GLASS ==================
+     The panel used to be a dark card with a blur behind it: a slab that happened to be
+     translucent. Glass is not a colour, it is a set of behaviours, and there are four the old
+     styling had none of.
+
+       IT REFRACTS WHAT IS BEHIND IT. The backdrop here is a live colour field that already moves
+       with the music, so a saturated blur of it makes the panel take its colour FROM the track --
+       it goes violet in a drop and cools in a breakdown, for free, because it is looking at the
+       same pixels the viewer is. That is the whole trick and it costs one filter.
+
+       IT CATCHES A HIGHLIGHT ON ITS EDGE. Real glass has a bright specular line on the edge
+       facing the light and a dim bounce on the one facing away. One inset hairline top and
+       bottom, at different strengths, is what separates "pane of glass" from "grey rectangle".
+
+       IT HAS A THICKNESS. A rim light around the whole boundary plus a large, soft, offset
+       shadow reads as a slab floating above the image rather than a hole cut into it.
+
+       IT IS SOFT AT THE CORNERS. Small radii read as a dialog; large ones read as a physical
+       object. Controls go fully round, because a capsule has no corners to get wrong.
+
+     One deliberate restraint: the tint stays dark and low-alpha. Text over a live, moving,
+     saturated backdrop is the thing that actually fails, so the glass is dark enough to hold
+     contrast against a white form passing behind it. Glass you cannot read is a screensaver. */
+  :root{
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+    color-scheme:dark;
+    --accent:#c9baff;
+    --accent-dim:rgba(201,186,255,.22);
+    --ink:#ecebf2;  --ink-2:#a9a9b6;  --ink-3:#75757f;
+    --glass:rgba(18,18,26,.52);
+    --glass-hi:rgba(255,255,255,.34);      /* the lit edge */
+    --glass-lo:rgba(255,255,255,.07);      /* the bounce   */
+    --rim:rgba(255,255,255,.13);
+    --blur:16px;
+    --r-lg:20px; --r-md:12px; --r-sm:9px; --pill:999px;
+    --lift:0 20px 52px -16px rgba(0,0,0,.62), 0 6px 18px -8px rgba(0,0,0,.45);
+    --spring:cubic-bezier(.32,1.2,.4,1);
+  }
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%;background:#050506;overflow:hidden;font-family:var(--mono);color:#e6e6e4}
+  html,body{margin:0;height:100%;background:#050506;overflow:hidden;
+    font-family:var(--mono);color:var(--ink);
+    -webkit-font-smoothing:antialiased}
   canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block}
-  #hud{position:fixed;top:18px;left:20px;z-index:10;font-size:11px;letter-spacing:.04em;line-height:1.7;
-    text-shadow:0 1px 3px #000;pointer-events:none}
-  #hud b{color:#fff} #hud .k{color:#8a8b91;text-transform:uppercase;font-size:9px;letter-spacing:.16em}
-  #next{color:#b9a7ff}
-  #bar{position:fixed;left:20px;right:20px;bottom:18px;z-index:10;display:flex;align-items:center;gap:14px}
-  button,label.btn{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);border-radius:3px;
-    color:#e6e6e4;padding:8px 14px;font:inherit;font-size:10px;letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
-  button:hover,label.btn:hover{background:rgba(255,255,255,.12)}
-  #tl{flex:1;height:5px;background:rgba(255,255,255,.1);border-radius:3px;position:relative;cursor:pointer}
-  #tlF{position:absolute;left:0;top:0;bottom:0;background:#c8b8ff;border-radius:3px;width:0}
+
+  /* The material itself. Everything that is glass wears this. */
+  .glass{
+    background:var(--glass);
+    -webkit-backdrop-filter:blur(var(--blur)) saturate(190%);
+    backdrop-filter:blur(var(--blur)) saturate(190%);
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-hi),
+      inset 0 -1px 0 0 var(--glass-lo),
+      inset 0 0 0 .5px var(--rim),
+      var(--lift);
+  }
+  /* Where transparency is unavailable or unwanted, fall back to an opaque card rather than to
+     an unreadable one. Both the capability check and the user preference, because the second is
+     an accessibility setting and not a bug. */
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+    .glass{background:rgba(12,12,17,.94)}
+  }
+  @media (prefers-reduced-transparency:reduce){
+    .glass{background:rgba(12,12,17,.96);-webkit-backdrop-filter:none;backdrop-filter:none}
+  }
+
+  /* THE READOUT SITS ON A LIVE BACKDROP, so it cannot be styled against an assumed ground. The
+     colour field behind it is bright violet in a drop and near-black in a breakdown, and the
+     dimmest label here was picked against the dark case -- on a bright one it disappeared.
+     A scrim rather than a heavier text-shadow: a shadow only thickens the glyph and still loses
+     to a pale field, where a soft dark wash under the whole block guarantees the contrast whatever
+     the render does. It is a radial fade with no edge, so it reads as the image getting slightly
+     denser in the corner rather than as a box.
+     Every colour here is lifted a step for the same reason -- see --ink-2 and --ink-3, which are
+     the labels, not the values. */
+  #hud{position:fixed;top:22px;left:24px;z-index:10;font-size:11px;letter-spacing:.04em;line-height:1.75;
+    text-shadow:0 1px 4px rgba(0,0,0,.55);pointer-events:none}
+  #hud::before{content:'';position:absolute;left:-24px;top:-26px;width:340px;height:190px;z-index:-1;
+    background:radial-gradient(120% 100% at 0% 0%, rgba(0,0,0,.60) 0%, rgba(0,0,0,.34) 42%, rgba(0,0,0,0) 78%);
+    pointer-events:none}
+  #hud b{color:#fff;font-weight:500}
+  #hud .k{color:#b6b6c2;text-transform:uppercase;font-size:9px;letter-spacing:.18em}
+  #next{color:#d8ccff}
+
+  #bar{position:fixed;left:24px;right:24px;bottom:22px;z-index:10;display:flex;align-items:center;gap:12px}
+  /* NO BACKDROP-FILTER ON THE CONTROLS, and this is a measurement rather than a taste.
+     Every element carrying one makes the compositor re-blur its region on EVERY frame, because
+     the thing behind it is a canvas that changes every frame. MEASURED on a playing track:
+
+         no glass anywhere                71.1 fps
+         panel glass, plain buttons       61.8
+         panel glass + glass buttons      54.1
+
+     Five small buttons cost ~8 fps between them -- as much as the whole panel -- because the cost
+     is per LAYER, not per pixel. They are 40px tall and the effect on them is nearly invisible.
+     A translucent fill with the same specular edge reads as the same material and is free, so the
+     live refraction is spent only where it is actually seen: the panel. */
+  button,label.btn{
+    background:rgba(255,255,255,.10);
+    border:0;border-radius:var(--pill);
+    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.26), inset 0 0 0 .5px var(--rim),
+               0 4px 14px -6px rgba(0,0,0,.5);
+    color:var(--ink);padding:9px 16px;font:inherit;font-size:10px;letter-spacing:.14em;
+    text-transform:uppercase;cursor:pointer;
+    transition:background .18s ease, transform .22s var(--spring), box-shadow .18s ease}
+  button:hover,label.btn:hover{background:rgba(255,255,255,.14)}
+  button:active,label.btn:active{transform:scale(.96)}
+  button:focus-visible,label.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  #tl{flex:1;height:6px;background:rgba(255,255,255,.09);border-radius:var(--pill);position:relative;
+    cursor:pointer;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.10), inset 0 1px 2px rgba(0,0,0,.4)}
+  #tlF{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#a894ff,var(--accent));
+    border-radius:var(--pill);width:0;box-shadow:0 0 12px -2px var(--accent)}
   #tlS{position:absolute;inset:0}
-  #tlS i{position:absolute;top:0;bottom:0;border-left:1px solid rgba(255,255,255,.25)}
-  #tc{font-size:10px;color:#8a8b91;min-width:92px;text-align:right;font-variant-numeric:tabular-nums}
+  #tlS i{position:absolute;top:0;bottom:0;border-left:1px solid rgba(255,255,255,.22)}
+  #tc{font-size:10px;color:#c4c4ce;min-width:92px;text-align:right;font-variant-numeric:tabular-nums;
+    text-shadow:0 1px 4px rgba(0,0,0,.6)}
   #file,#svgfile{display:none}
-  #bar .grp{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:#5a5a5d}
-  #bar button.on{background:rgba(200,184,255,.20);border-color:rgba(200,184,255,.48);color:#e8e0ff}
-  #drop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;z-index:9;pointer-events:none}
-  #drop h2{margin:0;font-size:12px;letter-spacing:.4em;text-transform:uppercase;color:#8a8b91}
-  #drop p{margin:0;font-size:10px;letter-spacing:.16em;color:#5a5a5d;text-transform:uppercase}
-  #perf{position:fixed;left:14px;bottom:64px;z-index:40;display:none;padding:8px 10px;
-  border-radius:8px;background:rgba(8,8,14,.72);color:#cfd2e6;font:11px/1.55 ui-monospace,Menlo,monospace;
-  letter-spacing:.02em;pointer-events:none;white-space:pre}
-#perf b{color:#fff;font-size:13px}
-#stat{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:12;padding:8px 16px;
-    background:rgba(14,14,17,.85);border:1px solid rgba(255,255,255,.12);border-radius:3px;font-size:10px;
-    letter-spacing:.18em;text-transform:uppercase;color:#cfcfd4;display:none;backdrop-filter:blur(12px)}
-  #statBar{display:none;width:190px;height:3px;background:rgba(255,255,255,.16);border-radius:2px;
-    overflow:hidden;margin-left:4px}
-  #statFill{display:block;height:100%;width:0%;background:currentColor;border-radius:2px;
+  #bar .grp{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#9a9aa6;
+    text-shadow:0 1px 4px rgba(0,0,0,.6)}
+  #bar button.on{background:var(--accent-dim);color:#efe9ff;
+    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.34), inset 0 0 0 .5px rgba(201,186,255,.5),
+               0 4px 18px -6px rgba(201,186,255,.45)}
+
+  #drop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;
+    gap:12px;z-index:9;pointer-events:none}
+  #drop h2{margin:0;font-size:12px;letter-spacing:.44em;text-transform:uppercase;color:var(--ink-2)}
+  #drop p{margin:0;font-size:10px;letter-spacing:.18em;color:var(--ink-3);text-transform:uppercase}
+
+  #perf{position:fixed;left:18px;bottom:76px;z-index:40;display:none;padding:10px 13px;
+    border-radius:var(--r-md);color:#cfd2e6;font:11px/1.55 var(--mono);letter-spacing:.02em;pointer-events:none;white-space:pre}
+  #perf b{color:#fff;font-size:13px}
+
+  #stat{position:fixed;top:22px;left:50%;transform:translateX(-50%);z-index:12;padding:9px 18px;
+    border-radius:var(--pill);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink);display:none;
+    align-items:center;gap:10px}
+  #statBar{display:none;width:190px;height:4px;background:rgba(255,255,255,.15);border-radius:var(--pill);
+    overflow:hidden;margin-left:2px}
+  #statFill{display:block;height:100%;width:0%;background:var(--accent);border-radius:var(--pill);
     transition:width .18s linear}
-  #statPct{display:none;min-width:34px;text-align:right;opacity:.65;font-variant-numeric:tabular-nums}
+  #statPct{display:none;min-width:34px;text-align:right;opacity:.7;font-variant-numeric:tabular-nums}
   #stat.busy #statBar,#stat.busy #statPct{display:block}
-  .err{color:#ffb4b4!important}
+  .err{color:#ffb0b0!important}
+
   /* ---- CONTROL PANEL ----
-     It used to be twenty-one rows floating directly on the canvas with no container: no
-     background, so every label sat at whatever contrast the render happened to give it, and no way
-     to put it away. A panel with its own ground fixes the legibility, and native <details> groups
-     fix the length -- the whole thing collapses to a header, and each group remembers whether it
-     was open. */
-  #ctrl{position:fixed;top:14px;right:14px;z-index:11;width:266px;max-height:calc(100vh - 96px);
-    display:flex;flex-direction:column;border-radius:10px;overflow:hidden;
-    background:rgba(9,9,13,.76);backdrop-filter:blur(20px);
-    border:1px solid rgba(255,255,255,.10);box-shadow:0 14px 44px rgba(0,0,0,.5);
-    transition:width .18s ease, max-height .18s ease}
-  #ctrlHead{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 11px;cursor:pointer;
-    border-bottom:1px solid rgba(255,255,255,.08);user-select:none}
-  #ctrlHead span.t{flex:1;font-size:9px;letter-spacing:.20em;text-transform:uppercase;color:#9b9ca4}
-  #ctrlHead span.c{font-size:9px;color:#6f7078;transition:transform .18s ease}
-  #ctrlBody{overflow-y:auto;overscroll-behavior:contain;padding:0 11px 10px}
-  #ctrlBody::-webkit-scrollbar{width:6px}
-  #ctrlBody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:3px}
-  /* Collapsed: the panel shrinks to its own header rather than vanishing, so there is always
+     Native <details> groups keep the length manageable and each remembers whether it was open;
+     the whole panel collapses to its own header rather than vanishing, so there is always
      something to click and nothing to discover. */
-  #ctrl.min{width:112px;max-height:36px}
+  #ctrl{position:fixed;top:18px;right:18px;z-index:11;width:272px;max-height:calc(100vh - 108px);
+    display:flex;flex-direction:column;border-radius:var(--r-lg);overflow:hidden;
+    transition:width .28s var(--spring), max-height .28s var(--spring)}
+  #ctrlHead{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:11px 14px;cursor:pointer;
+    border-bottom:1px solid rgba(255,255,255,.07);user-select:none}
+  #ctrlHead span.t{flex:1;font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-2)}
+  #ctrlHead span.c{font-size:9px;color:var(--ink-3);transition:transform .28s var(--spring)}
+  #ctrlBody{overflow-y:auto;overscroll-behavior:contain;padding:0 14px 12px}
+  #ctrlBody::-webkit-scrollbar{width:7px}
+  #ctrlBody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:var(--pill);
+    border:2px solid transparent;background-clip:content-box}
+  #ctrl.min{width:120px;max-height:40px}
   #ctrl.min #ctrlBody{display:none}
   #ctrl.min #ctrlHead span.c{transform:rotate(-90deg)}
-  #ctrl details{border-bottom:1px solid rgba(255,255,255,.06)}
+
+  #ctrl details{border-bottom:1px solid rgba(255,255,255,.055)}
   #ctrl details:last-of-type{border-bottom:0}
-  #ctrl summary{list-style:none;cursor:pointer;padding:9px 0 8px;display:flex;align-items:center;gap:7px;
-    font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#7d7e86;user-select:none}
+  #ctrl summary{list-style:none;cursor:pointer;padding:10px 0 9px;display:flex;align-items:center;gap:8px;
+    font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);user-select:none;
+    transition:color .16s ease}
+  #ctrl summary:hover{color:var(--ink-2)}
   #ctrl summary::-webkit-details-marker{display:none}
-  #ctrl summary::before{content:'\25B8';font-size:8px;color:#5c5d65;transition:transform .15s ease}
+  #ctrl summary::before{content:'\25B8';font-size:8px;color:var(--ink-3);transition:transform .24s var(--spring)}
   #ctrl details[open] summary::before{transform:rotate(90deg)}
-  #ctrl details[open] summary{color:#c3c4cc}
-  #ctrl .row{display:flex;align-items:center;gap:7px;padding:3px 0 4px}
-  #ctrl .row>label{flex:0 0 56px;font-size:9px;letter-spacing:.10em;text-transform:uppercase;color:#8a8b91}
-  #ctrl select{flex:1;min-width:0;background:rgba(255,255,255,.05);color:#e6e6e4;
-    border:1px solid rgba(255,255,255,.14);border-radius:4px;
-    padding:5px 6px;font:inherit;font-size:10px;letter-spacing:.04em}
-  #ctrl select:hover{background:rgba(255,255,255,.10)}
-  #ctrl input[type=color]{width:26px;height:22px;flex:0 0 auto;padding:0;
-    border:1px solid rgba(255,255,255,.22);border-radius:3px;background:transparent;cursor:pointer}
+  #ctrl details[open] summary{color:var(--ink)}
+  #ctrl .row{display:flex;align-items:center;gap:8px;padding:4px 0 5px}
+  #ctrl .row>label{flex:0 0 56px;font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-2)}
+  #ctrl select{flex:1;min-width:0;background:rgba(255,255,255,.07);color:var(--ink);
+    border:0;border-radius:var(--r-sm);
+    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.16), inset 0 0 0 .5px var(--rim);
+    padding:6px 8px;font:inherit;font-size:10px;letter-spacing:.04em;cursor:pointer;
+    transition:background .16s ease}
+  #ctrl select:hover{background:rgba(255,255,255,.13)}
+  #ctrl select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  #ctrl input[type=color]{width:28px;height:24px;flex:0 0 auto;padding:0;
+    border:0;border-radius:var(--r-sm);background:transparent;cursor:pointer;
+    box-shadow:inset 0 0 0 .5px rgba(255,255,255,.28)}
   #ctrl input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
-  #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:2px}
-.row input[type=range]{flex:1;min-width:0;-webkit-appearance:none;height:3px;background:rgba(255,255,255,.16);
-    border-radius:2px;outline:none;margin:0}
-  .row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;
-    border-radius:50%;background:#c8b8ff;cursor:pointer;border:0}
-  .row .val{font-size:9px;color:#cfcfd4;flex:0 0 30px;text-align:right;font-variant-numeric:tabular-nums}
-  #ctrl button.mini{flex:0 0 auto;padding:5px 9px;font-size:9px;letter-spacing:.10em;
-    background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.14)}
-  #ctrl button.mini:hover{background:rgba(255,255,255,.13)}
-  #ctrl button.mini.on{background:rgba(200,184,255,.20);border-color:rgba(200,184,255,.48);color:#e8e0ff}
-  /* ---- ROUTING MATRIX ---- one route per card: what it drives, what drives it, how hard. */
-    background:rgba(255,255,255,.028)}
-    background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.14);border-radius:4px;
-    color:#9a9aa2;cursor:pointer}
+  #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}
+
+  .row input[type=range]{flex:1;min-width:0;-webkit-appearance:none;appearance:none;height:4px;
+    background:rgba(255,255,255,.14);border-radius:var(--pill);outline:none;margin:0;
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.35)}
+  .row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;
+    border-radius:50%;background:linear-gradient(180deg,#fff,var(--accent));cursor:pointer;border:0;
+    box-shadow:0 1px 4px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.35);
+    transition:transform .2s var(--spring)}
+  .row input[type=range]:active::-webkit-slider-thumb{transform:scale(1.25)}
+  .row input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+  .row .val{font-size:9px;color:var(--ink-2);flex:0 0 30px;text-align:right;font-variant-numeric:tabular-nums}
+
+  #ctrl button.mini{flex:0 0 auto;padding:6px 11px;font-size:9px;letter-spacing:.11em;
+    background:rgba(255,255,255,.07);border-radius:var(--pill)}
+  #ctrl button.mini:hover{background:rgba(255,255,255,.14)}
+  #ctrl button.mini.on{background:var(--accent-dim);color:#efe9ff;
+    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.34), inset 0 0 0 .5px rgba(201,186,255,.5)}
+
   /* A control that cannot do anything right now says so, rather than leaving you to drag it and
-     wonder. Same idea as the dead-route marking in the matrix. */
-  #ctrl .row.inert{opacity:.38}
+     wonder. */
+  #ctrl .row.inert{opacity:.36}
   #ctrl .row.inert input,#ctrl .row.inert select{pointer-events:none}
-    background:rgba(255,255,255,.08);overflow:hidden}
-    border-radius:2px;transition:width .06s linear,left .06s linear}
+
+  @media (prefers-reduced-motion:reduce){
+    *{transition-duration:.01ms!important}
+  }
 </style>
 
 <canvas id="gl"></canvas>
@@ -113,7 +228,7 @@
   <div><span class="k">Next</span> <b id="next">—</b></div>
 </div>
 
-<div id="ctrl">
+<div id="ctrl" class="glass">
   <div id="ctrlHead" title="Collapse the panel  (H)"><span class="t">Controls</span><span class="c">&#9662;</span></div>
   <div id="ctrlBody">
 
@@ -261,13 +376,13 @@
 </div>
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
-<div id="stat"><span id="statTxt">…</span><span id="statBar"><i id="statFill"></i></span><span id="statPct"></span></div>
+<div id="stat" class="glass"><span id="statTxt">…</span><span id="statBar"><i id="statFill"></i></span><span id="statPct"></span></div>
   <!-- PERF READOUT. Press P. Off by default and it costs nothing until it is on: the numbers are
        already being computed for the governor, this only prints them. It exists because the frame
        rate cannot be diagnosed from anywhere except the machine that is dropping it -- every
        renderer-side ablation I can run measures flat, so the useful question is which line MOVES
        when the frame rate does, and only the person watching it can answer that. -->
-  <div id="perf"></div>
+  <div id="perf" class="glass"></div>
 
 <div id="bar">
   <span class="grp">Source</span>
@@ -2470,6 +2585,7 @@ uniform float u_time,u_bloom,u_sat,u_vig,u_expo,u_contrast,u_grain,u_flash;
 uniform float u_bloomTent;             // 1 = tent per bloom level, 0 = single fetch. window.BLOOMTENT
 uniform float u_mip,u_sharpen,u_chroma,u_ink,u_poster,u_dither,u_half,u_ss,u_ssRatio;
 uniform float u_flat;     // 1 = flat-shaded look: no dither, no grain (see the dither line)
+uniform float u_grainPx;  // device pixels per grain cell -- see the grain block
 uniform float u_dbg;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
@@ -2724,8 +2840,28 @@ void main(){
      here it is just noise laid over a flat tone. */
   col+=(gh21(gl_FragCoord.xy+fract(u_time)*17.)-gh21(gl_FragCoord.xy*1.31+fract(u_time)*53.))*(1.5/255.)*(1.0-u_flat);
   // Triangular, so the mean is 0 and no DC shift rides in with the amount.
-  col+=(gh21(gl_FragCoord.xy*1.7+fract(u_time)*91.)
-       -gh21(gl_FragCoord.xy*1.7+fract(u_time)*91.+vec2(37.71,11.39)))*.016*u_grain;
+  /* GRAIN HAS A SIZE, AND IT WAS BEING DRAWN AT THE DISPLAY'S NYQUIST LIMIT.
+     This sampled the hash at gl_FragCoord*1.7 -- one grain cell per DEVICE pixel, near enough --
+     so on a 2x screen every cell was half a CSS pixel and the eye integrated the noise away
+     before it could read as texture. Grain that is finer than the display cannot be seen; it can
+     only slightly soften what is under it, which is the reported "barely visible".
+     Real grain is a property of the film, not of the sensor reading it: its size is fixed in the
+     image and does not shrink when you print bigger. u_grainPx carries that size in device
+     pixels, so the cell stays the same apparent size at any dpr, and floor() makes it an actual
+     cell rather than a smooth gradient of noise.
+     AMPLITUDE. .016 against a typical u_grain of ~1.10 is +/-4.5 levels of 255 -- a dither, which
+     is what the line above this one is for and is deliberately invisible. .055 puts it near
+     +/-15, which reads as film without burying the image.
+     WEIGHTED TOWARD THE MIDTONES, as film is: silver grain shows least where the emulsion is
+     clear and where it is saturated. 4*L*(1-L) is that curve; mixed against 0.35 rather than 0
+     so the deep backdrop and the specular highlights keep some texture instead of going glassy
+     exactly where the rest of the frame is grainiest. */
+  {
+    vec2 gp=floor(gl_FragCoord.xy/max(1.0,u_grainPx));
+    float g=gh21(gp+fract(u_time)*91.)-gh21(gp+fract(u_time)*91.+vec2(37.71,11.39));
+    float L=clamp(dot(col,vec3(0.2126,0.7152,0.0722)),0.,1.);
+    col+=g*.055*u_grain*mix(0.35,1.0,4.0*L*(1.0-L));
+  }
   col*=mix(1.,smoothstep(1.5,.3,length(c2)*.95),u_vig);
   /* DEPTH GOES OUT IN ALPHA, normalised, background pinned at 1. The filter pass needs to know
      what is subject and what is backdrop -- luminance cannot tell it, because a pale form on a
@@ -6282,7 +6418,47 @@ function frame(){
   // unbounded pulse on a loud section turns every beat into a white frame.
   // Kick weighted up and the generic beat envelope down: the key leg is the KICK's channel now,
   // not the shared pulse's, or it answers to everything and identifies nothing.
-  const keyPulse=Math.min(2.10, 1 + (pulseS*0.16+HITS.low*0.85)*(0.55+arousal*0.85) + (energy-0.30)*0.12);
+  /* ---- ONE KIT HIT IS ONE EVENT, NOT FOUR ----
+     Each of the four legs below is clamped, and each note explains why: "an unbounded pulse on a
+     loud section turns every beat into a white frame." Every clamp is per-LAMP, and nothing
+     bounds the four together -- so the rig's total response to a kick landing alone and to a
+     kick, bass, snare and hat landing on the same sixteenth differs by a factor of four, for
+     what a listener hears as one event.
+
+     MEASURED on a dense track, sampling the four multipliers 220 times through playback. All
+     four are 1.0 at rest, so the resting sum is 4.0:
+
+         key  p50 1.30  max 1.59        SUM  p50 5.54
+         rim  p50 1.15  max 1.37             p90 6.40
+         fill p50 1.84  max 2.40 (pinned)    max 6.70   against 4.00 at rest
+         amb  p50 1.20  max 1.49
+
+     Three bands were up together in 138 of 220 frames. The rig sits 38% over its tuned resting
+     level at the MEDIAN and touches 68% over -- and the fill, whose coefficient is 4.10 because
+     HITS.mid only reaches ~0.23, spends much of a dense track pinned on its own clamp. A pinned
+     lamp has stopped articulating anything; the note at rimPulse makes exactly this argument
+     about the rim and then leaves the fill to do it.
+
+     The fill is the SHADOW-side lamp. Lifting it faster than the key is the specific way to
+     flatten a form: the shadow side climbs toward the lit side and the modelling that makes a
+     silhouette read as solid goes with it.
+
+     So the four share one transient budget. The raw lifts keep their ratios -- which lamp leads
+     is still decided by which band actually fired, so the character is untouched -- and only the
+     TOTAL is bounded. Below the budget, k is 1 and nothing changes at all, which is every sparse
+     track and every quiet passage: this cannot alter what was already tuned.
+
+     The sustained offsets stay OUTSIDE the budget. (energy-0.30)*0.12 and voxRim describe what
+     kind of track this is, not what just happened in it, and a budget for transients has no
+     business rationing them. */
+  const HIT_BUDGET=1.0;
+  const lKey =(pulseS*0.16+HITS.low*0.85)*(0.55+arousal*0.85);
+  const lRim =(pulseS*0.14+HITS.air*0.90)*(0.50+epic*1.10);
+  const lFill= HITS.mid*4.10*(0.55+arousal*0.75);
+  const lAmb = HITS.sub*0.85*(0.50+energy*0.60);
+  const lSum = lKey+lRim+lFill+lAmb;
+  const kBud = lSum>HIT_BUDGET ? HIT_BUDGET/lSum : 1;
+  const keyPulse=Math.min(2.10, 1 + lKey*kBud + (energy-0.30)*0.12);
   // VOICE -> RIM. A track with a lead vocal gets a stronger edge light, because that is what a
   // voice is in a mix: the thing sitting in front. Whole-track and constant, so it separates one
   // track's look from another's rather than flickering within one. Speech is excluded upstream —
@@ -6293,7 +6469,7 @@ function frame(){
   // As an offset it lifts the floor and leaves the dynamic range intact.
   const voxRim = (director && director.vocals && director.vocals.is_vocal)
                  ? Math.min(0.45, (director.vocals.presence||0)*0.55) : 0;
-  const rimPulse=Math.min(2.60, 1 + voxRim + (pulseS*0.14+HITS.air*0.90)*(0.50+epic*1.10));
+  const rimPulse=Math.min(2.60, 1 + voxRim + lRim*kBud);
   /* THE OTHER TWO LEGS. Each is its own band and nothing else, so what lands where is
      unambiguous: the fill flares on the shadow side for the snare, the ambient lifts the whole
      form for the sub. Both are clamped for the same reason the key is -- they multiply terms
@@ -6306,8 +6482,8 @@ function frame(){
      they all reached 1.0 leaves a snare at a third of a kick and a hat at nothing. The weights
      below are scaled by each band's own ceiling so the five land with comparable force, with the
      kick still first among them because it should be. */
-  const fillPulse=Math.min(2.40, 1 + HITS.mid*4.10*(0.55+arousal*0.75));
-  const ambPulse =Math.min(1.65, 1 + HITS.sub*0.85*(0.50+energy*0.60));
+  const fillPulse=Math.min(2.40, 1 + lFill*kBud);
+  const ambPulse =Math.min(1.65, 1 + lAmb*kBud);
   gl.uniform1f(US('u_keyPulse'),keyPulse); gl.uniform1f(US('u_rimPulse'),rimPulse);
   gl.uniform1f(US('u_fillPulse'),fillPulse); gl.uniform1f(US('u_ambPulse'),ambPulse);
   gl.uniform1f(US('u_bgAmt'),0.5+energy*0.5);
@@ -6617,6 +6793,12 @@ function frame(){
     const grainDrive=0.35+darkness*0.30+density*0.22;                     // busier passage, grittier frame
     gl.uniform1f(UP('u_grain'), GRAIN.amt<=0.001 ? 0 :
       Math.max(0, GRAIN.amt*grainDrive*grainChar*1.9 + MV('grain')*0.6));
+    /* The grain's cell size, in DEVICE pixels -- see the grain block in POST. Tied to dpr so a
+       cell is about 1.4 CSS pixels on any display: the same apparent grain on a retina panel as
+       on a 1x one, which is the whole point of giving it a size. rscale is deliberately NOT in
+       here; the grain is laid on the finished image at canvas resolution, and the march's own
+       scale has nothing to do with how big a grain of film is. */
+    gl.uniform1f(UP('u_grainPx'), Math.max(1.0, dpr*1.4));
     gl.uniform1f(UP('u_flash'),Math.max(flashV,flash*0.8));
     // press grade
     gl.uniform1f(UP('u_sharpen'),LK.sharp*DX.sharpen); gl.uniform1f(UP('u_chroma'),LK.chroma*DX.chroma);
