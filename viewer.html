@@ -145,6 +145,20 @@
   #statPct{display:none;min-width:34px;text-align:right;opacity:.7;font-variant-numeric:tabular-nums}
   #stat.busy #statBar,#stat.busy #statPct{display:block}
   .err{color:#ffb0b0!important}
+  /* RECORDING IS A MODE, and a mode the user can walk away from, so it says so on the canvas
+     rather than only in a control that may be scrolled out of view or collapsed. */
+  #recDot{position:fixed;top:22px;right:auto;left:50%;transform:translateX(-50%);z-index:13;
+    display:none;align-items:center;gap:9px;padding:8px 16px;border-radius:var(--pill);
+    background:rgba(24,8,12,.62);
+    -webkit-backdrop-filter:blur(var(--blur)) saturate(190%);backdrop-filter:blur(var(--blur)) saturate(190%);
+    box-shadow:inset 0 1px 0 0 var(--glass-hi), inset 0 0 0 .5px rgba(255,90,120,.34), var(--lift);
+    font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#ffd9e0}
+  #recDot.on{display:flex}
+  #recDot i{width:8px;height:8px;border-radius:50%;background:#ff4d6a;
+    box-shadow:0 0 10px 1px rgba(255,77,106,.8);animation:recPulse 1.4s ease-in-out infinite}
+  @keyframes recPulse{0%,100%{opacity:1}50%{opacity:.35}}
+  #recBar{width:120px;height:4px;border-radius:var(--pill);background:rgba(255,255,255,.16);overflow:hidden}
+  #recBar i{display:block;height:100%;width:0%;background:#ff4d6a;border-radius:var(--pill);animation:none}
 
   /* ---- CONTROL PANEL ----
      Native <details> groups keep the length manageable and each remembers whether it was open;
@@ -167,14 +181,18 @@
 
   #ctrl details{border-bottom:1px solid rgba(255,255,255,.055)}
   #ctrl details:last-of-type{border-bottom:0}
+  /* A CLOSED GROUP IS STILL THE ONLY NAVIGATION THE PANEL HAS, so it cannot be the dimmest text
+     in it. These were --ink-3, the same grey as a disabled value, which reads fine over the dark
+     backdrop the palette was picked against and disappears over a bright one -- and the whole
+     point of the glass is that the backdrop is whatever the track is doing. */
   #ctrl summary{list-style:none;cursor:pointer;padding:10px 0 9px;display:flex;align-items:center;gap:8px;
-    font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);user-select:none;
+    font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:#a5a5b2;user-select:none;
     transition:color .16s ease}
-  #ctrl summary:hover{color:var(--ink-2)}
+  #ctrl summary:hover{color:#fff}
   #ctrl summary::-webkit-details-marker{display:none}
   #ctrl summary::before{content:'\25B8';font-size:8px;color:var(--ink-3);transition:transform .24s var(--spring)}
   #ctrl details[open] summary::before{transform:rotate(90deg)}
-  #ctrl details[open] summary{color:var(--ink)}
+  #ctrl details[open] summary{color:#fff}
   #ctrl .row{display:flex;align-items:center;gap:8px;padding:4px 0 5px}
   #ctrl .row>label{flex:0 0 56px;font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-2)}
   #ctrl select{flex:1;min-width:0;background:rgba(255,255,255,.07);color:var(--ink);
@@ -201,6 +219,18 @@
   .row input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
   .row .val{font-size:9px;color:var(--ink-2);flex:0 0 30px;text-align:right;font-variant-numeric:tabular-nums}
 
+  /* A SEGMENTED CONTROL: one track, N positions, exactly one lit. The shape carries the meaning
+     -- three capsules with gaps between them say three independent switches, and one grooved
+     track with three seats says pick one. The groove is the same inset the sliders use, so the
+     two read as the same kind of object. */
+  #ctrl .seg{flex:1;display:flex;gap:2px;padding:2px;border-radius:var(--pill);
+    background:rgba(255,255,255,.06);
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.32), inset 0 0 0 .5px rgba(255,255,255,.08)}
+  #ctrl .seg button.mini{flex:1 1 0;min-width:0;padding:5px 4px;text-align:center;
+    background:transparent;box-shadow:none}
+  #ctrl .seg button.mini:hover{background:rgba(255,255,255,.09)}
+  #ctrl .seg button.mini.on{background:rgba(255,255,255,.16);color:#fff;
+    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.30), 0 1px 3px rgba(0,0,0,.35)}
   #ctrl button.mini{flex:0 0 auto;padding:6px 11px;font-size:9px;letter-spacing:.11em;
     background:rgba(255,255,255,.07);border-radius:var(--pill)}
   #ctrl button.mini:hover{background:rgba(255,255,255,.14)}
@@ -349,19 +379,7 @@
        and a slow swirl to the bar. That now runs unconditionally, which is the whole point --
        the engine drives the movement and the panel above is where you tweak it. See autoMap(). -->
 
-  <details id="gView" open><summary>View</summary>
-    <div class="row"><label>Camera</label>
-      <button id="auto" class="mini on" title="Who drives the camera: the Director, or you. Drag the canvas to take over. The RATE of the orbit is the Orbit slider under Motion.">Orbit</button>
-      <button id="reset" class="mini" title="Return to the Director's framing (or double-click the canvas)">Reset</button></div>
-    <!-- One axis, not three. Auto / Rays / Surface asked the viewer to understand a render-scale
-         governor, a volumetric toggle and a normal-map switch in order to answer "make it look
-         better" — and two of the three were named after their implementation. Quality is now a
-         single ladder, and the individual switches remain reachable from the console
-         (STEP.shaN) for measuring. -->
-    <div class="row"><label>Quality</label>
-      <button id="qPreview" class="mini" title="Fast — half shadow samples, coarser march. For scrubbing and setup.">Preview</button>
-      <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
-      <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.00x and 1.60x to stay usable">Ultra</button></div>
+  <details id="gExport" open><summary>Export</summary>
     <div class="row"><label>Format</label>
       <select id="selFmt" title="What the recording is framed and sized for. The canvas is retargeted to this exact pixel size while recording, so the file needs no cropping or scaling afterwards.">
         <option value="screen" selected>Screen &middot; as shown</option>
@@ -371,9 +389,39 @@
         <option value="youtube">YouTube 16:9 &middot; 1920&times;1080</option>
         <option value="yt4k">YouTube 4K &middot; 3840&times;2160</option>
       </select></div>
+    <div class="row"><label>Length</label>
+      <select id="selLen" title="How much music to record, counted from where the playhead is now. The take ends itself at that point and saves.">
+        <option value="15">15 seconds</option>
+        <option value="30" selected>30 seconds</option>
+        <option value="60">60 seconds</option>
+        <option value="90">90 seconds &middot; Reels max</option>
+        <option value="0">To the end of the track</option>
+      </select></div>
     <div class="row"><label>Capture</label>
       <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
-      <button id="rec" class="mini" title="Record to MP4 at the chosen format. Pins Ultra; renders offline at a fixed 60fps if the GPU cannot hold it live, so the file never drops a frame.">Record</button></div>
+      <button id="rec" class="mini" title="Record to MP4 at the chosen format and length. Pins Ultra; renders offline at a fixed 60fps if the GPU cannot hold it live, so the file never drops a frame.">Record</button>
+      <span class="val" id="recEta" style="flex:1;text-align:right;color:#8a8b91">&mdash;</span></div>
+  </details>
+
+  <details id="gView" open><summary>View</summary>
+    <!-- SEGMENTED, not three loose pills. Preview / High / Ultra are mutually exclusive positions
+         on one ladder, and three separate capsules say "three independent buttons" -- the shape of
+         the control should say which it is before the labels are read. Same for Camera, which is
+         one either/or plus an action. -->
+    <div class="row"><label>Camera</label>
+      <div class="seg">
+        <button id="auto" class="mini on" title="Who drives the camera: the Director, or you. Drag the canvas to take over. The RATE of the orbit is the Orbit slider under Motion.">Orbit</button>
+        <button id="reset" class="mini" title="Return to the Director's framing (or double-click the canvas)">Reset</button></div></div>
+    <!-- One axis, not three. Auto / Rays / Surface asked the viewer to understand a render-scale
+         governor, a volumetric toggle and a normal-map switch in order to answer "make it look
+         better" — and two of the three were named after their implementation. Quality is now a
+         single ladder, and the individual switches remain reachable from the console
+         (STEP.shaN) for measuring. -->
+    <div class="row"><label>Quality</label>
+      <div class="seg">
+        <button id="qPreview" class="mini" title="Fast — half shadow samples, coarser march. For scrubbing and setup.">Preview</button>
+        <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
+        <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.00x and 1.60x to stay usable">Ultra</button></div></div>
     <!-- ROLL. See rollAll() for why this picks a recipe first rather than each control
          independently, and why every roll prints a seed. -->
     <div class="row"><label>Random</label>
@@ -381,10 +429,18 @@
       <span class="val" id="rollSeed" style="flex:1;text-align:right;color:#8a8b91">—</span></div>
   </details>
 
+  <!-- EXPORT IS ITS OWN GROUP. It was three rows at the bottom of View, under Camera and Quality
+       and above Random -- filed by which part of the code owns it rather than by what the user
+       came to do. Recording a clip for a platform is a task, not a view setting, and it is the one
+       task here with its own vocabulary (a destination, a length, a file). It gets its own place,
+       and Length gets to sit next to Format where the decision is actually made. -->
+
+
   </div>
 </div>
 
 <div id="drop"><h2>ATONAL · AI Director</h2><p>Load a track — the engine will analyse &amp; direct</p></div>
+<div id="recDot"><i></i><span id="recTxt">Recording</span><span id="recBar"><i id="recFill"></i></span></div>
 <div id="stat" class="glass"><span id="statTxt">…</span><span id="statBar"><i id="statFill"></i></span><span id="statPct"></span></div>
   <!-- PERF READOUT. Press P. Off by default and it costs nothing until it is on: the numbers are
        already being computed for the governor, this only prints them. It exists because the frame
@@ -6906,12 +6962,19 @@ function frame(){
        pixels here and nowhere else. */
     if(RENDER.on && RENDER.track){
       RENDER.track.requestFrame(); RENDER.frames++;
-      if(RENDER.frames%30===0){
-        const pct=RENDER.until>0?Math.min(100,Math.round(renderClock/RENDER.until*100)):0;
-        showStat('Rendering '+glc.width+'x'+glc.height+' — '+pct+'%  ('+RENDER.frames+' frames)');
+      /* AN OFFLINE RENDER KNOWS EXACTLY HOW FAR THROUGH IT IS, which a live one never can -- the
+         end point is a known music time and the clock is stepped, so the fraction is not an
+         estimate. Reported every 10 frames rather than every frame: the readout is for a human
+         watching a bar move, and a DOM write per frame is a cost the render does not need. */
+      if(RENDER.frames%10===0 && RENDER.until>RENDER.startAt){
+        const f=Math.min(1,(renderClock-RENDER.startAt)/(RENDER.until-RENDER.startAt));
+        $('recFill').style.width=(f*100).toFixed(1)+'%';
+        const outSecs=RENDER.frames/RENDER.fps;
+        $('recTxt').textContent=Math.round(f*100)+'%  ·  '+outSecs.toFixed(1)+'s of '
+          +(RENDER.until-RENDER.startAt).toFixed(0)+'s';
       }
       if(RENDER.until>0 && renderClock>=RENDER.until && recorder && recorder.state==='recording'){
-        recorder.stop();                       // the track ran out: stop on its own
+        recorder.stop();                       // the take reached its length: stop on its own
       }
     }
     // MEASUREMENT TAP. Same reason as the grab above: this is the only point in the frame where
@@ -6971,7 +7034,19 @@ const EXPORT_FMT={
   youtube :{w:1920,h:1080,label:'YouTube 1080p'},
   yt4k    :{w:3840,h:2160,label:'YouTube 4K'},
 };
-const exportBitrate=(w,h)=>Math.round(Math.min(120e6, Math.max(12e6, w*h*60*0.10)));
+/* MEASURED, AND THE REQUEST IS NOT WHAT ARRIVES. A 15s Reels take asked for 12.4 Mbps and the
+   file came out at 25.4 -- MediaRecorder treats videoBitsPerSecond as a hint and this build
+   roughly doubled it. 47MB for fifteen seconds extrapolates to ~285MB for a 90s Reel, which is
+   a miserable upload for a file the platform is going to re-encode anyway.
+   0.055 bits per pixel per frame asks for ~6.8 Mbps at 1080x1920. MEASURED after the change, the
+   same 15s take came out at 30.6MB / 16.3 Mbps -- so the overshoot is more like 2.4x than 2x, and
+   the coefficient is best read as a dial that was turned until the OUTPUT was right rather than
+   as a bitrate. 16 Mbps is generous for H.264 at this resolution and holds up under the grain,
+   which is the thing in this renderer that actually eats bitrate, being high-frequency by
+   construction. 47MB -> 31MB for the same fifteen seconds.
+   The floor and ceiling stay: a small format should not be starved and a 4K take should not run
+   away. */
+const exportBitrate=(w,h)=>Math.round(Math.min(80e6, Math.max(8e6, w*h*60*0.055)));
 /* ---- RECORDING RUNS OFFLINE WHEN IT HAS TO, AND THAT IS THE POINT ----
    The requirement is Ultra with no lag, and on this machine those two cannot both be had in
    real time. MEASURED, three tiers, same scene:
@@ -6997,12 +7072,16 @@ const exportBitrate=(w,h)=>Math.round(Math.min(120e6, Math.max(12e6, w*h*60*0.10
    audio graph runs in real time and cannot be stepped, so an offline render is video only. The
    mode is chosen by MEASURING the frame cost at the chosen format rather than by guessing, and
    the choice is reported rather than hidden. */
-const RENDER={on:false, fps:60, t0:0, until:0, track:null, frames:0, pinScale:false};
+const RENDER={on:false, fps:60, t0:0, until:0, startAt:0, track:null, frames:0, pinScale:false};
+let recTimer=null, recWantSecs=0;
 window.RENDER=RENDER;
 let recPrevTier='high', recLive=false;
 function endRecording(){
   // Put back everything the recording pinned, in the reverse order it was taken.
   RENDER.on=false; RENDER.track=null; RENDER.pinScale=false; renderClock=null;
+  if(recTimer){ clearTimeout(recTimer); recTimer=null; }
+  $('recDot').classList.remove('on');
+  $('recFill').style.width='0%';
   if(EXPORT.on){ EXPORT.on=false; glc.style.objectFit=''; glc.style.background=''; resize(); }
   QLOCK=false;
   if(recPrevTier && recPrevTier!==TIER) applyTier(recPrevTier);
@@ -7030,6 +7109,7 @@ $('rec').addEventListener('click',async()=>{
   const liveFps=n/((performance.now()-t0)/1000);
   recLive = liveFps>=57 && isPlaying;               // live capture also needs something to record
   const dur=(director&&director.meta&&director.meta.duration)||0;
+  recWantSecs=+($('selLen')&&$('selLen').value||0);
 
   try{
     if(recLive){
@@ -7048,7 +7128,14 @@ $('rec').addEventListener('click',async()=>{
       RENDER.fps=60; RENDER.frames=0;
       RENDER.t0=(performance.now()-t0)/1000;
       renderClock=isPlaying?pos():pausedAt;          // start where the playhead is
-      RENDER.until=dur||renderClock+30;
+      RENDER.startAt=renderClock;
+      /* THE TAKE HAS A LENGTH. It used to run until the track ended or the user pressed Stop,
+         which for an offline render is the worst of both: it is slower than real time, so there
+         is no playback to judge the moment by, and "press Stop when it looks right" cannot be
+         answered while watching a progress percentage. A length is decided before the take and
+         the take ends itself -- counted in MUSIC seconds from the playhead, so the file is
+         exactly as long as it says whatever the render rate turns out to be. */
+      RENDER.until = recWantSecs>0 ? Math.min(dur||1e9, renderClock+recWantSecs) : (dur||renderClock+60);
       RENDER.on=true;
     }
     const bps=exportBitrate(glc.width,glc.height);
@@ -7068,6 +7155,13 @@ $('rec').addEventListener('click',async()=>{
     showStat('Saved '+ext.toUpperCase()+' '+px+(recLive?'':' (offline, no audio)')); hideStat(2600);
   };
   recorder.start(1000);                 // 1s timeslices: a crash still leaves usable footage
+  /* A live take runs at real time, so its length is a wall-clock timer; an offline one is stopped
+     by renderClock reaching RENDER.until, which is music time. Same length, two clocks, because
+     the two takes measure it in different units. */
+  if(recLive && recWantSecs>0){
+    recTimer=setTimeout(()=>{ if(recorder && recorder.state==='recording') recorder.stop(); }, recWantSecs*1000);
+  }
+  $('recDot').classList.add('on');
   $('rec').textContent='Stop'; $('rec').style.color='#ff4d6a';
   const where=fmt?fmt.label+' '+fmt.w+'x'+fmt.h:'screen';
   /* SAY WHAT IT WILL COST BEFORE IT COSTS IT. An offline render is slower than real time by
@@ -7489,6 +7583,24 @@ $('pSeg').addEventListener('input',()=>{
 bindPrm('pEdge','edge',0.01,v=>v.toFixed(2));
 bindPrm('pMass','mass',0.01,v=>v.toFixed(2));
 bindPrm('pDepth','depth',0.01,v=>v.toFixed(2));
+/* WHAT THE TAKE WILL BE, said before it is taken. The two selects decide a file and neither one
+   states the result on its own -- Format knows the pixels, Length knows the seconds. Showing the
+   pair where the Record button is means the answer to "what am I about to get" is next to the
+   thing that gets it.
+   Deliberately NOT an estimate of the render TIME. That depends on the frame cost at the chosen
+   size, which is measured when the take starts and cannot honestly be known before; the status
+   line reports it there. Pixels and seconds are certain, so those are what is promised here. */
+function updateRecEta(){
+  const el=$('recEta'); if(!el) return;
+  const f=EXPORT_FMT[$('selFmt').value]||null;
+  const secs=+$('selLen').value||0;
+  const size=f?(f.w+'\u00d7'+f.h):(glc.width+'\u00d7'+glc.height);
+  el.textContent=size+' \u00b7 '+(secs>0?secs+'s':'full');
+}
+$('selFmt').addEventListener('change',updateRecEta);
+$('selLen').addEventListener('change',updateRecEta);
+addEventListener('resize',()=>{ if(!EXPORT.on) updateRecEta(); });
+updateRecEta();
 $('selKal').addEventListener('change',e=>{
   kalMode=e.target.value;
   showStat(kalMode==='auto'?'Kaleidoscope follows the Director'
