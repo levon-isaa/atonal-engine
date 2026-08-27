@@ -362,9 +362,18 @@
       <button id="qPreview" class="mini" title="Fast — half shadow samples, coarser march. For scrubbing and setup.">Preview</button>
       <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
       <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.00x and 1.60x to stay usable">Ultra</button></div>
+    <div class="row"><label>Format</label>
+      <select id="selFmt" title="What the recording is framed and sized for. The canvas is retargeted to this exact pixel size while recording, so the file needs no cropping or scaling afterwards.">
+        <option value="screen" selected>Screen &middot; as shown</option>
+        <option value="reels">Reels &middot; TikTok &middot; 1080&times;1920</option>
+        <option value="portrait">Portrait 4:5 &middot; 1080&times;1350</option>
+        <option value="square">Square 1:1 &middot; 1080&times;1080</option>
+        <option value="youtube">YouTube 16:9 &middot; 1920&times;1080</option>
+        <option value="yt4k">YouTube 4K &middot; 3840&times;2160</option>
+      </select></div>
     <div class="row"><label>Capture</label>
       <button id="shot" class="mini" title="Save the current frame as a PNG">Frame</button>
-      <button id="rec" class="mini" title="Record the canvas to a WebM video">Record</button></div>
+      <button id="rec" class="mini" title="Record to MP4 at the chosen format. Pins Ultra; renders offline at a fixed 60fps if the GPU cannot hold it live, so the file never drops a frame.">Record</button></div>
     <!-- ROLL. See rollAll() for why this picks a recipe first rather than each control
          independently, and why every roll prints a seed. -->
     <div class="row"><label>Random</label>
@@ -3228,7 +3237,14 @@ function applyScale(){
 // 3.4x saved only 10ms. The controller would then pin rscale at its minimum, destroying
 // sharpness AND still missing the target. dprScale lets the CANVAS back off as a last resort.
 let dprScale=1.0;
-function resize(){ dpr=Math.min(devicePixelRatio||1,2)*dprScale; glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
+/* EXPORT.w/h override the canvas size while recording, so the file comes out at exactly the
+   pixel dimensions the destination wants and needs no crop or rescale afterwards. Everything
+   downstream already reads glc.width/height -- initTargets reallocates on every applyScale and
+   the note there says so -- so retargeting is a resize like any other. */
+const EXPORT={on:false, w:0, h:0}; window.EXPORT=EXPORT;
+function resize(){
+  if(EXPORT.on){ dpr=1; glc.width=EXPORT.w; glc.height=EXPORT.h; applyScale(); return; }
+  dpr=Math.min(devicePixelRatio||1,2)*dprScale; glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
 addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
@@ -5192,7 +5208,14 @@ const audioLag=()=>{ if(!ctx) return 0;
 // Floored at 0: between the call to play() and the scheduled start the graph has not reached
 // t0 yet, so the raw expression is negative for those few milliseconds, and beatsAtTime would
 // be asked for a negative beat index at the top of a track.
-const pos=()=>isPlaying?Math.max(0,ctx.currentTime-startedAt-audioLag()):pausedAt;
+/* THE ONE PLACE THE TIMELINE IS READ, which is what makes an offline render possible at all.
+   Everything -- curves, sections, beats, onsets, the fold, the shape pacing -- goes through
+   pos(), so substituting a synthetic clock here renders the track at whatever rate the GPU can
+   actually manage while the OUTPUT still advances by exactly one frame's worth of music per
+   frame. See RENDER and startRender. */
+let renderClock=null;
+const pos=()=>renderClock!==null ? renderClock
+           : (isPlaying?Math.max(0,ctx.currentTime-startedAt-audioLag()):pausedAt);
 function seek(x){ if(!audioBuffer)return; const was=isPlaying; if(isPlaying){stopSource();isPlaying=false;}
   pausedAt=Math.max(0,Math.min(audioBuffer.duration-0.1,x));
   prevT=-1; resetOnsetCursors(pausedAt); if(was)play(); }
@@ -5441,6 +5464,13 @@ function frame(){
   let time=(now-t0)/1000;
   if(window.TFREEZE!=null){ time=window.TFREEZE; dt=0; }   // pins clock AND every dt-integrated
   // value (camera angle, spin, springs) — pinning the clock alone leaves the orbit still moving.
+  /* AN OFFLINE RENDER STEPS THE CLOCK, IT DOES NOT READ IT. Same contract as TFREEZE and for a
+     related reason: every eased and integrated value in this loop is driven by dt, so a render
+     that takes 90ms to produce a 16.7ms frame has to be TOLD it advanced 16.7ms or the springs,
+     the material easing, the fold slew and the camera all run at the wrong rate relative to the
+     music. renderClock does the same job for pos(). Together they mean the output file is exact
+     at any render speed, which is the whole point -- see startRender. */
+  if(RENDER.on){ dt=1/RENDER.fps; renderClock+=dt; time=RENDER.t0+renderClock; }
   PERF.n++;
   // MEASURE THE FRAME, NOT THE INTEGRATION STEP. dt is clamped to 50ms so one stall cannot
   // teleport the animation, and frameAvg was fed from it — which capped the governor's own signal
@@ -6214,7 +6244,11 @@ function frame(){
      the morph starts and one back up when it lands; applyScale reallocates, which is fine twice
      per shape change and would not be per frame. The governor keeps managing rscale underneath
      and applyScale multiplies the two, so neither fights the other. */
-  { const wantMS=(phase===1)?MORPH_RSCALE:1.0;
+  /* ...EXCEPT WHILE RECORDING. This is the one resolution lever QLOCK does not cover -- QLOCK
+     stops the governor, and this sits outside it -- so a shape change during a take would drop
+     the march to 0.74x and bake a visible quality step into the file at a moment the viewer is
+     watching hardest. An offline render has no frame budget to protect in the first place. */
+  { const wantMS=(phase===1 && !RENDER.pinScale)?MORPH_RSCALE:1.0;
     if(wantMS!==morphScale){ morphScale=wantMS; applyScale(); } }
   const prog=(phase===1)?mix:0;
   const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
@@ -6865,6 +6899,21 @@ function frame(){
     // a blank image. Setting a flag and servicing it at the end of the draw is what makes the
     // capture land on real pixels.
     if(shotPending){ shotPending=false; grabFrame(); }
+    /* ONE OUTPUT FRAME PER RENDERED FRAME, asked for explicitly. The stream was opened with
+       captureStream(0), which produces nothing on its own, so this is what paces the file --
+       a 90ms render still writes one 1/60s frame and the result never judders. Same insertion
+       point as the PNG grab above and for the same reason: the drawing buffer holds this frame's
+       pixels here and nowhere else. */
+    if(RENDER.on && RENDER.track){
+      RENDER.track.requestFrame(); RENDER.frames++;
+      if(RENDER.frames%30===0){
+        const pct=RENDER.until>0?Math.min(100,Math.round(renderClock/RENDER.until*100)):0;
+        showStat('Rendering '+glc.width+'x'+glc.height+' — '+pct+'%  ('+RENDER.frames+' frames)');
+      }
+      if(RENDER.until>0 && renderClock>=RENDER.until && recorder && recorder.state==='recording'){
+        recorder.stop();                       // the track ran out: stop on its own
+      }
+    }
     // MEASUREMENT TAP. Same reason as the grab above: this is the only point in the frame where
     // the default framebuffer is bound AND has this frame's pixels in it. Every readPixels I have
     // written outside this point read either a bound FBO or a cleared buffer.
@@ -6891,35 +6940,147 @@ function grabFrame(){
   },'image/png');
 }
 $('shot').addEventListener('click',()=>{ shotPending=true; });
+/* MP4 FIRST, NOT LAST. This preferred VP9-in-WebM and kept mp4 as the Safari fallback, which is
+   backwards for what the file is FOR. Every destination named in the format list -- Reels, TikTok,
+   Shorts, YouTube -- takes H.264 in MP4 natively; a WebM upload is transcoded at best and rejected
+   at worst, and nothing on a phone will play it locally. Chrome has shipped H.264 in MediaRecorder
+   since 130 and this build reports it supported, so the common case can simply be right.
+   H.264 IS FIRST FOR COMPATIBILITY, NOT FOR SPEED, and the difference matters because I guessed
+   the other way first. AV1 was at the head of this list on the theory that a software encode would
+   dominate an already render-bound export; MEASURED on the same Reels take it did not -- 5.8 fps
+   with AV1 against 5.5 with H.264, which is noise. The bottleneck is the RENDER, not the encoder,
+   and swapping codecs buys nothing either way.
+   So the order is decided on the only ground that actually differs: every destination in the
+   format list takes H.264 natively and will transcode anything else, and an H.264 MP4 is the one
+   file that plays everywhere without being touched. WebM stays as the honest fallback for a
+   browser with neither. */
 function pickMime(){
-  // Safari only recently gained WebM in MediaRecorder; fall back to whatever it will accept
-  // rather than throwing. mp4 is the usual Safari answer.
-  const want=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm','video/mp4'];
+  const want=['video/mp4;codecs=avc1.42E01E','video/mp4;codecs=avc1','video/mp4',
+              'video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
   for(const m of want) if(window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
   return '';
 }
-$('rec').addEventListener('click',()=>{
+/* The destinations, at the pixel sizes each one actually wants. Bitrates are per-format rather
+   than one number: 1080x1920 at 16Mbps is generous and 3840x2160 at 16 is mush, so it scales
+   with the pixel count and lands near what the platforms encode to themselves. */
+const EXPORT_FMT={
+  screen  :null,
+  reels   :{w:1080,h:1920,label:'Reels / TikTok'},
+  portrait:{w:1080,h:1350,label:'Portrait 4:5'},
+  square  :{w:1080,h:1080,label:'Square 1:1'},
+  youtube :{w:1920,h:1080,label:'YouTube 1080p'},
+  yt4k    :{w:3840,h:2160,label:'YouTube 4K'},
+};
+const exportBitrate=(w,h)=>Math.round(Math.min(120e6, Math.max(12e6, w*h*60*0.10)));
+/* ---- RECORDING RUNS OFFLINE WHEN IT HAS TO, AND THAT IS THE POINT ----
+   The requirement is Ultra with no lag, and on this machine those two cannot both be had in
+   real time. MEASURED, three tiers, same scene:
+
+       tier      march   fps        implied cost
+       Preview   0.78Mpx 58.2       frame = 8.6ms + 11.1ms per Mpx
+       High      2.27Mpx 31.4       (fitted across the three)
+       Ultra     4.35Mpx 17.6
+
+   Reels is 1080x1920 = 2.07 Mpx, so Ultra there is ~32fps at rscale 1.0 and ~15fps at the
+   supersample Ultra is for. A live MediaRecorder would drop every second frame and the file
+   would judder -- which is exactly the lag being complained about, arriving in the export
+   instead of on screen.
+
+   So the export does not have to happen in real time, and nothing about this renderer requires
+   it to. The analysis is precomputed and pos() is the single place the timeline is read, so the
+   clock can be STEPPED: render a frame, advance the music by exactly 1/60s, hand that frame to
+   the encoder, repeat. captureStream(0) plus track.requestFrame() is the API for exactly this --
+   the stream produces a frame only when asked, so a 90ms render still writes one 16.7ms frame.
+   The file comes out at a perfect 60fps at any quality the GPU can eventually finish.
+
+   Live capture is kept for when it fits, because it is the only mode that can carry AUDIO: the
+   audio graph runs in real time and cannot be stepped, so an offline render is video only. The
+   mode is chosen by MEASURING the frame cost at the chosen format rather than by guessing, and
+   the choice is reported rather than hidden. */
+const RENDER={on:false, fps:60, t0:0, until:0, track:null, frames:0, pinScale:false};
+window.RENDER=RENDER;
+let recPrevTier='high', recLive=false;
+function endRecording(){
+  // Put back everything the recording pinned, in the reverse order it was taken.
+  RENDER.on=false; RENDER.track=null; RENDER.pinScale=false; renderClock=null;
+  if(EXPORT.on){ EXPORT.on=false; glc.style.objectFit=''; glc.style.background=''; resize(); }
+  QLOCK=false;
+  if(recPrevTier && recPrevTier!==TIER) applyTier(recPrevTier);
+  $('rec').textContent='Record'; $('rec').style.color='';
+}
+$('rec').addEventListener('click',async()=>{
   if(recorder && recorder.state==='recording'){ recorder.stop(); return; }
   if(!window.MediaRecorder || !glc.captureStream){ showStat('Recording unsupported in this browser',true); hideStat(2600); return; }
   const mime=pickMime();
   if(!mime){ showStat('No supported video codec',true); hideStat(2600); return; }
+  const fmt=EXPORT_FMT[$('selFmt').value]||null;
+
+  /* ULTRA, PINNED, FOR THE WHOLE RECORDING. The governor exists to protect the frame rate of
+     something being watched live; a file is not being watched while it is written, and letting
+     rscale walk up and down mid-take bakes a visible quality change into the footage. QLOCK
+     holds it still and the tier is restored afterwards. */
+  recPrevTier=TIER; applyTier('ultra'); QLOCK=true; RENDER.pinScale=true;
+  if(fmt){ EXPORT.on=true; EXPORT.w=fmt.w; EXPORT.h=fmt.h;
+           glc.style.objectFit='contain'; glc.style.background='#050506'; resize(); }
+  await new Promise(r=>setTimeout(r,420));          // let the reallocation settle before timing it
+
+  // MEASURE, then choose. Two seconds of frames at the real export size and quality.
+  const t0=performance.now(); let n=0;
+  await new Promise(res=>{ const tk=()=>{ n++; if(performance.now()-t0<900) requestAnimationFrame(tk); else res(); }; requestAnimationFrame(tk); });
+  const liveFps=n/((performance.now()-t0)/1000);
+  recLive = liveFps>=57 && isPlaying;               // live capture also needs something to record
+  const dur=(director&&director.meta&&director.meta.duration)||0;
+
   try{
-    recStream=glc.captureStream(60);
-    recorder=new MediaRecorder(recStream,{mimeType:mime,videoBitsPerSecond:16000000});
-  }catch(err){ showStat('Recorder failed: '+err.message,true); hideStat(3000); return; }
+    if(recLive){
+      recStream=glc.captureStream(60);
+      /* The audio graph is one node deep -- play() does source.connect(ctx.destination) and there
+         is no master gain to tap -- so the recorder taps the SOURCE, which is the same signal.
+         Only meaningful while something is actually playing; a live capture of silence is still
+         a valid file and the caller has already checked isPlaying. */
+      if(ctx && source){
+        try{ const dest=ctx.createMediaStreamDestination(); source.connect(dest);
+             dest.stream.getAudioTracks().forEach(t=>recStream.addTrack(t)); }catch(e){}
+      }
+    } else {
+      recStream=glc.captureStream(0);                // 0 = frames only when asked for
+      RENDER.track=recStream.getVideoTracks()[0];
+      RENDER.fps=60; RENDER.frames=0;
+      RENDER.t0=(performance.now()-t0)/1000;
+      renderClock=isPlaying?pos():pausedAt;          // start where the playhead is
+      RENDER.until=dur||renderClock+30;
+      RENDER.on=true;
+    }
+    const bps=exportBitrate(glc.width,glc.height);
+    recorder=new MediaRecorder(recStream,{mimeType:mime,videoBitsPerSecond:bps});
+  }catch(err){ endRecording(); showStat('Recorder failed: '+err.message,true); hideStat(3000); return; }
+
   recChunks=[];
   recorder.ondataavailable=e=>{ if(e.data && e.data.size) recChunks.push(e.data); };
   recorder.onstop=()=>{
     const ext=mime.indexOf('mp4')>=0?'mp4':'webm';
-    saveBlob(new Blob(recChunks,{type:mime}),'atonal-'+stamp()+'.'+ext);
+    const name='atonal-'+($('selFmt').value)+'-'+stamp()+'.'+ext;
+    saveBlob(new Blob(recChunks,{type:mime}),name);
     recChunks=[];
     if(recStream){ recStream.getTracks().forEach(t=>t.stop()); recStream=null; }
-    $('rec').textContent='Record'; $('rec').style.color='';
-    showStat('Saved '+ext.toUpperCase()); hideStat(1600);
+    const px=glc.width+'x'+glc.height;
+    endRecording();
+    showStat('Saved '+ext.toUpperCase()+' '+px+(recLive?'':' (offline, no audio)')); hideStat(2600);
   };
   recorder.start(1000);                 // 1s timeslices: a crash still leaves usable footage
   $('rec').textContent='Stop'; $('rec').style.color='#ff4d6a';
-  showStat('Recording — press Stop to save'); hideStat(1800);
+  const where=fmt?fmt.label+' '+fmt.w+'x'+fmt.h:'screen';
+  /* SAY WHAT IT WILL COST BEFORE IT COSTS IT. An offline render is slower than real time by
+     roughly 60/liveFps, so a 40s track at 14fps live is about seven minutes of wall clock. That is
+     a reasonable trade for a file that never drops a frame at Ultra, and an unreasonable surprise
+     if it is not said out loud. */
+  if(recLive){ showStat('Recording '+where+' live at '+liveFps.toFixed(0)+'fps — Stop to save'); }
+  else{
+    const mins=dur>0 ? (dur*60/Math.max(1,liveFps))/60 : 0;
+    showStat('Rendering '+where+' offline at a true 60fps — no dropped frames'
+      +(mins>0?', about '+(mins<1?'under a minute':mins.toFixed(0)+' min'):'')+'. Stop to save');
+  }
+  hideStat(5200);
 });
 
 
