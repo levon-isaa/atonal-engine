@@ -1606,7 +1606,11 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
       /* Raised from 620: at a 2000px column the tiles are ~640 CSS wide, and a
          620 buffer upscaled into that is visibly soft. There is headroom -- the
          page measures 120fps with all nine gated per tile. */
-      var k=Math.min(1, 760/Math.max(1,w), 760/Math.max(1,h));
+      /* 900, not 1100. Tile dpr is already capped at 1.5, so this only binds on
+         a very wide column -- where the tiles reach ~800 CSS and 1100 would be
+         1.2 Mpix EACH, times the six or so on screen. 900 still renders above
+         one device pixel per CSS pixel, which is where the sharpness is. */
+      var k=Math.min(1, 900/Math.max(1,w), 900/Math.max(1,h));
       T.R.size(Math.max(2,Math.round(w*k)), Math.max(2,Math.round(h*k)));
     });
   }
@@ -1733,31 +1737,61 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
 })();
 
 /* ---------------------------- PROFILE GLYPHS ----------------------------
-   Nine one-shot renders through a single context that is then released. They
-   are product shots, not animations: a still is the right way to show what a
-   profile IS, and nine more live marchers would be nine contexts for nothing. */
+   Nine one-shot renders. They are product shots, not animations: a still is the
+   right way to show what a profile IS, and nine more live marchers would be nine
+   contexts for nothing.
+
+   SIZED FROM THE ELEMENT, NOT FROM A CONSTANT. This rendered every glyph at a
+   fixed 150 x dpr, which was about right when the column was 1180 and is a 2x
+   upscale now that it can reach 2400 -- the grid went visibly soft on a large
+   display. Nothing is animated here, so there is no reason not to render at the
+   full device resolution the cell actually occupies.
+
+   AND IT RE-RENDERS ON RESIZE. A one-shot at load is wrong for a fluid column:
+   drag a window wider and every glyph stays at the resolution it was born at.
+   The context is created for the batch and released after it, so the steady
+   state is still one context fewer -- a resize pays a shader compile, which is
+   the right trade against holding a tenth context open forever. */
 (function(){
-  var targets=document.querySelectorAll('canvas[data-glyph]');
+  var targets=[].slice.call(document.querySelectorAll('canvas[data-glyph]'));
   if(!targets.length) return;
-  var off=document.createElement('canvas');
-  var R=makeGL(off); if(!R) return;
-  var d=Math.min(devicePixelRatio||1,2), S=Math.round(150*d);
-  R.size(S,S);
-  targets.forEach(function(cv,i){
-    var m=+cv.dataset.glyph;
-    cv.width=S; cv.height=S;
-    R.draw(P({
-      t:0, mode:m, mode2:m, mix:0, kal:0, kalPh:0,
-      segN:m===7?5:(m===8?4:(m===6?6:(m===0?5:3))), dense:0.45, twist:0.30, thick:0.5, cut:0.42,
-      spin:-0.42, tilt:-0.30, swirl:0.16 + i*0.03,
-      mat:0, hue:(i/9)*0.9, steps:110, zoom:0.70
-    }));
-    var g=cv.getContext('2d');
-    g.clearRect(0,0,S,S);
-    g.drawImage(off,0,0,S,S,0,0,S,S);
+
+  function paint(){
+    var off=document.createElement('canvas');
+    var R=makeGL(off); if(!R) return;
+    var dpr=Math.min(devicePixelRatio||1,2);
+    targets.forEach(function(cv,i){
+      var r=cv.getBoundingClientRect();
+      var S=Math.round(Math.min(Math.max(r.width||150,120)*dpr, 900));
+      var m=+cv.dataset.glyph;
+      R.size(S,S);
+      cv.width=S; cv.height=S;
+      R.draw(P({
+        t:0, mode:m, mode2:m, mix:0, kal:0, kalPh:0,
+        segN:m===7?5:(m===8?4:(m===6?6:(m===0?5:3))), dense:0.45, twist:0.30, thick:0.5, cut:0.42,
+        spin:-0.42, tilt:-0.30, swirl:0.16 + i*0.03,
+        mat:0, hue:(i/9)*0.9, steps:110, zoom:0.70
+      }));
+      /* drawImage has to happen in the SAME task as the draw -- the drawing
+         buffer is discarded once the frame composites. */
+      var g=cv.getContext('2d');
+      g.clearRect(0,0,S,S);
+      g.drawImage(off,0,0,S,S,0,0,S,S);
+    });
+    var lose=R.gl.getExtension('WEBGL_lose_context');
+    if(lose) lose.loseContext();
+  }
+
+  /* after layout has settled, so the first measurement is the real cell size */
+  requestAnimationFrame(function(){ requestAnimationFrame(paint); });
+  if(document.fonts && document.fonts.ready) document.fonts.ready.then(paint);
+
+  var t=null, lastW=innerWidth;
+  addEventListener('resize',function(){
+    if(innerWidth===lastW) return;           // ignore mobile URL-bar height changes
+    lastW=innerWidth;
+    clearTimeout(t); t=setTimeout(paint,260);
   });
-  var lose=R.gl.getExtension('WEBGL_lose_context');
-  if(lose) lose.loseContext();
 })();
 
 /* ---------------------------- ANALYSIS STRIP ----------------------------
