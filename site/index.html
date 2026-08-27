@@ -47,7 +47,10 @@ h1,h2,h3,.mark,.big{
   font-weight:800; letter-spacing:-.026em; line-height:1.0;
   text-wrap:balance; margin:0;
 }
-h1{font-size:clamp(36px,4.4vw,60px);letter-spacing:-.036em;line-height:.98}
+/* Syne is a wide face -- 'rendered' at 36px overruns a 375px column. The
+   floor comes down and vw does the work sooner. */
+h1{font-size:clamp(29px,4.4vw,60px);letter-spacing:-.036em;line-height:.98;
+  overflow-wrap:break-word}
 h2{font-size:clamp(28px,3.9vw,48px)}
 h3{font-size:18.5px;letter-spacing:-.014em;line-height:1.22;font-weight:700}
 p{margin:0}
@@ -158,7 +161,7 @@ header.cond .mark{transform:scale(.92)}
    The form is pushed off-centre in the SHADER (u_shift) rather than by cropping
    the canvas, so the object genuinely sits in the right of the frame and the
    left is real, empty space for the type -- no letters over a busy silhouette. */
-.hero{padding:clamp(20px,2.6vw,38px) 0 0}
+.hero{padding:clamp(16px,1.8vw,26px) 0 0}
 .stageBody{position:relative;width:100%;aspect-ratio:1.9;
   max-height:min(82vh,1150px);min-height:500px;overflow:hidden}
 .stageArt{position:absolute;inset:0;overflow:hidden;background:
@@ -168,14 +171,18 @@ header.cond .mark{transform:scale(.92)}
   background:linear-gradient(96deg,rgba(7,7,11,.97) 0%,rgba(7,7,11,.94) 30%,
                                     rgba(7,7,11,.66) 46%,rgba(7,7,11,.12) 64%,
                                     rgba(7,7,11,0) 74%)}
+/* The copy USES the stage's height instead of floating in the middle of it:
+   badge on the top edge, the argument in the middle, the spec line on the
+   bottom rule. Centred, it left 223px dead in a 744px stage. */
 .stageCopy{position:relative;z-index:2;height:100%;max-width:min(640px,46%);
-  padding:clamp(26px,3.6vw,54px);display:flex;flex-direction:column;justify-content:center;
-  pointer-events:none}
+  padding:clamp(26px,3.2vw,50px);display:flex;flex-direction:column;
+  justify-content:space-between;pointer-events:none}
+.stageMid{display:flex;flex-direction:column}
 .stageCopy>*{pointer-events:auto}
-.stageCopy>.pill{align-self:flex-start;margin-bottom:22px}
+.stageCopy>.pill{align-self:flex-start;margin-bottom:0}
 .hero .lede{color:var(--ink-2);font-size:16.5px;max-width:44ch;margin-top:20px}
 .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}
-.hMeta{display:flex;gap:20px;flex-wrap:wrap;margin-top:28px;padding-top:19px;
+.hMeta{display:flex;gap:20px;flex-wrap:wrap;margin-top:0;padding-top:19px;
   border-top:1px solid var(--line)}
 
 /* the frame chrome: a header strip, a footer strip, and the segmented control.
@@ -211,7 +218,8 @@ header.cond .mark{transform:scale(.92)}
     display:flex;flex-direction:column}
   .stageArt{position:relative;inset:auto;order:2;height:62vw;min-height:330px;
     border-top:1px solid var(--line)}
-  .stageCopy{order:1;position:static;height:auto;max-width:none;padding:clamp(24px,6vw,34px)}
+  .stageCopy{order:1;position:static;height:auto;max-width:none;padding:clamp(24px,6vw,34px);
+    justify-content:flex-start;gap:22px}
   .scrim{display:none}
   .hud{padding:13px}
   .hud .rd:nth-child(4),.hud .rd:nth-child(5){display:none}
@@ -241,7 +249,7 @@ header.cond .mark{transform:scale(.92)}
 @keyframes slide{to{transform:translateX(-50%)}}
 
 /* ============================ SECTIONS ============================ */
-.sec{padding:clamp(56px,8vw,102px) 0 0}
+.sec{padding:clamp(44px,4.6vw,76px) 0 0}
 .prose{color:var(--ink-2);max-width:66ch}
 .prose strong{color:var(--ink);font-weight:600}
 
@@ -318,7 +326,7 @@ details[open] .prose{animation:unroll .42s var(--ease)}
 @keyframes unroll{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
 
 /* close + footer */
-.end{padding:clamp(70px,10vw,130px) 0 clamp(56px,7vw,90px);text-align:center}
+.end{padding:clamp(56px,6vw,96px) 0 clamp(44px,4.6vw,72px);text-align:center}
 footer{border-top:1px solid var(--line);padding:22px 0}
 .foot{width:var(--col);margin:0 auto;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
 .foot .lab{margin-left:auto}
@@ -407,7 +415,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
    where the page stops being a list and starts demonstrating. */
 .howGrid{display:grid;grid-template-columns:1fr 1fr}
 .howSteps{border-right:1px solid var(--line)}
-.howStep{padding:clamp(30px,5vw,64px) var(--pad);min-height:62vh;display:flex;
+.howStep{padding:clamp(26px,3.2vw,44px) var(--pad);min-height:clamp(230px,40vh,400px);display:flex;
   flex-direction:column;justify-content:center;border-top:1px solid var(--line);
   opacity:.34;transition:opacity .5s var(--ease)}
 .howStep:first-child{border-top:0}
@@ -417,7 +425,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
   font-variant-numeric:tabular-nums;transition:color .5s var(--ease)}
 .howStep.on .n{color:var(--mag)}
 .howStep p{color:var(--ink-2);font-size:14.8px;margin-top:12px;max-width:44ch}
-.howPin{position:sticky;top:66px;height:min(78vh,900px);display:flex;flex-direction:column}
+.howPin{position:sticky;top:78px;height:min(72vh,820px);display:flex;flex-direction:column}
 .howVis{position:relative;flex:1;background:
   radial-gradient(74% 86% at 50% 50%,rgba(130,87,255,.09),transparent 70%),#08080D;overflow:hidden}
 .howVis canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -521,13 +529,15 @@ footer{border-top:1px solid var(--line);padding:22px 0}
         </div>
         <div class="stageCopy">
           <span class="pill"><i></i><span class="lab on">Renders at 60fps &middot; audio muxed in</span></span>
-          <h1 data-split>Your track,<br><span class="hgrad">rendered as an object.</span></h1>
-          <p class="lede">Upload a track. ATONAL reads its tempo, its sections and every individual
-            hit, then directs a raymarched sculpture that moves to it &mdash; and exports it sized
-            for Reels, TikTok or YouTube.</p>
-          <div class="cta">
-            <a class="btn" href="#pricing">Render a track <span class="k">&rarr;</span></a>
-            <a class="btn o" href="#gallery">See it move</a>
+          <div class="stageMid">
+            <h1 data-split>Your track,<br><span class="hgrad">rendered as an object.</span></h1>
+            <p class="lede">Upload a track. ATONAL reads its tempo, its sections and every
+              individual hit, then directs a raymarched sculpture that moves to it &mdash; and
+              exports it sized for Reels, TikTok or YouTube.</p>
+            <div class="cta">
+              <a class="btn" href="#pricing">Render a track <span class="k">&rarr;</span></a>
+              <a class="btn o" href="#gallery">See it move</a>
+            </div>
           </div>
           <div class="hMeta">
             <span class="lab">MP3 &middot; WAV &middot; FLAC</span>
