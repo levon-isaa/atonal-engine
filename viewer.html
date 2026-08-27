@@ -3298,9 +3298,14 @@ let dprScale=1.0;
    downstream already reads glc.width/height -- initTargets reallocates on every applyScale and
    the note there says so -- so retargeting is a resize like any other. */
 const EXPORT={on:false, w:0, h:0}; window.EXPORT=EXPORT;
+const evenPx=v=>Math.max(2, Math.round(v)&~1);   // H.264 refuses odd dimensions outright
 function resize(){
   if(EXPORT.on){ dpr=1; glc.width=EXPORT.w; glc.height=EXPORT.h; applyScale(); return; }
-  dpr=Math.min(devicePixelRatio||1,2)*dprScale; glc.width=Math.round(innerWidth*dpr); glc.height=Math.round(innerHeight*dpr); applyScale(); }
+  dpr=Math.min(devicePixelRatio||1,2)*dprScale;
+  /* Even in normal use, because a Screen export encodes the live canvas at whatever size it
+     happens to be and innerWidth*dpr is odd about half the time. One pixel is not a framing
+     decision anybody will notice; a refused encode is. */
+  glc.width=evenPx(innerWidth*dpr); glc.height=evenPx(innerHeight*dpr); applyScale(); }
 addEventListener('resize',resize);resize();
 // probe once: can this GPU mipmap a half-float target? (mip bloom is far cheaper AND softer)
 if(floatOK){ gl.bindTexture(gl.TEXTURE_2D,hdrT); while(gl.getError()!==gl.NO_ERROR){}
@@ -5526,7 +5531,16 @@ function frame(){
      the material easing, the fold slew and the camera all run at the wrong rate relative to the
      music. renderClock does the same job for pos(). Together they mean the output file is exact
      at any render speed, which is the whole point -- see startRender. */
-  if(RENDER.on){ dt=1/RENDER.fps; renderClock+=dt; time=RENDER.t0+renderClock; }
+  /* BACKPRESSURE. The encoder is not always faster than the renderer -- MEASURED on a 1080x1080
+     take its queue reached 319 frames, and an unbounded queue of VideoFrames at export
+     resolution is a memory leak with a countdown on it. When it runs deep, the clock simply does
+     not advance: the frame is rendered again and not encoded, so nothing is dropped and nothing
+     is duplicated, the render just waits. Costs time, which an offline render has. */
+  if(RENDER.on){
+    RENDER.stall = !!(RENDER.enc && RENDER.enc.encodeQueueSize>90);
+    if(!RENDER.stall){ dt=1/RENDER.fps; renderClock+=dt; time=RENDER.t0+renderClock; }
+    else { dt=0; time=RENDER.t0+renderClock; }
+  }
   PERF.n++;
   // MEASURE THE FRAME, NOT THE INTEGRATION STEP. dt is clamped to 50ms so one stall cannot
   // teleport the animation, and frameAvg was fed from it — which capped the governor's own signal
@@ -6955,13 +6969,21 @@ function frame(){
     // a blank image. Setting a flag and servicing it at the end of the draw is what makes the
     // capture land on real pixels.
     if(shotPending){ shotPending=false; grabFrame(); }
-    /* ONE OUTPUT FRAME PER RENDERED FRAME, asked for explicitly. The stream was opened with
-       captureStream(0), which produces nothing on its own, so this is what paces the file --
-       a 90ms render still writes one 1/60s frame and the result never judders. Same insertion
-       point as the PNG grab above and for the same reason: the drawing buffer holds this frame's
-       pixels here and nowhere else. */
-    if(RENDER.on && RENDER.track){
-      RENDER.track.requestFrame(); RENDER.frames++;
+    /* ONE ENCODED FRAME PER RENDERED FRAME, stamped where it belongs on the OUTPUT timeline
+       rather than where the wall clock happens to be. That is the whole difference between this
+       and the MediaRecorder version it replaces, and the difference between a 15s file and a
+       164s one -- see the MP4 muxer for the measurement. A 180ms render still writes a frame
+       exactly 1/60s after the last. Same insertion point as the PNG grab above and for the same
+       reason: the drawing buffer holds this frame's pixels here and nowhere else. */
+    if(RENDER.on && RENDER.enc && !RENDER.stall){
+      try{
+        const vf=new VideoFrame(glc,{timestamp:Math.round(RENDER.frames*1e6/RENDER.fps),
+                                     duration:Math.round(1e6/RENDER.fps)});
+        // A keyframe every two seconds: the file scrubs without carrying an I-frame per frame.
+        RENDER.enc.encode(vf,{keyFrame: RENDER.frames % (RENDER.fps*2) === 0});
+        vf.close();
+      }catch(e){ RENDER.encErr=String(e&&e.message||e); }
+      RENDER.frames++;
       /* AN OFFLINE RENDER KNOWS EXACTLY HOW FAR THROUGH IT IS, which a live one never can -- the
          end point is a known music time and the clock is stepped, so the fraction is not an
          estimate. Reported every 10 frames rather than every frame: the readout is for a human
@@ -6973,9 +6995,8 @@ function frame(){
         $('recTxt').textContent=Math.round(f*100)+'%  ·  '+outSecs.toFixed(1)+'s of '
           +(RENDER.until-RENDER.startAt).toFixed(0)+'s';
       }
-      if(RENDER.until>0 && renderClock>=RENDER.until && recorder && recorder.state==='recording'){
-        recorder.stop();                       // the take reached its length: stop on its own
-      }
+      if(RENDER.encErr){ finishRender(true); }
+      else if(RENDER.until>0 && renderClock>=RENDER.until){ finishRender(false); }
     }
     // MEASUREMENT TAP. Same reason as the grab above: this is the only point in the frame where
     // the default framebuffer is bound AND has this frame's pixels in it. Every readPixels I have
@@ -7072,13 +7093,160 @@ const exportBitrate=(w,h)=>Math.round(Math.min(80e6, Math.max(8e6, w*h*60*0.055)
    audio graph runs in real time and cannot be stepped, so an offline render is video only. The
    mode is chosen by MEASURING the frame cost at the chosen format rather than by guessing, and
    the choice is reported rather than hidden. */
-const RENDER={on:false, fps:60, t0:0, until:0, startAt:0, track:null, frames:0, pinScale:false};
+/* H.264 IS NOT ONE CODEC, IT IS A PROFILE AND A LEVEL, AND THE LEVEL IS A RESOLUTION CAP.
+   The first version of this hardcoded 'avc1.42E01E' -- Baseline, Level 3.0 -- copied from the
+   320x240 experiment that proved VideoEncoder honours timestamps. Level 3.0 tops out at 720x576,
+   so every single export size was refused: isConfigSupported returned false for 1080x1080,
+   1080x1920 and 3840x2160 alike, the encoder produced no chunks, and the take ended one frame in
+   with "no frames encoded". A codec string that works at thumbnail size and fails at every size
+   the feature exists for.
+   So the level is probed rather than assumed, high to low, and the first the browser actually
+   accepts at this resolution wins. High profile first because it compresses best; Main and
+   Baseline follow for anything that will not take it.
+   AND THE DIMENSIONS MUST BE EVEN -- "H264 only supports even sized frames", verbatim from the
+   encoder. Every named format is even by construction, but a Screen export takes the live canvas,
+   which is innerWidth*dpr and odd about half the time. */
+async function pickAvcCodec(w,h){
+  const cands=['avc1.640034','avc1.640033','avc1.640032','avc1.64002A','avc1.640028',
+               'avc1.4D0034','avc1.4D0033','avc1.4D0028',
+               'avc1.42E034','avc1.42E033','avc1.42E028','avc1.42E01E'];
+  for(const codec of cands){
+    try{
+      const s=await VideoEncoder.isConfigSupported({codec,width:w,height:h,
+        bitrate:exportBitrate(w,h),framerate:60,avc:{format:'avc'},latencyMode:'quality'});
+      if(s && s.supported) return codec;
+    }catch(e){}
+  }
+  return null;
+}
+
+/* ====================== MP4 MUXER ======================
+   WHY THIS EXISTS, since MediaRecorder is right there and writes MP4 on its own.
+
+   MediaRecorder is a REAL-TIME API. It timestamps every frame by the wall-clock moment the frame
+   reached it, and there is no way to tell it otherwise. MEASURED twice, both ways round: hand it
+   60 frames over 6 seconds through captureStream(0) + requestFrame() and the file is 6.02s long;
+   hand the same 60 frames to a MediaStreamTrackGenerator carrying explicit 60fps VideoFrame
+   timestamps and it is 6.03s. The timestamps are ignored either way.
+
+   That is exactly the reported fps drop, and it was mine. The offline renderer feeds frames as
+   fast as it can render them -- about 5.5 a second at Reels on this machine -- so a fifteen
+   second take came out as a 164 second file playing at 5.5fps. The frame COUNT was right, which
+   is why the check I wrote passed: it counted frames and divided by 60 instead of asking the file
+   how long it was. I measured the number I controlled rather than the one that mattered.
+
+   WebCodecs VideoEncoder does honour timestamps -- same experiment, 60 chunks spanning 0.983s
+   however slowly they were fed -- but it emits raw H.264 access units and no container. So the
+   container is written here. It is the simplest possible MP4: one AVC video track, no audio, one
+   chunk, constant frame duration, which removes most of what makes muxing fiddly. */
+const MP4={
+  b(type, ...parts){                       // one box: size, type, payload
+    let n=0; for(const p of parts) n+=p.length;
+    const out=new Uint8Array(8+n), dv=new DataView(out.buffer);
+    dv.setUint32(0, 8+n); for(let i=0;i<4;i++) out[4+i]=type.charCodeAt(i);
+    let o=8; for(const p of parts){ out.set(p,o); o+=p.length; }
+    return out;
+  },
+  fb(type, ver, flags, ...parts){          // a FULL box carries a version and 24 flag bits
+    const h=new Uint8Array(4); h[0]=ver; h[1]=(flags>>16)&255; h[2]=(flags>>8)&255; h[3]=flags&255;
+    return MP4.b(type, h, ...parts);
+  },
+  u32(...v){ const a=new Uint8Array(4*v.length), d=new DataView(a.buffer);
+             v.forEach((x,i)=>d.setUint32(i*4, x>>>0)); return a; },
+  u16(...v){ const a=new Uint8Array(2*v.length), d=new DataView(a.buffer);
+             v.forEach((x,i)=>d.setUint16(i*2, x&65535)); return a; },
+  str(s){ const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; },
+  /* samples: [{bytes:Uint8Array, key:boolean}], desc: the avcC from the encoder's decoderConfig.
+     TS is the media timescale; 90000 is the usual choice and divides 60fps exactly (1500 a frame),
+     so no frame duration has to be rounded and the track cannot drift. */
+  build(samples, desc, w, h, fps){
+    const TS=90000, sdur=Math.round(TS/fps), n=samples.length;
+    const durTS=sdur*n, durMS=Math.round(n/fps*1000);
+    let dataLen=0; for(const s of samples) dataLen+=s.bytes.length;
+
+    const ftyp=MP4.b('ftyp', MP4.str('isom'), MP4.u32(512), MP4.str('isomiso2avc1mp41'));
+    // mdat is written before moov, so the sample offsets are known before stco is built.
+    const mdatHdr=new Uint8Array(8); new DataView(mdatHdr.buffer).setUint32(0, 8+dataLen);
+    mdatHdr.set(MP4.str('mdat'),4);
+    const mdatStart=ftyp.length+8;
+
+    const avcC=MP4.b('avcC', desc);
+    const avc1=MP4.b('avc1',
+      new Uint8Array(6), MP4.u16(1),                    // reserved, data_reference_index
+      MP4.u16(0,0), MP4.u32(0,0,0),                     // pre_defined and reserved
+      MP4.u16(w,h), MP4.u32(0x00480000,0x00480000),     // 72dpi
+      MP4.u32(0), MP4.u16(1),
+      new Uint8Array(32),                               // compressorname
+      MP4.u16(24), new Uint8Array([255,255]),           // depth, pre_defined -1
+      avcC);
+    const stsd=MP4.fb('stsd',0,0, MP4.u32(1), avc1);
+    const stts=MP4.fb('stts',0,0, MP4.u32(1), MP4.u32(n, sdur));
+    /* Every keyframe is a sync sample. Omitting stss entirely declares EVERY frame a keyframe,
+       which sends a player to the wrong place when it seeks on a track that has P-frames. */
+    const keys=[]; samples.forEach((s,i)=>{ if(s.key) keys.push(i+1); });
+    const stss=MP4.fb('stss',0,0, MP4.u32(keys.length), MP4.u32(...keys));
+    const stsc=MP4.fb('stsc',0,0, MP4.u32(1), MP4.u32(1,n,1));
+    const stsz=MP4.fb('stsz',0,0, MP4.u32(0,n), MP4.u32(...samples.map(s=>s.bytes.length)));
+    const stco=MP4.fb('stco',0,0, MP4.u32(1), MP4.u32(mdatStart));
+    const stbl=MP4.b('stbl', stsd, stts, stss, stsc, stsz, stco);
+    const dref=MP4.fb('dref',0,0, MP4.u32(1), MP4.fb('url ',0,1));
+    const minf=MP4.b('minf', MP4.fb('vmhd',0,1, MP4.u16(0,0,0,0)), MP4.b('dinf', dref), stbl);
+    const hdlr=MP4.fb('hdlr',0,0, MP4.u32(0), MP4.str('vide'), MP4.u32(0,0,0), MP4.str('ATONAL '));
+    const mdhd=MP4.fb('mdhd',0,0, MP4.u32(0,0,TS,durTS), MP4.u16(0x55C4,0));   // und language
+    const mdia=MP4.b('mdia', mdhd, hdlr, minf);
+    const MTX=MP4.u32(0x10000,0,0, 0,0x10000,0, 0,0,0x40000000);               // identity matrix
+    const tkhd=MP4.fb('tkhd',0,3, MP4.u32(0,0,1,0,durMS), MP4.u32(0,0),
+                      MP4.u16(0,0,0,0), MTX, MP4.u32(w*65536, h*65536));
+    const trak=MP4.b('trak', tkhd, mdia);
+    const mvhd=MP4.fb('mvhd',0,0, MP4.u32(0,0,1000,durMS,0x10000), MP4.u16(0x100,0),
+                      MP4.u32(0,0), MTX, MP4.u32(0,0,0,0,0,0,2));
+    const moov=MP4.b('moov', mvhd, trak);
+
+    const out=new Uint8Array(ftyp.length+8+dataLen+moov.length);
+    let o=0;
+    out.set(ftyp,o); o+=ftyp.length;
+    out.set(mdatHdr,o); o+=8;
+    for(const s of samples){ out.set(s.bytes,o); o+=s.bytes.length; }
+    out.set(moov,o);
+    return new Blob([out],{type:'video/mp4'});
+  }
+};
+const RENDER={on:false, fps:60, t0:0, until:0, startAt:0, frames:0, pinScale:false,
+               enc:null, samples:[], desc:null, bytes:0, encErr:null, codec:null, stall:false};
 let recTimer=null, recWantSecs=0;
 window.RENDER=RENDER;
+/* Ends an OFFLINE take: stop feeding frames, drain the encoder, write the container, save.
+   Separate from the live path's recorder.onstop because the two produce a file by entirely
+   different means -- one is drained and muxed here, the other is assembled by MediaRecorder. */
+let renderFinishing=false;
+async function finishRender(failed){
+  if(renderFinishing) return;
+  renderFinishing=true;
+  RENDER.on=false;                                  // stop the frame loop feeding the encoder
+  const enc=RENDER.enc, px=glc.width+'x'+glc.height;
+  const w=glc.width, h=glc.height;
+  try{
+    if(enc && enc.state!=='closed'){ await enc.flush(); enc.close(); }
+  }catch(e){ RENDER.encErr=RENDER.encErr||String(e&&e.message||e); }
+  RENDER.enc=null;
+  const n=RENDER.samples?RENDER.samples.length:0;
+  if(failed || RENDER.encErr || !n || !RENDER.desc){
+    endRecording(); renderFinishing=false;
+    showStat('Export failed: '+(RENDER.encErr||'no frames encoded'),true); hideStat(3600); return;
+  }
+  let blob=null, err=null;
+  try{ blob=MP4.build(RENDER.samples, RENDER.desc, w, h, RENDER.fps); }
+  catch(e){ err=String(e&&e.message||e); }
+  RENDER.samples=[]; RENDER.desc=null;
+  endRecording(); renderFinishing=false;
+  if(!blob){ showStat('Muxing failed: '+err,true); hideStat(3600); return; }
+  saveBlob(blob,'atonal-'+($('selFmt').value)+'-'+stamp()+'.mp4');
+  showStat('Saved MP4 '+px+' · '+(n/60).toFixed(1)+'s at 60fps (offline, no audio)'); hideStat(3200);
+}
 let recPrevTier='high', recLive=false;
 function endRecording(){
   // Put back everything the recording pinned, in the reverse order it was taken.
-  RENDER.on=false; RENDER.track=null; RENDER.pinScale=false; renderClock=null;
+  RENDER.on=false; RENDER.pinScale=false; RENDER.encErr=null; renderClock=null;
   if(recTimer){ clearTimeout(recTimer); recTimer=null; }
   $('recDot').classList.remove('on');
   $('recFill').style.width='0%';
@@ -7088,6 +7256,9 @@ function endRecording(){
   $('rec').textContent='Record'; $('rec').style.color='';
 }
 $('rec').addEventListener('click',async()=>{
+  // Two kinds of take in flight, two ways to end one. Offline is drained and muxed by
+  // finishRender; live is assembled by MediaRecorder and lands in its onstop.
+  if(RENDER.on){ finishRender(false); return; }
   if(recorder && recorder.state==='recording'){ recorder.stop(); return; }
   if(!window.MediaRecorder || !glc.captureStream){ showStat('Recording unsupported in this browser',true); hideStat(2600); return; }
   const mime=pickMime();
@@ -7123,8 +7294,29 @@ $('rec').addEventListener('click',async()=>{
              dest.stream.getAudioTracks().forEach(t=>recStream.addTrack(t)); }catch(e){}
       }
     } else {
-      recStream=glc.captureStream(0);                // 0 = frames only when asked for
-      RENDER.track=recStream.getVideoTracks()[0];
+      /* OFFLINE: WebCodecs, not MediaRecorder. See the MP4 muxer above for the measurement that
+         forced this -- MediaRecorder stamps by arrival and cannot be told otherwise, so it can
+         only ever produce a file as slow as the render was. VideoEncoder takes the timestamp it
+         is given, so every frame lands exactly 1/60s after the last however long it took to make.
+         latencyMode 'quality' because nothing here is being watched as it encodes, and a keyframe
+         every two seconds so the file scrubs without carrying an I-frame per frame. */
+      RENDER.samples=[]; RENDER.desc=null; RENDER.bytes=0; RENDER.encErr=null;
+      RENDER.enc=new VideoEncoder({
+        output:(chunk,md)=>{
+          if(md && md.decoderConfig && md.decoderConfig.description && !RENDER.desc)
+            RENDER.desc=new Uint8Array(md.decoderConfig.description);
+          const b=new Uint8Array(chunk.byteLength); chunk.copyTo(b);
+          RENDER.bytes+=b.length;
+          RENDER.samples.push({bytes:b, key:chunk.type==='key'});
+        },
+        error:e=>{ RENDER.encErr=String(e&&e.message||e); }
+      });
+      const avc=await pickAvcCodec(glc.width, glc.height);
+      if(!avc){ throw new Error('no H.264 level supports '+glc.width+'x'+glc.height); }
+      RENDER.codec=avc;
+      RENDER.enc.configure({codec:avc, width:glc.width, height:glc.height,
+        bitrate:exportBitrate(glc.width,glc.height), framerate:60,
+        avc:{format:'avc'}, latencyMode:'quality'});
       RENDER.fps=60; RENDER.frames=0;
       RENDER.t0=(performance.now()-t0)/1000;
       renderClock=isPlaying?pos():pausedAt;          // start where the playhead is
@@ -7138,13 +7330,17 @@ $('rec').addEventListener('click',async()=>{
       RENDER.until = recWantSecs>0 ? Math.min(dur||1e9, renderClock+recWantSecs) : (dur||renderClock+60);
       RENDER.on=true;
     }
-    const bps=exportBitrate(glc.width,glc.height);
-    recorder=new MediaRecorder(recStream,{mimeType:mime,videoBitsPerSecond:bps});
-  }catch(err){ endRecording(); showStat('Recorder failed: '+err.message,true); hideStat(3000); return; }
+    // Only the LIVE take goes through MediaRecorder. The offline one has no stream at all --
+    // it hands frames straight to VideoEncoder and is finished by finishRender.
+    if(recLive){
+      const bps=exportBitrate(glc.width,glc.height);
+      recorder=new MediaRecorder(recStream,{mimeType:mime,videoBitsPerSecond:bps});
+    }
+  }catch(err){ endRecording(); showStat('Recorder failed: '+(err&&err.message||err),true); hideStat(3000); return; }
 
   recChunks=[];
-  recorder.ondataavailable=e=>{ if(e.data && e.data.size) recChunks.push(e.data); };
-  recorder.onstop=()=>{
+  if(recorder) recorder.ondataavailable=e=>{ if(e.data && e.data.size) recChunks.push(e.data); };
+  if(recorder) recorder.onstop=()=>{
     const ext=mime.indexOf('mp4')>=0?'mp4':'webm';
     const name='atonal-'+($('selFmt').value)+'-'+stamp()+'.'+ext;
     saveBlob(new Blob(recChunks,{type:mime}),name);
@@ -7154,7 +7350,7 @@ $('rec').addEventListener('click',async()=>{
     endRecording();
     showStat('Saved '+ext.toUpperCase()+' '+px+(recLive?'':' (offline, no audio)')); hideStat(2600);
   };
-  recorder.start(1000);                 // 1s timeslices: a crash still leaves usable footage
+  if(recorder) recorder.start(1000);    // 1s timeslices: a crash still leaves usable footage
   /* A live take runs at real time, so its length is a wall-clock timer; an offline one is stopped
      by renderClock reaching RENDER.until, which is music time. Same length, two clocks, because
      the two takes measure it in different units. */
