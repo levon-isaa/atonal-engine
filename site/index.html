@@ -7,7 +7,7 @@
 <title>ATONAL Engine</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
 /* ============================================================================
    ATONAL — landing page
@@ -36,15 +36,20 @@ body{
 }
 ::selection{background:var(--mag);color:#0A0A10}
 a{color:inherit;text-decoration:none}
+/* DISPLAY IS SYNE. Archivo is a good grotesque and that was the problem -- it is
+   the same neutral voice every technical landing page uses, so the type carried
+   none of the character the renders do. Syne is a display face from the art-book
+   end of things: wide, geometric, with a lowercase that is unmistakably itself.
+   It runs at the two large sizes only. Everything small stays in Instrument Sans
+   or the mono, because Syne is a poster face and knows it. */
 h1,h2,h3,.mark,.big{
-  font-family:Archivo,ui-sans-serif,system-ui,sans-serif;
-  font-variation-settings:'wdth' 112;
-  font-weight:800; letter-spacing:-.036em; line-height:.98;
+  font-family:Syne,ui-sans-serif,system-ui,sans-serif;
+  font-weight:800; letter-spacing:-.026em; line-height:1.0;
   text-wrap:balance; margin:0;
 }
-h1{font-size:clamp(37px,4.5vw,62px);letter-spacing:-.045em}
-h2{font-size:clamp(30px,4.2vw,52px)}
-h3{font-size:19px;letter-spacing:-.02em;line-height:1.2}
+h1{font-size:clamp(36px,4.4vw,60px);letter-spacing:-.036em;line-height:.98}
+h2{font-size:clamp(28px,3.9vw,48px)}
+h3{font-size:18.5px;letter-spacing:-.014em;line-height:1.22;font-weight:700}
 p{margin:0}
 
 /* ---- the mono micro-label. Every readout on this page is in it, the same way
@@ -106,8 +111,14 @@ p{margin:0}
 /* ============================ NAV ============================ */
 header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-filter:blur(14px) saturate(1.3);
   border-bottom:1px solid var(--line)}
-.nav{width:var(--col);margin:0 auto;display:flex;align-items:center;gap:26px;height:60px}
-.mark{font-size:17px;font-variation-settings:'wdth' 125;letter-spacing:.02em;font-weight:900}
+.nav{width:var(--col);margin:0 auto;display:flex;align-items:center;gap:26px;height:66px;
+  transition:height .4s var(--ease)}
+header{transition:background .4s var(--ease),border-color .4s var(--ease)}
+header.cond .nav{height:52px}
+header.cond{background:rgba(7,7,11,.88);border-bottom-color:var(--line-2)}
+.mark{transition:transform .4s var(--ease);transform-origin:left center}
+header.cond .mark{transform:scale(.92)}
+.mark{font-size:18px;letter-spacing:-.01em;font-weight:800}
 .mark i{color:var(--mag);font-style:normal}
 .nav nav{display:flex;gap:24px;margin-left:auto}
 .nav nav a{position:relative;padding:4px 0;color:var(--ink-2);font-size:13.5px;transition:color .25s}
@@ -139,59 +150,76 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
 @keyframes beat{0%{box-shadow:0 0 0 0 rgba(255,62,142,.55)}70%{box-shadow:0 0 0 8px rgba(255,62,142,0)}100%{box-shadow:0 0 0 0 rgba(255,62,142,0)}}
 
 /* ============================ HERO ============================ */
-/* THE FIRST SCREEN SHOWS THE PRODUCT. It used to be a full-width headline with
-   the render panel below it, which meant the whole opening view was type and you
-   had to scroll before anything the engine makes appeared. One bordered panel,
-   split by a hairline: the argument on the left, the thing itself running on the
-   right, both inside the first viewport. */
-.hero{padding:clamp(26px,3.6vw,50px) 0 0}
-.split{display:grid;grid-template-columns:1.04fr .96fr}
-.hCopy{padding:clamp(26px,3.2vw,44px);display:flex;flex-direction:column;justify-content:center}
-.hView{border-left:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
-.hero .lede{color:var(--ink-2);font-size:16.5px;max-width:46ch;margin-top:20px}
+/* ---- THE STAGE ----
+   The render is the largest thing on the page now, and the copy sits on it. The
+   previous hero gave the two equal halves, which reads as a diagram of a product
+   rather than the product: the thing being sold is a picture, so the picture
+   takes the room and the words take a corner of it.
+   The form is pushed off-centre in the SHADER (u_shift) rather than by cropping
+   the canvas, so the object genuinely sits in the right of the frame and the
+   left is real, empty space for the type -- no letters over a busy silhouette. */
+.hero{padding:clamp(20px,2.6vw,38px) 0 0}
+.stageBody{position:relative;height:min(78vh,760px);overflow:hidden}
+.stageArt{position:absolute;inset:0;overflow:hidden;background:
+  radial-gradient(70% 84% at 66% 48%,rgba(130,87,255,.12),transparent 70%),#08080D}
+.stageArt canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.scrim{position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(96deg,rgba(7,7,11,.97) 0%,rgba(7,7,11,.94) 30%,
+                                    rgba(7,7,11,.66) 46%,rgba(7,7,11,.12) 64%,
+                                    rgba(7,7,11,0) 74%)}
+.stageCopy{position:relative;z-index:2;height:100%;max-width:min(600px,56%);
+  padding:clamp(26px,3.6vw,54px);display:flex;flex-direction:column;justify-content:center;
+  pointer-events:none}
+.stageCopy>*{pointer-events:auto}
+.stageCopy>.pill{align-self:flex-start;margin-bottom:22px}
+.hero .lede{color:var(--ink-2);font-size:16.5px;max-width:44ch;margin-top:20px}
 .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}
-.hMeta{display:flex;gap:20px;flex-wrap:wrap;margin-top:30px;padding-top:20px;
+.hMeta{display:flex;gap:20px;flex-wrap:wrap;margin-top:28px;padding-top:19px;
   border-top:1px solid var(--line)}
-@media(max-width:920px){
-  .split{grid-template-columns:1fr}
-  .hView{border-left:0;border-top:1px solid var(--line)}
-}
-.hgrad{background:linear-gradient(96deg,var(--mag),var(--vio) 52%,var(--amb));
-  -webkit-background-clip:text;background-clip:text;color:transparent}
 
-/* the viewport: the render, framed like an instrument, with its own readout bar */
-.vp{margin-top:clamp(34px,5vw,58px)}
+/* the frame chrome: a header strip, a footer strip, and the segmented control.
+   Shared with the analysis strip in section 02, so it is not hero-only. */
 .vpTop{display:flex;align-items:center;gap:6px 12px;padding:9px 16px;min-height:40px;
   border-bottom:1px solid var(--line);flex-wrap:wrap}
 .vpTop .dots{display:flex;gap:5px;margin-right:4px}
 .vpTop .dots b{width:6px;height:6px;border-radius:50%;background:var(--line-3)}
-.vpBody{position:relative;flex:1;min-height:430px;background:
-  radial-gradient(78% 90% at 50% 52%,rgba(130,87,255,.10),transparent 70%),#08080D;overflow:hidden}
-@media(max-width:920px){.vpBody{min-height:400px}}
-@media(max-width:520px){.vpBody{min-height:330px}}
-.vpBody canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-.hud{position:absolute;inset:0;pointer-events:none;padding:16px;display:flex;flex-direction:column;
-  justify-content:space-between}
-.hud .row{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.hud .rd{display:flex;gap:8px;align-items:baseline}
-.hud .rd b{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:var(--ink);
-  font-variant-numeric:tabular-nums}
-.vpBot{display:flex;align-items:center;gap:10px;padding:9px 16px;min-height:42px;
+.vpBot{display:flex;align-items:center;gap:10px 14px;padding:9px 16px;min-height:42px;
   border-top:1px solid var(--line);flex-wrap:wrap}
-.seg{display:flex;border:1px solid var(--line);margin-left:auto;flex:1}
-.seg button{flex:1}
-.seg button{appearance:none;background:transparent;border:0;border-left:1px solid var(--line);cursor:pointer;
-  font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
-  color:var(--ink-3);padding:7px 11px;transition:color .2s,background .2s}
+/* flex:1 and margin-left:auto fight: auto eats the free space first and leaves
+   flex nothing to grow into, which is how this ended up a row of small boxes. */
+.seg{display:flex;border:1px solid var(--line);flex:1 1 300px}
+.seg button{appearance:none;background:transparent;border:0;border-left:1px solid var(--line);
+  cursor:pointer;flex:1;font-family:'JetBrains Mono',monospace;font-size:10.5px;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);padding:8px 6px;
+  transition:color .2s,background .2s}
 .seg button:first-child{border-left:0}
 .seg button:hover{color:var(--ink-2)}
 .seg button[aria-pressed="true"]{color:#08080C;background:var(--ink)}
+
+/* readouts hug the right edge, clear of the copy */
+.hud{position:absolute;inset:0;z-index:3;pointer-events:none;padding:18px;
+  display:flex;flex-direction:column;align-items:flex-end;gap:7px;justify-content:flex-start}
+.hud .rd{display:flex;gap:9px;align-items:baseline}
+.hud .rd b{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.hud .rd:nth-child(3){margin-top:auto}
+
+@media(max-width:900px){
+  /* stacked: the render keeps its own block instead of living behind the words */
+  .stageBody{height:auto;display:flex;flex-direction:column}
+  .stageArt{position:relative;inset:auto;order:2;height:62vw;min-height:330px;
+    border-top:1px solid var(--line)}
+  .stageCopy{order:1;position:static;height:auto;max-width:none;padding:clamp(24px,6vw,34px)}
+  .scrim{display:none}
+  .hud{padding:13px}
+  .hud .rd:nth-child(4),.hud .rd:nth-child(5){display:none}
+}
 
 /* ============================ STATS ============================ */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);border-top:0}
 .stats .s{padding:22px var(--pad);border-left:1px solid var(--line)}
 .stats .s:first-child{border-left:0}
-.stats b{display:block;font-family:Archivo,sans-serif;font-variation-settings:'wdth' 100;
+.stats b{display:block;font-family:Syne,sans-serif;
   font-weight:700;font-size:clamp(26px,3.4vw,40px);letter-spacing:-.04em;line-height:1;
   font-variant-numeric:tabular-nums;margin-bottom:9px}
 @media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}
@@ -203,7 +231,7 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
   margin-top:0;padding:11px 0;position:relative;z-index:3;
   -webkit-mask-image:linear-gradient(90deg,transparent,#000 9%,#000 91%,transparent);
           mask-image:linear-gradient(90deg,transparent,#000 9%,#000 91%,transparent)}
-.tick div{display:flex;gap:38px;width:max-content;animation:slide 34s linear infinite}
+.tick div{display:flex;gap:38px;width:max-content;will-change:transform}
 .tick span{display:flex;align-items:center;gap:38px;white-space:nowrap}
 .tick em{font-style:normal;color:var(--ink-3);font-family:'JetBrains Mono',monospace;
   font-size:11px;letter-spacing:.19em;text-transform:uppercase}
@@ -219,7 +247,6 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
 .gal{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}
 .tile{position:relative;background:#08080D;aspect-ratio:1;overflow:hidden;
   transition:transform .45s var(--ease);will-change:transform}
-.tile.w2{grid-column:span 2;aspect-ratio:2}
 .tile canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .tile figcaption{position:absolute;left:0;right:0;bottom:0;padding:13px 15px;display:flex;
   justify-content:space-between;align-items:baseline;gap:10px;
@@ -229,8 +256,8 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
 .tile .fr{position:absolute;inset:9px;border:1px solid rgba(255,255,255,.10);opacity:0;
   transition:opacity .35s var(--ease),inset .35s var(--ease);pointer-events:none}
 .tile:hover .fr{opacity:1;inset:13px}
-@media(max-width:860px){.gal{grid-template-columns:repeat(2,1fr)}.tile.w2{grid-column:span 2}}
-@media(max-width:520px){.gal{grid-template-columns:1fr}.tile.w2{aspect-ratio:1}}
+@media(max-width:860px){.gal{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:520px){.gal{grid-template-columns:1fr}}
 
 /* the bento for "what it does" */
 .bento{display:grid;grid-template-columns:1.28fr 1fr;gap:1px;background:var(--line)}
@@ -245,16 +272,6 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
 .gl span{position:absolute;left:9px;bottom:7px;font-family:'JetBrains Mono',monospace;font-size:9.5px;
   letter-spacing:.15em;text-transform:uppercase;color:var(--ink-3);transition:color .3s}
 .gl:hover span{color:var(--mag)}
-
-/* steps */
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}
-@media(max-width:840px){.steps{grid-template-columns:1fr}}
-.step{background:var(--bg-2);padding:var(--pad);transition:background .3s}
-.step:hover{background:var(--bg-3)}
-.step .big{font-size:52px;font-variation-settings:'wdth' 78;color:var(--line-2);line-height:1;
-  margin-bottom:18px;transition:color .35s var(--ease)}
-.step:hover .big{color:var(--mag)}
-.step p{color:var(--ink-2);font-size:14.5px;margin-top:11px}
 
 /* formats */
 .ratios{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--line)}
@@ -276,7 +293,7 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
 .pack.f{background:linear-gradient(180deg,rgba(255,62,142,.075),rgba(130,87,255,.045))}
 .pack.f::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;
   background:linear-gradient(90deg,var(--mag),var(--vio))}
-.price{font-family:Archivo,sans-serif;font-variation-settings:'wdth' 100;font-weight:800;
+.price{font-family:Syne,sans-serif;font-weight:800;
   font-size:44px;letter-spacing:-.045em;line-height:1}
 .price small{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:400;color:var(--ink-3);
   letter-spacing:.06em;margin-left:8px}
@@ -305,8 +322,9 @@ footer{border-top:1px solid var(--line);padding:22px 0}
 .foot .lab{margin-left:auto}
 
 /* ---- arrival ---- */
-.reveal{opacity:0;transform:translateY(18px);transition:opacity .8s var(--ease),transform .8s var(--ease)}
-.reveal.in{opacity:1;transform:none}
+.reveal{opacity:0;transform:translateY(26px) scale(.988);filter:blur(7px);
+  transition:opacity .9s var(--ease),transform .9s var(--ease),filter .9s var(--ease)}
+.reveal.in{opacity:1;transform:none;filter:none}
 .stagger>*{opacity:0;transform:translateY(14px)}
 .in .stagger>*{animation:rise .62s var(--ease) forwards}
 .in .stagger>*:nth-child(1){animation-delay:.03s}
@@ -315,6 +333,9 @@ footer{border-top:1px solid var(--line);padding:22px 0}
 .in .stagger>*:nth-child(4){animation-delay:.21s}
 .in .stagger>*:nth-child(5){animation-delay:.27s}
 .in .stagger>*:nth-child(6){animation-delay:.33s}
+.in .stagger>*:nth-child(7){animation-delay:.39s}
+.in .stagger>*:nth-child(8){animation-delay:.45s}
+.in .stagger>*:nth-child(9){animation-delay:.51s}
 @keyframes rise{to{opacity:1;transform:none}}
 :focus-visible{outline:2px solid var(--mag);outline-offset:3px}
 
@@ -329,7 +350,120 @@ footer{border-top:1px solid var(--line);padding:22px 0}
   .seg{margin-left:0;width:100%}
   .seg button{flex:1;padding:7px 4px;text-align:center}
 }
+/* ============================================================================
+   MOTION, ROUND TWO.
+   The page read as modern in a screenshot and flat in a browser, which is a
+   motion problem rather than a layout one. Everything below is tied to
+   something the product actually does -- scroll opens the fold, the pointer
+   moves the camera, the step you are reading picks the form -- rather than
+   being effects applied to a page that could be any page.
+   ========================================================================== */
+
+/* ---- word-by-word arrival ----
+   Only the plain lines are split. The gradient line is animated as ONE block on
+   purpose: background-clip:text clips the parent's background to its own inline
+   text, and wrapping each word in an inline-block takes those words out of that
+   formatting context, so a split gradient headline restarts the ramp on every
+   word instead of sweeping across the phrase. */
+.wd{display:inline-block}
+.wd>i{display:inline-block;font-style:inherit;opacity:0;filter:blur(10px);
+  transform:translateY(.42em);
+  transition:opacity .72s var(--ease),filter .72s var(--ease),transform .72s var(--ease)}
+.lit .wd>i{opacity:1;filter:none;transform:none}
+
+/* the gradient line sweeps its ramp into place rather than fading */
+/* The gradient itself lives here, WITH its size and position, not in a separate
+   base rule earlier in the sheet. The `background` shorthand resets
+   background-size, so a later rule that only sets size and position is one
+   accidental edit away from being cancelled -- which is exactly what happened
+   when the hero rewrite took the base rule out and left the headline white. */
+.hgrad{background-image:linear-gradient(96deg,var(--mag),var(--vio) 48%,var(--amb));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  background-size:210% 100%;background-position:88% 0;
+  opacity:0;filter:blur(12px);
+  transition:background-position 1.5s var(--ease),opacity .9s var(--ease),filter .9s var(--ease);
+  transition-delay:.20s}
+.lit .hgrad{background-position:0 0;opacity:1;filter:none}
+
+/* ---- the aurora ----
+   A drifting wash behind the top of the page. Transform only, on an element that
+   is already soft -- no filter:blur() anywhere, because a blurred full-viewport
+   layer is priced like the backdrop-filter that cost three quarters of the frame. */
+#aurora{position:fixed;inset:-25% -10% auto -10%;height:88vh;z-index:1;pointer-events:none;
+  background:radial-gradient(46% 52% at 28% 34%,rgba(130,87,255,.30),transparent 68%),
+             radial-gradient(40% 46% at 74% 22%,rgba(255,62,142,.22),transparent 66%),
+             radial-gradient(34% 40% at 54% 72%,rgba(255,180,84,.10),transparent 70%);
+  animation:drift 34s ease-in-out infinite alternate;will-change:transform}
+@keyframes drift{
+  0%  {transform:translate3d(-3%,-2%,0) scale(1.00) rotate(0deg)}
+  50% {transform:translate3d(4%,3%,0)   scale(1.10) rotate(4deg)}
+  100%{transform:translate3d(-2%,4%,0)  scale(1.04) rotate(-3deg)}
+}
+
+/* ---- the pinned walkthrough ----
+   The steps scroll; the render stays and answers them. This is the one section
+   where the page stops being a list and starts demonstrating. */
+.howGrid{display:grid;grid-template-columns:1fr 1fr}
+.howSteps{border-right:1px solid var(--line)}
+.howStep{padding:clamp(30px,5vw,64px) var(--pad);min-height:62vh;display:flex;
+  flex-direction:column;justify-content:center;border-top:1px solid var(--line);
+  opacity:.34;transition:opacity .5s var(--ease)}
+.howStep:first-child{border-top:0}
+.howStep.on{opacity:1}
+.howStep .n{font-family:Syne,sans-serif;font-weight:800;
+  font-size:44px;line-height:1;color:var(--line-2);margin-bottom:16px;
+  font-variant-numeric:tabular-nums;transition:color .5s var(--ease)}
+.howStep.on .n{color:var(--mag)}
+.howStep p{color:var(--ink-2);font-size:14.8px;margin-top:12px;max-width:44ch}
+.howPin{position:sticky;top:66px;height:min(72vh,640px);display:flex;flex-direction:column}
+.howVis{position:relative;flex:1;background:
+  radial-gradient(74% 86% at 50% 50%,rgba(130,87,255,.09),transparent 70%),#08080D;overflow:hidden}
+.howVis canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.howCap{position:absolute;left:0;right:0;bottom:0;padding:14px 16px;display:flex;
+  justify-content:space-between;gap:10px;flex-wrap:wrap;
+  background:linear-gradient(0deg,rgba(6,6,10,.9),transparent)}
+.howCap b{font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:500}
+.howBar{display:flex;height:2px;background:var(--line)}
+.howBar i{flex:1;background:var(--line);transition:background .45s var(--ease)}
+.howBar i.on{background:linear-gradient(90deg,var(--mag),var(--vio))}
+@media(max-width:900px){
+  .howGrid{grid-template-columns:1fr}
+  .howSteps{border-right:0;order:2}
+  .howStep{min-height:0}
+  .howPin{position:static;height:auto;order:1;border-bottom:1px solid var(--line)}
+  .howVis{min-height:340px}
+}
+
+/* ---- gallery tiles tilt, and the tilt is real ----
+   The frame takes a few degrees of CSS perspective, but the pointer also moves
+   the RENDER's camera (see the tile loop), so the object turns to follow you
+   instead of a flat picture being skewed. */
+.tile{perspective:900px}
+.tile canvas{transition:transform .5s var(--ease)}
+.tile .fr{transition:opacity .35s var(--ease),inset .35s var(--ease)}
+
+/* format cards: the proportion draws itself, which is the point of that section */
+.ratio .box{transform:scaleY(.04);transform-origin:50% 100%;
+  transition:transform .8s var(--ease),border-color .3s var(--ease)}
+.in .ratio .box,.ratio.shown .box{transform:scaleY(1)}
+
+/* pricing: the featured pack keeps a slow breath */
+.pack.f{position:relative;overflow:hidden}
+.pack.f::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(115deg,transparent 38%,rgba(255,255,255,.055) 50%,transparent 62%);
+  transform:translateX(-120%);animation:sheen 6.5s ease-in-out infinite}
+@keyframes sheen{0%,72%{transform:translateX(-120%)}100%{transform:translateX(120%)}}
+
 @media(prefers-reduced-motion:reduce){
+  #aurora{animation:none}
+  .wd>i{opacity:1;filter:none;transform:none;transition:none}
+  .hgrad{opacity:1;filter:none;background-position:0 0;transition:none}
+  .howStep{opacity:1}
+  .howPin{position:static;height:auto}
+  .pack.f::after{animation:none}
+  .ratio .box{transform:none}
+  .reveal{filter:none}
+
   html{scroll-behavior:auto}
   .reveal{opacity:1;transform:none}
   .stagger>*{opacity:1;transform:none;animation:none}
@@ -340,6 +474,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
 </head>
 <body>
 <div id="prog" aria-hidden="true"></div>
+<div id="aurora" aria-hidden="true"></div>
 <div id="rules" aria-hidden="true"><i><b></b><b></b><b></b><b></b><b></b><b></b></i></div>
 <div id="veil" aria-hidden="true"></div>
 <div id="grain" aria-hidden="true"></div>
@@ -363,53 +498,50 @@ footer{border-top:1px solid var(--line);padding:22px 0}
 <!-- ============================ HERO ============================ -->
 <section class="hero">
   <div class="wrap">
-    <div class="p split reveal">
+    <div class="p stage reveal">
       <span class="lt"></span>
-      <div class="hCopy">
-        <span class="pill"><i></i><span class="lab on">Renders at 60fps &middot; audio muxed in</span></span>
-        <h1>Your track,<br><span class="hgrad">rendered as an object.</span></h1>
-        <p class="lede">Upload a track. ATONAL reads its tempo, its sections and every individual
-          hit, then directs a raymarched sculpture that moves to it &mdash; and exports it sized
-          for Reels, TikTok or YouTube.</p>
-        <div class="cta">
-          <a class="btn" href="#pricing">Render a track <span class="k">&rarr;</span></a>
-          <a class="btn o" href="#gallery">See it move</a>
+      <div class="vpTop">
+        <span class="dots"><b></b><b></b><b></b></span>
+        <span class="lab on">Live render</span>
+        <span class="lab" style="margin-left:auto">Signed distance field &middot; 128 steps</span>
+      </div>
+      <div class="stageBody">
+        <div class="stageArt">
+          <canvas id="stage" aria-label="A live raymarched render of an ATONAL form: an extruded profile turning on three axes, folded through a kaleidoscope, lit in magenta and violet."></canvas>
+          <div class="scrim" aria-hidden="true"></div>
+          <div class="hud">
+            <div class="rd"><span class="lab">Form</span><b id="hForm">Rotor</b></div>
+            <div class="rd"><span class="lab">Material</span><b id="hMat">Chrome</b></div>
+            <div class="rd"><span class="lab">Fold</span><b id="hKal">0.00</b></div>
+            <div class="rd"><span class="lab">Tempo</span><b>176.32 BPM</b></div>
+            <div class="rd"><span class="lab">Frame</span><b id="hFps">60.0 fps</b></div>
+          </div>
         </div>
-        <div class="hMeta">
-          <span class="lab">MP3 &middot; WAV &middot; FLAC</span>
-          <span class="lab">Up to 3840&times;2160</span>
-          <span class="lab">No watermark</span>
+        <div class="stageCopy">
+          <span class="pill"><i></i><span class="lab on">Renders at 60fps &middot; audio muxed in</span></span>
+          <h1 data-split>Your track,<br><span class="hgrad">rendered as an object.</span></h1>
+          <p class="lede">Upload a track. ATONAL reads its tempo, its sections and every individual
+            hit, then directs a raymarched sculpture that moves to it &mdash; and exports it sized
+            for Reels, TikTok or YouTube.</p>
+          <div class="cta">
+            <a class="btn" href="#pricing">Render a track <span class="k">&rarr;</span></a>
+            <a class="btn o" href="#gallery">See it move</a>
+          </div>
+          <div class="hMeta">
+            <span class="lab">MP3 &middot; WAV &middot; FLAC</span>
+            <span class="lab">Up to 3840&times;2160</span>
+            <span class="lab">No watermark</span>
+          </div>
         </div>
       </div>
-
-      <div class="hView">
-        <div class="vpTop">
-          <span class="dots"><b></b><b></b><b></b></span>
-          <span class="lab on">Live render</span>
-          <span class="lab" style="margin-left:auto">SDF &middot; 128 steps</span>
-        </div>
-        <div class="vpBody">
-          <canvas id="stage" aria-label="A live raymarched render of an ATONAL form: an extruded profile turning on three axes, folded through a kaleidoscope, lit in magenta and violet."></canvas>
-          <div class="hud">
-            <div class="row">
-              <div class="rd"><span class="lab">Form</span><b id="hForm">Rotor</b></div>
-              <div class="rd"><span class="lab">Material</span><b id="hMat">Chrome</b></div>
-            </div>
-            <div class="row">
-              <div class="rd"><span class="lab">Fold</span><b id="hKal">0.00</b></div>
-              <div class="rd"><span class="lab">Tempo</span><b>176.32 BPM</b></div>
-              <div class="rd"><span class="lab">Frame</span><b id="hFps">60.0 fps</b></div>
-            </div>
-          </div>
-        </div>
-        <div class="vpBot">
-          <div class="seg" role="group" aria-label="Form">
-            <button data-m="0" aria-pressed="true">Rotor</button>
-            <button data-m="7" aria-pressed="false">Knot</button>
-            <button data-m="6" aria-pressed="false">Gear</button>
-            <button data-m="8" aria-pressed="false">Lattice</button>
-            <button data-m="1" aria-pressed="false">Clover</button>
-          </div>
+      <div class="vpBot">
+        <span class="lab" style="margin-right:auto">Drag the render to turn it</span>
+        <div class="seg" role="group" aria-label="Form">
+          <button data-m="0" aria-pressed="true">Rotor</button>
+          <button data-m="7" aria-pressed="false">Knot</button>
+          <button data-m="6" aria-pressed="false">Gear</button>
+          <button data-m="8" aria-pressed="false">Lattice</button>
+          <button data-m="1" aria-pressed="false">Clover</button>
         </div>
       </div>
     </div>
@@ -435,25 +567,33 @@ footer{border-top:1px solid var(--line);padding:22px 0}
     <div class="p reveal">
       <span class="lt"></span>
       <div class="sh"><span class="ix">01</span><span class="lab">Gallery</span><span class="rl"></span>
-        <span class="lab">Six renders &middot; one engine</span></div>
+        <span class="lab">Nine forms &middot; nine materials</span></div>
       <div class="pad">
-        <h2>One engine. Every track its own.</h2>
-        <p class="prose" style="margin-top:18px">Nine profiles, nine materials, a palette that
-          follows the music. Every tile below is the real renderer running the real shader &mdash;
-          the same signed distance fields the export writes. What separates them is the track
-          underneath.</p>
+        <h2 data-split>One engine. Every track its own.</h2>
+        <p class="prose" style="margin-top:18px">Every profile the engine ships, each one wearing a
+          different material &mdash; nine and nine, one grid. These are the real renderer running
+          the real shader, the same signed distance fields the export writes, not pictures of
+          them. Point at one and it turns to follow you.</p>
       </div>
       <div class="gal stagger">
-        <figure class="tile w2"><canvas data-tile="0"></canvas><span class="fr"></span>
-          <figcaption><b>Rotor</b><span class="lab">Chrome &middot; 5 blades</span></figcaption></figure>
+        <figure class="tile"><canvas data-tile="0"></canvas><span class="fr"></span>
+          <figcaption><b>Rotor</b><span class="lab">Chrome</span></figcaption></figure>
         <figure class="tile"><canvas data-tile="1"></canvas><span class="fr"></span>
-          <figcaption><b>Knot</b><span class="lab">Glass</span></figcaption></figure>
+          <figcaption><b>Knot</b><span class="lab">Gold</span></figcaption></figure>
         <figure class="tile"><canvas data-tile="2"></canvas><span class="fr"></span>
-          <figcaption><b>Gear</b><span class="lab">Gold</span></figcaption></figure>
+          <figcaption><b>Lattice</b><span class="lab">Plastic</span></figcaption></figure>
         <figure class="tile"><canvas data-tile="3"></canvas><span class="fr"></span>
-          <figcaption><b>Lattice</b><span class="lab">Holo</span></figcaption></figure>
+          <figcaption><b>Wave</b><span class="lab">Matte</span></figcaption></figure>
         <figure class="tile"><canvas data-tile="4"></canvas><span class="fr"></span>
           <figcaption><b>Clover</b><span class="lab">Pearl</span></figcaption></figure>
+        <figure class="tile"><canvas data-tile="5"></canvas><span class="fr"></span>
+          <figcaption><b>Gear</b><span class="lab">Glass</span></figcaption></figure>
+        <figure class="tile"><canvas data-tile="6"></canvas><span class="fr"></span>
+          <figcaption><b>Arc</b><span class="lab">Clay</span></figcaption></figure>
+        <figure class="tile"><canvas data-tile="7"></canvas><span class="fr"></span>
+          <figcaption><b>Chevron</b><span class="lab">Frosted</span></figcaption></figure>
+        <figure class="tile"><canvas data-tile="8"></canvas><span class="fr"></span>
+          <figcaption><b>Aperture</b><span class="lab">Holographic</span></figcaption></figure>
       </div>
     </div>
   </div>
@@ -468,7 +608,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
         <span class="lab">Analysis &rarr; direction</span></div>
       <div class="bento">
         <div>
-          <h2>It isn&rsquo;t reacting to the music. It&rsquo;s reading it.</h2>
+          <h2 data-split>It isn&rsquo;t reacting to the music. It&rsquo;s reading it.</h2>
           <div class="prose" style="margin-top:22px;display:flex;flex-direction:column;gap:16px">
             <p>Most music visualisers are a level meter with a shape attached. They bounce when the
               volume goes up, and that is the whole of the relationship.</p>
@@ -516,21 +656,44 @@ footer{border-top:1px solid var(--line);padding:22px 0}
     <div class="p reveal">
       <span class="lt"></span>
       <div class="sh"><span class="ix">03</span><span class="lab">How it works</span><span class="rl"></span>
-        <span class="lab">Three steps</span></div>
-      <div class="pad"><h2>Three steps, one of which is waiting.</h2></div>
-      <div class="steps stagger">
-        <div class="step"><div class="big num">01</div><h3>Upload a track</h3>
-          <p>MP3, WAV or FLAC. Analysis takes about ten seconds for a four-minute track and reports
-            what it found &mdash; tempo, genre, the section map &mdash; before you commit to
-            anything.</p></div>
-        <div class="step"><div class="big num">02</div><h3>Direct it, or don&rsquo;t</h3>
-          <p>The default is fully automatic. If you want a say, every decision is a control &mdash;
-            nine forms, nine materials from chrome to glass, six palettes, a set of film filters.
-            Change nothing and it still works.</p></div>
-        <div class="step"><div class="big num">03</div><h3>Pick a format and render</h3>
-          <p>Choose the destination and the length. It renders offline at full quality &mdash; every
-            frame at 60fps with none dropped, however heavy the scene &mdash; and gives you an MP4
-            with your audio in it.</p></div>
+        <span class="lab">Scroll &mdash; the render follows</span></div>
+      <div class="pad" style="padding-bottom:0">
+        <h2 data-split>Three steps, one of which is waiting.</h2>
+      </div>
+      <div class="howGrid">
+        <div class="howSteps">
+          <article class="howStep on" data-step="0">
+            <div class="n">01</div>
+            <h3>Upload a track</h3>
+            <p>MP3, WAV or FLAC. Analysis takes about ten seconds for a four-minute track and
+              reports what it found &mdash; tempo, genre, the section map &mdash; before you
+              commit to anything.</p>
+          </article>
+          <article class="howStep" data-step="1">
+            <div class="n">02</div>
+            <h3>Direct it, or don&rsquo;t</h3>
+            <p>The default is fully automatic. If you want a say, every decision is a control
+              &mdash; nine forms, nine materials from chrome to glass, six palettes, a set of film
+              filters. Change nothing and it still works.</p>
+          </article>
+          <article class="howStep" data-step="2">
+            <div class="n">03</div>
+            <h3>Pick a format and render</h3>
+            <p>Choose the destination and the length. It renders offline at full quality &mdash;
+              every frame at 60fps with none dropped, however heavy the scene &mdash; and gives
+              you an MP4 with your audio in it.</p>
+          </article>
+        </div>
+        <div class="howPin">
+          <div class="howVis">
+            <canvas id="howCv" aria-label="A live render that changes with the step you are reading: the form is analysed, then directed, then framed for export."></canvas>
+            <div class="howCap">
+              <span class="lab" id="howLab">Reading the track</span>
+              <b id="howVal">176.32 BPM &middot; 17 sections</b>
+            </div>
+          </div>
+          <div class="howBar"><i class="on"></i><i></i><i></i></div>
+        </div>
       </div>
     </div>
   </div>
@@ -544,7 +707,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
       <div class="sh"><span class="ix">04</span><span class="lab">Formats</span><span class="rl"></span>
         <span class="lab">H.264 &middot; MP4</span></div>
       <div class="pad">
-        <h2>Sized for where it&rsquo;s going.</h2>
+        <h2 data-split>Sized for where it&rsquo;s going.</h2>
         <p class="prose" style="margin-top:18px">Rendered at the exact pixel dimensions of the
           destination, so nothing is cropped or rescaled afterwards. H.264 in an MP4 &mdash; the one
           file that plays everywhere without being touched.</p>
@@ -573,7 +736,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
       <div class="sh"><span class="ix">05</span><span class="lab">Pricing</span><span class="rl"></span>
         <span class="lab">Pay per export</span></div>
       <div class="pad">
-        <h2>Pay for what you render.</h2>
+        <h2 data-split>Pay for what you render.</h2>
         <p class="prose" style="margin-top:18px">One credit renders one clip up to 60 seconds, at any
           format including 4K, with audio. Credits don&rsquo;t expire. Analysis and preview are free
           and unlimited &mdash; you only spend a credit when you export.</p>
@@ -615,7 +778,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
       <span class="lt"></span>
       <div class="sh"><span class="ix">06</span><span class="lab">Questions</span><span class="rl"></span></div>
       <div class="pad">
-        <h2>Before you upload.</h2>
+        <h2 data-split>Before you upload.</h2>
         <div style="margin-top:24px">
           <details open><summary>Do I own what comes out?</summary>
             <div class="prose">Yes. Exports on a paid credit are yours to use commercially &mdash;
@@ -692,7 +855,7 @@ out vec4 O;
 uniform vec2  u_res;
 uniform float u_t, u_mode, u_mode2, u_mix, u_kal, u_kalPh, u_segN;
 uniform float u_dense, u_twist, u_thick, u_cut;
-uniform float u_spin, u_tilt, u_swirl, u_mat, u_hue, u_steps, u_zoom;
+uniform float u_spin, u_tilt, u_swirl, u_mat, u_hue, u_steps, u_zoom, u_shift;
 #define PI 3.14159265
 
 mat2 rr2(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
@@ -1047,14 +1210,25 @@ vec3 aces(vec3 x){
 }
 
 /* The surface, factored out so the silhouette pass can call it too. */
+/* THE NINE MATERIALS, in the order the engine's own Material menu lists them:
+   chrome, gold, plastic, matte, pearl, glass, clay, frosted, holographic. This
+   was a chain of six ternaries and the site was quietly three short of what the
+   product ships -- while the copy beside it said nine. Tables, because at nine
+   entries a ternary chain stops being readable and starts hiding mistakes. */
+const float M_ROUGH[9]=float[9](0.05, 0.18, 0.16, 0.70, 0.28, 0.03, 0.62, 0.46, 0.12);
+const float M_METAL[9]=float[9](1.00, 1.00, 0.00, 0.00, 0.42, 0.10, 0.00, 0.28, 1.00);
+const float M_IRID [9]=float[9](0.22, 0.06, 0.05, 0.00, 0.48, 0.40, 0.00, 0.16, 1.00);
+const vec3  M_BASE [9]=vec3[9](
+  vec3(0.94,0.95,1.00),   /* chrome  */ vec3(1.00,0.78,0.40),   /* gold    */
+  vec3(0.90,0.36,0.52),   /* plastic */ vec3(0.82,0.83,0.88),   /* matte   */
+  vec3(0.99,0.96,0.97),   /* pearl   */ vec3(0.92,0.96,1.00),   /* glass   */
+  vec3(0.86,0.62,0.52),   /* clay    */ vec3(0.93,0.93,0.97),   /* frosted */
+  vec3(0.88,0.90,1.00));  /* holo    */
+
 vec3 shade(vec3 p, vec3 rd, float t){
-  float m=u_mat;
-  float rough = m<0.5?0.05 : m<1.5?0.30 : m<2.5?0.19 : m<3.5?0.03 : m<4.5?0.13 : 0.44;
-  float metal = m<0.5?1.00 : m<1.5?0.42 : m<2.5?1.00 : m<3.5?0.12 : m<4.5?1.00 : 0.30;
-  float irid  = m<0.5?0.22 : m<1.5?0.45 : m<2.5?0.08 : m<3.5?0.40 : m<4.5?1.00 : 0.16;
-  vec3  base  = m<0.5?vec3(0.94,0.95,1.00) : m<1.5?vec3(0.99,0.96,0.97)
-              : m<2.5?vec3(1.00,0.79,0.42) : m<3.5?vec3(0.92,0.96,1.00)
-              : m<4.5?vec3(0.88,0.90,1.00) : vec3(0.93,0.93,0.97);
+  int mi=int(clamp(u_mat,0.0,8.0)+0.5);
+  float rough=M_ROUGH[mi], metal=M_METAL[mi], irid=M_IRID[mi];
+  vec3  base =M_BASE[mi];
   vec3 n=nrm(p, max(0.0012, 0.0016*t));
   vec3 v=-rd;
   float fres=pow(1.0-clamp(dot(n,v),0.0,1.0), 5.0);
@@ -1063,7 +1237,10 @@ vec3 shade(vec3 p, vec3 rd, float t){
      toward the normal -- a cheap stand-in for a prefiltered probe, and it reads
      correctly at these sizes. */
   vec3 spec=env(normalize(mix(R,n,rough*0.85)));
-  vec3 diff=env(n)*0.55;
+  /* A mirror gets its brightness from the lobes it reflects; a dielectric gets
+     it from ambient, so the three non-metals need considerably more of it or
+     matte, clay and plastic all read as mud in a dark room. */
+  vec3 diff=env(n)*mix(1.45,0.55,metal);
   /* thin-film tint riding the grazing angle: holo is this turned all the way up,
      the others carry a trace of it */
   vec3 film=0.5+0.5*cos(6.28318*(vec3(0.0,0.33,0.67)+fres*2.1+u_hue*0.7));
@@ -1083,6 +1260,7 @@ void main(){
      is landscape and crops the form off both sides the moment it is not. */
   float S=min(u_res.x,u_res.y);
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/S;
+  uv.x-=u_shift;          /* bias the form off-centre so copy can sit beside it */
 
   vec3 ro=vec3(0.0,0.0,3.35/u_zoom);
   vec3 rd=normalize(vec3(uv*1.05,-1.55));
@@ -1133,7 +1311,7 @@ void main(){
 `;
 
 /* ---------- one raymarcher, bound to one canvas ---------- */
-var UNIS='u_res u_t u_mode u_mode2 u_mix u_kal u_kalPh u_segN u_dense u_twist u_thick u_cut u_spin u_tilt u_swirl u_mat u_hue u_steps u_zoom'.split(' ');
+var UNIS='u_res u_t u_mode u_mode2 u_mix u_kal u_kalPh u_segN u_dense u_twist u_thick u_cut u_spin u_tilt u_swirl u_mat u_hue u_steps u_zoom u_shift'.split(' ');
 
 function makeGL(cv){
   var gl=cv.getContext('webgl2',{alpha:true,premultipliedAlpha:false,antialias:false,
@@ -1184,6 +1362,7 @@ function makeGL(cv){
       gl.uniform1f(U.u_hue,    o.hue);
       gl.uniform1f(U.u_steps,  o.steps);
       gl.uniform1f(U.u_zoom,   o.zoom||1);
+      gl.uniform1f(U.u_shift,  o.shift||0);
       gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
       gl.drawArrays(gl.TRIANGLES,0,3);
     }
@@ -1192,7 +1371,7 @@ function makeGL(cv){
 
 function P(o){
   var d={t:0,mode:0,mode2:0,mix:0,kal:0,kalPh:0,segN:3,dense:0.4,twist:0.3,thick:0.5,cut:0.4,
-         spin:0,tilt:0,swirl:0,mat:0,hue:0,steps:118,zoom:1};
+         spin:0,tilt:0,swirl:0,mat:0,hue:0,steps:118,zoom:1,shift:0};
   for(var k in o) d[k]=o[k];
   return d;
 }
@@ -1216,7 +1395,7 @@ var A=window.__ATONAL; if(!A) return;
 var makeGL=A.makeGL, P=A.P, REDUCE=A.REDUCE;
 
 var NAMES=['Rotor','Clover','Arc','Chevron','Wave','Aperture','Gear','Knot','Lattice'];
-var MATS =['Chrome','Pearl','Gold','Glass','Holo','Frosted'];
+var MATS =['Chrome','Gold','Plastic','Matte','Pearl','Glass','Clay','Frosted','Holographic'];
 var BPM=176.32, SPB=60/BPM;
 
 /* the engine's shape ladder: calm to intense, and the order the page lists too */
@@ -1296,6 +1475,15 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
     var kd=Math.sin(beat/48*Math.PI*2)*0.5+0.5;
     var kal=REDUCE?0.35:Math.max(0, Math.min(1, (kd-0.42)/0.34));
     kal=kal*kal*(3-2*kal)*0.92;
+    /* AND SCROLLING OPENS IT. The page's thesis is that something outside the
+       renderer drives the form; on the site that something is the reader. Taking
+       the max rather than adding means the track's own cycle still runs
+       underneath and the scroll can only ever bloom it further. */
+    if(!REDUCE){
+      var hr=cv.getBoundingClientRect();
+      var sp=Math.max(0, Math.min(1, -hr.top/Math.max(1,hr.height*0.9)));
+      kal=Math.max(kal, sp*0.95);
+    }
 
     /* ---- three clocks: 16, 24 and 48 beats ---- */
     var o=P({
@@ -1314,9 +1502,20 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
       spin:  0.58*Math.sin(beat/16*Math.PI*2) + drag.ox,
       tilt: -0.20 + 0.42*Math.sin(beat/24*Math.PI*2) + drag.oy,
       swirl: beat/48*Math.PI*2,
-      mat:   Math.floor(beat/64)%6,
+      mat:   Math.floor(beat/64)%9,
       hue:   (beat/220)%1,
-      steps: steps, zoom:0.94
+      /* FRAMING, DERIVED NOT GUESSED. The ray is normalize(vec3(uv*1.05,-1.55))
+         from z=3.35/zoom, so a point at object radius r lands at
+         uv = r*1.55*zoom/(1.05*3.35). Every profile is normalised to EXR=1.15
+         and the extrusion adds depth, so the worst-case silhouette radius is
+         about 1.19 -- which at zoom 1.0 needs uv 0.524 when the short axis only
+         reaches 0.5. That is why the forms were clipped on all four sides: at
+         zoom 1 they are LARGER than the frame by construction. 0.70 leaves
+         about a quarter of the frame as margin. */
+      steps: steps, zoom:(innerWidth>900?0.70:0.80),
+      /* Off-centre only while the copy is beside it. Below the stacked
+         breakpoint the words sit above the render and it re-centres. */
+      shift: innerWidth>900 ? 0.30 : 0.0
     });
     R.draw(o);
 
@@ -1334,7 +1533,7 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
       if(hFps) hFps.textContent=(1000/Math.max(1,fEma)).toFixed(1)+' fps';
       if(hK) hK.textContent=kal.toFixed(2);
       if(hF) hF.textContent=NAMES[st.mix>0.5?st.mode2:st.mode];
-      if(hM) hM.textContent=MATS[Math.floor(beat/64)%6];
+      if(hM) hM.textContent=MATS[Math.floor(beat/64)%9];
     }
   }
   requestAnimationFrame(frame);
@@ -1346,21 +1545,37 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
    and the step budget is lower than the hero's because the tiles are small
    enough that the difference does not reach the eye. */
 (function(){
+  /* Nine tiles: every profile once, and every material once. The section says
+     "nine profiles, nine materials" and now the grid is that sentence rather
+     than an illustration of it. */
   var cfg=[
-    {mode:0, mat:0, hue:0.02, segN:5, kal:0.86, dense:0.45, tw:0.55},
-    {mode:7, mat:3, hue:0.46, segN:5, kal:0.00, dense:0.55, tw:0.20},
-    {mode:6, mat:2, hue:0.80, segN:6, kal:0.00, dense:0.30, tw:0.60},
-    {mode:8, mat:4, hue:0.30, segN:4, kal:0.00, dense:0.62, tw:0.45},
-    {mode:1, mat:1, hue:0.62, segN:5, kal:0.74, dense:0.40, tw:0.25}
+    {mode:0, mat:0, hue:0.02, segN:5, kal:0.00, dense:0.45, tw:0.55},  /* Rotor    chrome  */
+    {mode:7, mat:1, hue:0.80, segN:5, kal:0.00, dense:0.55, tw:0.20},  /* Knot     gold    */
+    {mode:8, mat:2, hue:0.94, segN:4, kal:0.00, dense:0.62, tw:0.45},  /* Lattice  plastic */
+    {mode:4, mat:3, hue:0.55, segN:3, kal:0.00, dense:0.40, tw:0.20},  /* Wave     matte   */
+    {mode:1, mat:4, hue:0.62, segN:5, kal:0.00, dense:0.40, tw:0.25},  /* Clover   pearl   */
+    {mode:6, mat:5, hue:0.40, segN:6, kal:0.00, dense:0.30, tw:0.60},  /* Gear     glass   */
+    {mode:2, mat:6, hue:0.88, segN:3, kal:0.00, dense:0.45, tw:0.30},  /* Arc      clay    */
+    {mode:3, mat:7, hue:0.18, segN:3, kal:0.00, dense:0.40, tw:0.35},  /* Chevron  frosted */
+    {mode:5, mat:8, hue:0.30, segN:3, kal:0.00, dense:0.45, tw:0.40}   /* Aperture holo    */
   ];
   var tiles=[], live=false;
   document.querySelectorAll('canvas[data-tile]').forEach(function(cv,i){
     var c=cfg[+cv.dataset.tile]||cfg[0];
     var R=makeGL(cv); if(!R) return;
     var fig=cv.closest('.tile');
-    var T={R:R,cv:cv,c:c,hot:false,n:0,seed:i*11.3};
+    var T={R:R,cv:cv,c:c,hot:false,n:0,seed:i*11.3,on:false,fig:fig};
+    T.px=0; T.py=0; T.tx=0; T.ty=0;
     fig.addEventListener('pointerenter',function(){ T.hot=true; });
-    fig.addEventListener('pointerleave',function(){ T.hot=false; });
+    fig.addEventListener('pointerleave',function(){ T.hot=false; T.tx=0; T.ty=0; });
+    /* The frame does not tilt -- the CAMERA does. A CSS skew on a canvas is a
+       flat picture being distorted, and at this size the eye reads the
+       difference immediately. */
+    fig.addEventListener('pointermove',function(e){
+      var r=fig.getBoundingClientRect();
+      T.tx=((e.clientX-r.left)/r.width -0.5)*1.15;
+      T.ty=((e.clientY-r.top )/r.height-0.5)*0.75;
+    });
     tiles.push(T);
   });
   if(!tiles.length) return;
@@ -1369,8 +1584,14 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
     tiles.forEach(function(T){
       var r=T.cv.getBoundingClientRect();
       var d=Math.min(devicePixelRatio||1,1.5);
-      var w=Math.min(760,Math.round(r.width*d)), h=Math.min(560,Math.round(r.height*d));
-      T.R.size(Math.max(2,w),Math.max(2,h));
+      /* CLAMP BY SCALE, NOT PER AXIS. This capped width and height INDEPENDENTLY
+         (760 and 560), so any tile past either cap got a buffer whose aspect no
+         longer matched its box -- and since the canvas is stretched to fill the
+         box by CSS, the render came out squashed. One factor applied to both
+         axes keeps the buffer the same shape as the element. */
+      var w=r.width*d, h=r.height*d;
+      var k=Math.min(1, 620/Math.max(1,w), 620/Math.max(1,h));
+      T.R.size(Math.max(2,Math.round(w*k)), Math.max(2,Math.round(h*k)));
     });
   }
   addEventListener('resize',sizeAll);
@@ -1381,26 +1602,117 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
     if(live) sizeAll();
   },{rootMargin:'160px'}).observe(gal);
 
+  /* PER TILE, not just per gallery. Gating the whole grid on one observer meant
+     all five marchers ran whenever any part of the gallery was near the
+     viewport, including the row below the fold: measured 61fps there against
+     120 everywhere else. Two or three tiles are actually on screen at a time. */
+  var tio=new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      var T=tiles.filter(function(x){ return x.fig===e.target; })[0];
+      if(T) T.on=e.isIntersecting;
+    });
+  },{rootMargin:'40px'});
+  tiles.forEach(function(T){ tio.observe(T.fig); });
+
   var t0=performance.now();
   (function loop(now){
     requestAnimationFrame(loop);
     if(!live) return;
     var t=REDUCE?4.2:(now-t0)/1000;
     tiles.forEach(function(T){
+      if(!T.on) return;                             /* off screen: not drawn at all */
       T.n++;
       if(!T.hot && !REDUCE && (T.n&1)) return;      /* half rate until looked at */
       if(REDUCE && T.n>2) return;
       var sp=T.hot?2.6:1.0, c=T.c, s=T.seed;
+      T.px+=(T.tx-T.px)*0.10; T.py+=(T.ty-T.py)*0.10;   // eased, so it never snaps
       T.R.draw(P({
         t:t, mode:c.mode, mode2:c.mode, mix:0,
         kal:c.kal, kalPh:s+t*0.05*sp,
         segN:c.segN, dense:c.dense, twist:c.tw, thick:0.5, cut:0.42,
-        spin:  0.52*Math.sin(s + t*0.16*sp),
-        tilt: -0.18 + 0.40*Math.sin(s*0.7 + t*0.11*sp),
+        spin:  0.52*Math.sin(s + t*0.16*sp) + T.px,
+        tilt: -0.18 + 0.40*Math.sin(s*0.7 + t*0.11*sp) + T.py,
         swirl: s*1.3 + t*0.20*sp,
-        mat:c.mat, hue:c.hue, steps:88, zoom:1.00
+        mat:c.mat, hue:c.hue, steps:78, zoom:0.70
       }));
     });
+  })(t0);
+})();
+
+/* ---------------------------- THE PINNED WALKTHROUGH ----------------------------
+   The steps scroll past a render that stays put and answers them: reading the
+   track, then being directed, then being framed for export. It is the one place
+   on the page where the copy and the picture are making the same statement at
+   the same moment, which is the whole reason for pinning it. */
+(function(){
+  var cv=document.getElementById('howCv'); if(!cv) return;
+  var R=makeGL(cv); if(!R) return;
+  var steps=[].slice.call(document.querySelectorAll('.howStep'));
+  var bars =[].slice.call(document.querySelectorAll('.howBar i'));
+  var lab=document.getElementById('howLab'), val=document.getElementById('howVal');
+
+  /* one look per step, and they escalate: a plain form read straight, then the
+     director choosing material and segments, then the fold open for export */
+  var LOOK=[
+    {mode:4, mat:5, kal:0.00, segN:3, dense:0.40, tw:0.20,
+     lab:'Reading the track',  val:'176.32 BPM &middot; 17 sections'},
+    {mode:7, mat:1, kal:0.35, segN:5, dense:0.55, tw:0.35,
+     lab:'Directing',          val:'Form &middot; material &middot; palette'},
+    {mode:0, mat:2, kal:0.92, segN:5, dense:0.45, tw:0.55,
+     lab:'Rendering',          val:'1080&times;1920 &middot; 60fps &middot; MP4'}
+  ];
+
+  var cur=0, from=0, mix=0, live=false, t0=performance.now();
+  new IntersectionObserver(function(e){ live=e[0].isIntersecting; },{rootMargin:'120px'})
+    .observe(cv.parentNode);
+
+  function size(){
+    var r=cv.getBoundingClientRect(), d=Math.min(devicePixelRatio||1,1.6);
+    R.size(Math.max(2,Math.round(r.width*d)), Math.max(2,Math.round(r.height*d)));
+  }
+  addEventListener('resize',size); size();
+
+  /* whichever step's middle is nearest the middle of the screen is the one being
+     read -- cheaper and steadier than a stack of observers with tuned margins */
+  var ticking=false;
+  function pick(){
+    ticking=false;
+    var mid=innerHeight*0.5, best=0, bd=1e9;
+    steps.forEach(function(el,i){
+      var r=el.getBoundingClientRect();
+      var d=Math.abs((r.top+r.bottom)/2 - mid);
+      if(d<bd){ bd=d; best=i; }
+    });
+    if(best===cur) return;
+    from=cur; cur=best; mix=0.0001;
+    steps.forEach(function(el,i){ el.classList.toggle('on', i===cur); });
+    bars.forEach(function(b,i){ b.classList.toggle('on', i<=cur); });
+    if(lab) lab.innerHTML=LOOK[cur].lab;
+    if(val) val.innerHTML=LOOK[cur].val;
+  }
+  addEventListener('scroll',function(){
+    if(!ticking){ ticking=true; requestAnimationFrame(pick); }
+  },{passive:true});
+  pick();
+
+  (function loop(now){
+    requestAnimationFrame(loop);
+    if(!live) return;
+    var t=REDUCE?3.0:(now-t0)/1000;
+    if(mix>0){ mix+=1/60/0.85; if(mix>=1) mix=0; }          // the step change morphs
+    var a=LOOK[cur], b=LOOK[from];
+    var m=mix>0?mix:1, e=m*m*m*(m*(m*6-15)+10);
+    var lerp=function(x,y){ return y+(x-y)*e; };
+    R.draw(P({
+      t:t, mode:a.mode, mode2:b.mode, mix:mix>0?(1-e):0,
+      kal:lerp(a.kal,b.kal), kalPh:t*0.06,
+      segN:Math.round(lerp(a.segN,b.segN)), dense:lerp(a.dense,b.dense),
+      twist:lerp(a.tw,b.tw), thick:0.5, cut:0.42,
+      spin:  0.55*Math.sin(t*0.16),
+      tilt: -0.16 + 0.38*Math.sin(t*0.11),
+      swirl: t*0.20,
+      mat:a.mat, hue:(0.10+cur*0.30), steps:96, zoom:0.74
+    }));
   })(t0);
 })();
 
@@ -1422,7 +1734,7 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
       t:0, mode:m, mode2:m, mix:0, kal:0, kalPh:0,
       segN:m===7?5:(m===8?4:(m===6?6:(m===0?5:3))), dense:0.45, twist:0.30, thick:0.5, cut:0.42,
       spin:-0.42, tilt:-0.30, swirl:0.16 + i*0.03,
-      mat:0, hue:(i/9)*0.9, steps:110, zoom:0.90
+      mat:0, hue:(i/9)*0.9, steps:110, zoom:0.70
     }));
     var g=cv.getContext('2d');
     g.clearRect(0,0,S,S);
@@ -1601,6 +1913,77 @@ if(stats){
   },{threshold:.4});
   cio.observe(stats);
 }
+
+/* ---- headlines arrive a word at a time ----
+   Only text OUTSIDE .hgrad is split. background-clip:text clips the parent's
+   background to its own inline text, and wrapping words in inline-blocks takes
+   them out of that formatting context -- a split gradient headline restarts its
+   ramp on every word instead of sweeping across the phrase. The gradient line
+   gets its own treatment in CSS: it sweeps its background-position into place. */
+function splitWords(root){
+  var walk=document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+  var nodes=[], n;
+  while((n=walk.nextNode())){
+    if(!n.nodeValue.trim()) continue;
+    if(n.parentElement && n.parentElement.closest('.hgrad')) continue;
+    nodes.push(n);
+  }
+  var idx=0;
+  nodes.forEach(function(t){
+    var frag=document.createDocumentFragment();
+    t.nodeValue.split(/(\s+)/).forEach(function(part){
+      if(!part) return;
+      if(!part.trim()){ frag.appendChild(document.createTextNode(part)); return; }
+      var w=document.createElement('span'); w.className='wd';
+      var i=document.createElement('i');
+      i.textContent=part;
+      i.style.transitionDelay=(0.045*idx).toFixed(3)+'s';
+      idx++;
+      w.appendChild(i); frag.appendChild(w);
+    });
+    t.parentNode.replaceChild(frag,t);
+  });
+}
+var heads=[].slice.call(document.querySelectorAll('[data-split]'));
+heads.forEach(splitWords);
+if('IntersectionObserver' in window){
+  var lio=new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if(e.isIntersecting){ e.target.classList.add('lit'); lio.unobserve(e.target); }
+    });
+  },{rootMargin:'0px 0px -12% 0px'});
+  heads.forEach(function(h){ lio.observe(h); });
+} else {
+  heads.forEach(function(h){ h.classList.add('lit'); });
+}
+
+/* ---- the nav condenses once you have left the top ---- */
+var hdr=document.querySelector('header');
+function condense(){ if(hdr) hdr.classList.toggle('cond', scrollY>40); }
+addEventListener('scroll',condense,{passive:true}); condense();
+
+/* ---- the ticker runs off scroll velocity ----
+   It used to be a CSS keyframe at a fixed rate, which is the one thing a marquee
+   can do that tells you nothing. Now it drifts on its own, speeds up with the
+   scroll and REVERSES when you scroll back, so it reads as part of the same
+   surface the rest of the page is moving on. */
+(function(){
+  var inner=document.querySelector('.tick div'); if(!inner) return;
+  if(REDUCE) return;
+  var x=0, vel=0, lastY=scrollY, half=0;
+  addEventListener('scroll',function(){ vel+=(scrollY-lastY); lastY=scrollY; },{passive:true});
+  function measure(){ half=inner.scrollWidth/2; }
+  addEventListener('resize',measure); measure();
+  (function run(){
+    requestAnimationFrame(run);
+    if(!half){ measure(); return; }
+    vel*=0.90;
+    x += -0.55 - vel*0.30;
+    if(x<=-half) x+=half;
+    if(x>0)      x-=half;
+    inner.style.transform='translate3d('+x.toFixed(2)+'px,0,0)';
+  })();
+})();
 
 /* the nav marks where you are */
 var links=[].slice.call(document.querySelectorAll('.nav nav a'));
