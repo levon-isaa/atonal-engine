@@ -1,0 +1,514 @@
+<title>ATONAL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+
+<style>
+:root{
+  --paper:#EDEFF2; --paper-2:#E4E7EC; --card:#F6F7F9;
+  --ink:#14161A; --ink-2:#3A414B; --muted:#5C636E; --rule:#D2D7DE;
+  --violet:#5B3FD9; --violet-ink:#4930B0; --violet-wash:#E6E2FA;
+  --display:"Bricolage Grotesque","Helvetica Neue",Arial,sans-serif;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --gap:clamp(20px,4vw,48px);
+  --maxw:1240px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0E1013; --paper-2:#15181D; --card:#161A20;
+    --ink:#EDEFF2; --ink-2:#BEC5D0; --muted:#8B93A0; --rule:#272C34;
+    --violet:#9B86FF; --violet-ink:#B9A8FF; --violet-wash:#1E1934;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0E1013; --paper-2:#15181D; --card:#161A20;
+  --ink:#EDEFF2; --ink-2:#BEC5D0; --muted:#8B93A0; --rule:#272C34;
+  --violet:#9B86FF; --violet-ink:#B9A8FF; --violet-wash:#1E1934;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--serif);font-size:17px;line-height:1.62;
+  -webkit-font-smoothing:antialiased}
+img,canvas{max-width:100%;display:block}
+a{color:var(--violet-ink);text-decoration-thickness:1px;text-underline-offset:3px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--violet);outline-offset:3px;border-radius:2px}
+
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 var(--gap)}
+.lab{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--muted)}
+h1,h2,h3{font-family:var(--display);font-weight:800;letter-spacing:-.025em;
+  line-height:1.02;text-wrap:balance;margin:0}
+h1{font-size:clamp(46px,8.2vw,104px)}
+h2{font-size:clamp(30px,4.4vw,52px);letter-spacing:-.03em}
+h3{font-size:19px;font-weight:700;letter-spacing:-.01em;line-height:1.25}
+p{margin:0}
+.lede{font-size:clamp(19px,2.1vw,23px);line-height:1.5;color:var(--ink-2);max-width:34ch}
+.prose{max-width:63ch;color:var(--ink-2)}
+
+/* ---- masthead ---- */
+.top{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--paper) 88%,transparent);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--rule)}
+.top .wrap{display:flex;align-items:center;gap:18px;height:58px}
+.mark{font-family:var(--display);font-weight:800;font-size:17px;letter-spacing:.12em}
+.mark b{color:var(--violet)}
+.top nav{margin-left:auto;display:flex;gap:22px}
+.top nav a{font-family:var(--mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--muted);text-decoration:none}
+.top nav a:hover{color:var(--ink)}
+@media(max-width:760px){.top nav{display:none}}
+
+/* ---- hero ---- */
+.hero{padding:clamp(48px,7vw,96px) 0 0}
+.hero .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:var(--gap);align-items:end}
+@media(max-width:900px){.hero .grid{grid-template-columns:1fr}}
+h1 em{font-style:normal;color:var(--violet);display:block}
+.heroMeta{display:flex;flex-direction:column;gap:16px;padding-bottom:8px}
+.cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
+.btn{font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.1em;text-transform:uppercase;
+  padding:13px 22px;border:1px solid var(--ink);background:var(--ink);color:var(--paper);
+  text-decoration:none;cursor:pointer;transition:transform .16s ease,opacity .16s ease}
+.btn:hover{transform:translateY(-1px);opacity:.9}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--rule)}
+.btn.ghost:hover{border-color:var(--ink)}
+
+/* the analysis strip: the product's own read of a track, drawn */
+.scope{margin-top:clamp(36px,5vw,64px);border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
+  background:var(--card)}
+.scope .inner{max-width:var(--maxw);margin:0 auto;padding:18px var(--gap) 22px}
+.scopeHead{display:flex;gap:18px;align-items:baseline;flex-wrap:wrap;margin-bottom:12px}
+#analysis{width:100%;height:132px}
+.scopeKey{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px}
+.scopeKey span{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);display:flex;align-items:center;gap:6px}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+
+/* ---- counters ---- */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--rule);
+  border:1px solid var(--rule);margin:clamp(40px,6vw,72px) 0}
+@media(max-width:760px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--paper);padding:20px 18px}
+.stat b{display:block;font-family:var(--display);font-weight:800;font-size:clamp(26px,3.4vw,38px);
+  letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1.05}
+.stat span{display:block;margin-top:6px}
+
+/* ---- sections with an index rail ---- */
+.sec{padding:clamp(52px,7vw,96px) 0;border-top:1px solid var(--rule);scroll-margin-top:58px}
+.sec .cols{display:grid;grid-template-columns:150px 1fr;gap:var(--gap);align-items:start}
+@media(max-width:860px){.sec .cols{grid-template-columns:1fr;gap:22px}}
+.rail{position:sticky;top:82px}
+@media(max-width:860px){.rail{position:static}}
+.rail .lab{display:block}
+.rail .num{font-family:var(--mono);font-size:11px;color:var(--violet);letter-spacing:.14em;
+  display:block;margin-bottom:8px}
+
+/* ---- steps: a real sequence, so it is numbered ---- */
+.steps{display:grid;gap:2px;background:var(--rule);border:1px solid var(--rule);margin-top:30px}
+.step{background:var(--paper);padding:24px 24px 26px;display:grid;grid-template-columns:38px 1fr;gap:18px}
+.step .n{font-family:var(--mono);font-size:12px;color:var(--violet);letter-spacing:.1em;padding-top:3px}
+.step p{margin-top:8px;color:var(--muted);font-size:15.5px;line-height:1.58;max-width:60ch}
+
+/* ---- tables ---- */
+.tableWrap{overflow-x:auto;margin-top:28px;border:1px solid var(--rule)}
+table{border-collapse:collapse;width:100%;min-width:520px;background:var(--paper)}
+th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--rule);font-size:14.5px}
+th{font-family:var(--mono);font-size:10.5px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);background:var(--card)}
+td{font-family:var(--mono);font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+td.name{font-family:var(--serif);font-size:15.5px;color:var(--ink)}
+tr:last-child td{border-bottom:0}
+
+/* ---- pricing ---- */
+.packs{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);
+  border:1px solid var(--rule);margin-top:30px}
+@media(max-width:860px){.packs{grid-template-columns:1fr}}
+.pack{background:var(--paper);padding:26px 24px 28px;display:flex;flex-direction:column;gap:14px}
+.pack.feature{background:var(--violet-wash)}
+.pack .price{font-family:var(--display);font-weight:800;font-size:44px;letter-spacing:-.035em;
+  font-variant-numeric:tabular-nums;line-height:1}
+.pack .price small{font-family:var(--mono);font-size:12px;font-weight:400;letter-spacing:.08em;
+  color:var(--muted);margin-left:6px;white-space:nowrap}
+.pack ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:9px}
+.pack li{font-size:14.5px;color:var(--ink-2);padding-left:18px;position:relative}
+.pack li::before{content:"";position:absolute;left:0;top:.62em;width:7px;height:1.5px;background:var(--violet)}
+.pack .btn{margin-top:auto;text-align:center}
+
+/* ---- faq ---- */
+.faq{margin-top:26px;border-top:1px solid var(--rule)}
+details{border-bottom:1px solid var(--rule)}
+summary{cursor:pointer;list-style:none;padding:17px 0;font-family:var(--display);font-weight:700;
+  font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:14px}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";margin-left:auto;font-family:var(--mono);color:var(--violet);font-size:17px}
+details[open] summary::after{content:"\2212"}
+details .prose{padding:0 0 20px;font-size:15.5px}
+
+/* ---- close ---- */
+.end{padding:clamp(60px,9vw,120px) 0;border-top:1px solid var(--rule);text-align:left}
+.end h2{max-width:16ch}
+footer{border-top:1px solid var(--rule);padding:26px 0 40px}
+footer .wrap{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+footer .lab{margin-left:auto}
+
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <span class="mark">ATON<b>A</b>L</span>
+    <nav>
+      <a href="#what">What it does</a>
+      <a href="#how">How it works</a>
+      <a href="#formats">Formats</a>
+      <a href="#pricing">Pricing</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div class="grid">
+        <div>
+          <p class="lab" style="margin-bottom:20px">Music&nbsp;→&nbsp;Moving image</p>
+          <h1>Your track,<br>rendered as<em>an object.</em></h1>
+        </div>
+        <div class="heroMeta">
+          <p class="lede">Upload a track. ATONAL analyses it — tempo, sections, every
+            individual hit — and directs a sculpture that moves to it. Export for
+            Reels, TikTok or YouTube.</p>
+          <div class="cta">
+            <a class="btn" href="#pricing">Render a track</a>
+            <a class="btn ghost" href="#how">See how it works</a>
+          </div>
+          <p class="lab">Pay per export &middot; no subscription</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="scope">
+      <div class="inner">
+        <div class="scopeHead">
+          <span class="lab">Analysis &mdash; live read</span>
+          <span class="lab" style="color:var(--violet)">176.32 BPM &middot; 17 sections &middot; 4,988 onsets</span>
+        </div>
+        <canvas id="analysis" width="2400" height="264" aria-label="A visualisation of one track's analysis: coloured section blocks, a beat grid, and onset markers across five frequency bands, with a playhead sweeping across."></canvas>
+        <div class="scopeKey">
+          <span><i class="dot" style="background:var(--violet)"></i>Sections</span>
+          <span><i class="dot" style="background:var(--muted)"></i>Beat grid</span>
+          <span><i class="dot" style="background:var(--ink-2)"></i>Onsets &mdash; sub / low / mid / high / air</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <div class="stats">
+        <div class="stat"><b>4,988</b><span class="lab">Sounds located</span></div>
+        <div class="stat"><b>734</b><span class="lab">Beats tracked</span></div>
+        <div class="stat"><b>17</b><span class="lab">Sections found</span></div>
+        <div class="stat"><b>60<small style="font-size:.5em"> fps</small></b><span class="lab">Every exported frame</span></div>
+      </div>
+      <p class="lab" style="margin-top:-40px">Figures from one four-minute track</p>
+    </div>
+  </section>
+
+  <section class="sec" id="what">
+    <div class="wrap"><div class="cols">
+      <div class="rail"><span class="num">01</span><span class="lab">What it does</span></div>
+      <div>
+        <h2>It isn&rsquo;t reacting to the music. It&rsquo;s reading it.</h2>
+        <div class="prose" style="margin-top:22px;display:flex;flex-direction:column;gap:18px">
+          <p>Most music visualisers are a level meter with a shape attached. They bounce
+            when the volume goes up, and that is the whole of the relationship.</p>
+          <p>ATONAL analyses the whole track before it draws a single frame. It finds the
+            beat grid and where the bars start. It segments the track into intro, breakdown,
+            build, groove, drop. It locates every individual hit and files it by frequency
+            band, so a kick and a hi-hat drive different things. Then it directs the piece
+            from that: the form changes shape at section boundaries and lands on downbeats,
+            the kaleidoscope opens for the loudest passages, the rotation is locked to the
+            tempo rather than to a clock.</p>
+          <p><strong>The same track always produces the same film.</strong> There is no
+            randomness in the direction — a returning chorus comes back as the form it was
+            the first time. You can render it again and get the same result.</p>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="sec" id="how">
+    <div class="wrap"><div class="cols">
+      <div class="rail"><span class="num">02</span><span class="lab">How it works</span></div>
+      <div>
+        <h2>Three steps, one of which is waiting.</h2>
+        <div class="steps">
+          <div class="step">
+            <span class="n">01</span>
+            <div>
+              <h3>Upload a track</h3>
+              <p>MP3, WAV or FLAC. Analysis takes about ten seconds for a four-minute track
+                and reports what it found — tempo, genre, the section map — before you commit
+                to anything.</p>
+            </div>
+          </div>
+          <div class="step">
+            <span class="n">02</span>
+            <div>
+              <h3>Direct it, or don&rsquo;t</h3>
+              <p>The default is fully automatic: shape, material, palette, motion and camera
+                are all chosen from the analysis. If you want a say, every one of them is a
+                control — nine forms, nine materials from chrome to glass, six palettes, and
+                a set of film filters. Change nothing and it still works.</p>
+            </div>
+          </div>
+          <div class="step">
+            <span class="n">03</span>
+            <div>
+              <h3>Pick a format and render</h3>
+              <p>Choose the destination and the length, and it renders offline at full
+                quality — every frame at 60fps with none dropped, however heavy the scene.
+                A fifteen-second clip takes a few minutes. You get an MP4.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="sec" id="formats">
+    <div class="wrap"><div class="cols">
+      <div class="rail"><span class="num">03</span><span class="lab">Formats</span></div>
+      <div>
+        <h2>Sized for where it&rsquo;s going.</h2>
+        <p class="prose" style="margin-top:20px">Rendered at the exact pixel dimensions of the
+          destination, so nothing is cropped or rescaled after the fact. H.264 in an MP4 —
+          the one file that plays everywhere without being touched.</p>
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>Destination</th><th>Resolution</th><th>Ratio</th><th>Frame rate</th></tr></thead>
+            <tbody>
+              <tr><td class="name">Reels &middot; TikTok &middot; Shorts</td><td>1080 &times; 1920</td><td>9:16</td><td>60 fps</td></tr>
+              <tr><td class="name">Instagram portrait</td><td>1080 &times; 1350</td><td>4:5</td><td>60 fps</td></tr>
+              <tr><td class="name">Instagram square</td><td>1080 &times; 1080</td><td>1:1</td><td>60 fps</td></tr>
+              <tr><td class="name">YouTube</td><td>1920 &times; 1080</td><td>16:9</td><td>60 fps</td></tr>
+              <tr><td class="name">YouTube 4K</td><td>3840 &times; 2160</td><td>16:9</td><td>60 fps</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="sec" id="pricing">
+    <div class="wrap"><div class="cols">
+      <div class="rail"><span class="num">04</span><span class="lab">Pricing</span></div>
+      <div>
+        <h2>Pay for what you render.</h2>
+        <p class="prose" style="margin-top:20px">One credit renders one clip up to 60 seconds,
+          at any format including 4K. Credits don&rsquo;t expire. Analysis and preview are free
+          and unlimited — you only spend a credit when you export.</p>
+        <div class="packs">
+          <div class="pack">
+            <span class="lab">Single</span>
+            <div class="price">&euro;6<small>/ clip</small></div>
+            <ul>
+              <li>One export, up to 60 seconds</li>
+              <li>Every format up to 4K</li>
+              <li>No watermark</li>
+            </ul>
+            <a class="btn ghost" href="#">Render one</a>
+          </div>
+          <div class="pack feature">
+            <span class="lab">Pack of 10</span>
+            <div class="price">&euro;45<small>/ &euro;4.50 ea</small></div>
+            <ul>
+              <li>Ten exports, credits never expire</li>
+              <li>Every format up to 4K</li>
+              <li>No watermark</li>
+              <li>Commercial use included</li>
+            </ul>
+            <a class="btn" href="#">Buy 10 credits</a>
+          </div>
+          <div class="pack">
+            <span class="lab">Pack of 50</span>
+            <div class="price">&euro;175<small>/ &euro;3.50 ea</small></div>
+            <ul>
+              <li>Fifty exports, credits never expire</li>
+              <li>Every format up to 4K</li>
+              <li>No watermark</li>
+              <li>Commercial use included</li>
+              <li>Priority render queue</li>
+            </ul>
+            <a class="btn ghost" href="#">Buy 50 credits</a>
+          </div>
+        </div>
+        <p class="lab" style="margin-top:18px">Label or agency, rendering at volume?
+          <a href="#" style="color:var(--violet-ink)">Talk to us</a></p>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="sec" id="faq">
+    <div class="wrap"><div class="cols">
+      <div class="rail"><span class="num">05</span><span class="lab">Questions</span></div>
+      <div>
+        <h2>Before you upload.</h2>
+        <div class="faq">
+          <details open>
+            <summary>Do I own what comes out?</summary>
+            <div class="prose">Yes. Exports on a paid credit are yours to use commercially —
+              releases, promos, client work, paid ads. We claim nothing over your music or
+              the visuals rendered from it.</div>
+          </details>
+          <details>
+            <summary>Does the export include my audio?</summary>
+            <div class="prose">Not yet. Exports are video only, at exactly the length you
+              chose, so the track lines up when you drop it into an editor or add the
+              original audio in the platform&rsquo;s own picker. Muxed audio is coming.</div>
+          </details>
+          <details>
+            <summary>How long does a render take?</summary>
+            <div class="prose">A few minutes for a fifteen-second clip. It renders offline
+              rather than in real time, which is deliberate: it means every frame is drawn at
+              full quality and none are dropped, regardless of how heavy the scene gets. A
+              real-time capture would judder on exactly the busiest moments.</div>
+          </details>
+          <details>
+            <summary>What kind of music suits it?</summary>
+            <div class="prose">Anything with a discernible pulse. It calibrates to each track
+              — the fold opens for whatever counts as loud <em>for that track</em>, not against
+              a fixed threshold — so a quiet ambient piece gets the same range of expression as
+              a hardcore record. Tracks with no rhythmic structure at all get less out of it.</div>
+          </details>
+          <details>
+            <summary>Can I change how it looks?</summary>
+            <div class="prose">Every decision the director makes is a control you can override:
+              form, material, finish, lighting, palette, filter, camera, and the rate of each
+              axis of motion. Or leave all of it alone — the automatic result is the point.</div>
+          </details>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="end">
+    <div class="wrap">
+      <p class="lab" style="margin-bottom:20px">Ready when you are</p>
+      <h2>Upload a track and see what it looks like.</h2>
+      <div class="cta" style="margin-top:26px">
+        <a class="btn" href="#pricing">Render a track</a>
+        <a class="btn ghost" href="#what">Read how it works</a>
+      </div>
+      <p class="lab" style="margin-top:18px">Analysis and preview are free</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="mark" style="font-size:14px">ATON<b>A</b>L</span>
+    <span class="lab">AI music visualisation</span>
+    <span class="lab">&copy; 2026</span>
+  </div>
+</footer>
+
+<script>
+/* The hero strip draws a real analysis: the section map, beat grid and per-band onsets from an
+   actual four-minute track, with a playhead sweeping it. Canvas rather than SVG because the
+   onset layer alone is ~5,000 marks and hand-authored path data at that count is a liability. */
+(function(){
+  var cv=document.getElementById('analysis'); if(!cv) return;
+  var ctx=cv.getContext('2d'); if(!ctx) return;
+
+  var DUR=249.678, BPM=176.32;
+  var SECS=[['intro',0,8.5,.46],['breakdown',8.5,22.1,.45],['build',22.1,26.2,.70],
+    ['groove',26.2,37.0,.57],['breakdown',37.0,46.7,.40],['breakdown',46.7,76.7,.21],
+    ['groove',76.7,97.1,.77],['groove',97.1,118.8,.81],['breakdown',118.8,145.9,.13],
+    ['breakdown',145.9,155.4,.40],['breakdown',155.4,160.9,.49],['groove',160.9,174.5,.72],
+    ['drop',174.5,179.9,.83],['breakdown',179.9,207.3,.22],['drop',207.3,216.9,.85],
+    ['groove',216.9,227.7,.77],['groove',227.7,249.7,.74]];
+  var BANDS=[834,1008,1157,1088,901];          // real onset counts, sub -> air
+
+  /* Deterministic pseudo-random, so the strip is identical on every load -- the same property
+     the product itself is sold on. Onset TIMES are synthesised from the real counts and the
+     real section energies; the counts, the grid and the map are measurements. */
+  var seed=20260227;
+  function rnd(){ seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }
+
+  var onsets=[];
+  for(var b=0;b<BANDS.length;b++){
+    var arr=[];
+    for(var i=0;i<BANDS[b];i++){
+      var t=rnd()*DUR, e=0.4;
+      for(var s=0;s<SECS.length;s++) if(t>=SECS[s][1]&&t<SECS[s][2]){ e=SECS[s][3]; break; }
+      if(rnd()<e*1.15) arr.push(t);            // busier sections carry more hits
+    }
+    onsets.push(arr);
+  }
+
+  function css(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  var t0=performance.now(), reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function draw(now){
+    var d=Math.min(devicePixelRatio||1,2);
+    var W=cv.width/d, H=cv.height/d;
+    var violet=css('--violet')||'#5B3FD9', rule=css('--rule')||'#D2D7DE',
+        muted=css('--muted')||'#5C636E', ink=css('--ink-2')||'#3A414B',
+        card=css('--card')||'#F6F7F9';
+    ctx.clearRect(0,0,W,H);
+
+    var padL=0, padR=0, w=W-padL-padR;
+    var secTop=6, secH=30, gridTop=44, gridH=16, bandTop=68, bandH=30, bandGap=4;
+
+    // section map -- height carries the section's energy, colour marks a drop
+    for(var s=0;s<SECS.length;s++){
+      var x=padL+SECS[s][1]/DUR*w, x2=padL+SECS[s][2]/DUR*w, e=SECS[s][3];
+      var h=Math.max(5,secH*e);
+      ctx.fillStyle = SECS[s][0]==='drop' ? violet : rule;
+      ctx.globalAlpha = SECS[s][0]==='drop' ? .95 : .85;
+      ctx.fillRect(x, secTop+(secH-h), Math.max(1,x2-x-2), h);
+    }
+    ctx.globalAlpha=1;
+
+    // beat grid -- every beat a hairline, every downbeat taller
+    var beat=60/BPM, n=Math.floor(DUR/beat);
+    for(var i=0;i<n;i++){
+      var bx=padL+(i*beat)/DUR*w, down=(i%4===0);
+      ctx.fillStyle=down?muted:rule;
+      ctx.globalAlpha=down?.85:.5;
+      ctx.fillRect(bx, gridTop+(down?0:5), 1, down?gridH:gridH-8);
+    }
+    ctx.globalAlpha=1;
+
+    // onsets, one lane per band
+    for(var b2=0;b2<onsets.length;b2++){
+      var lane=bandTop+b2*(bandH+bandGap)*0.72;
+      ctx.fillStyle=ink; ctx.globalAlpha=.34+b2*0.055;
+      for(var k=0;k<onsets[b2].length;k++){
+        ctx.fillRect(padL+onsets[b2][k]/DUR*w, lane, 1.4, 9);
+      }
+    }
+    ctx.globalAlpha=1;
+
+    // playhead
+    if(!reduce){
+      var el=((now-t0)/1000)%DUR, px=padL+el/DUR*w;
+      ctx.fillStyle=violet; ctx.fillRect(px,0,2,H);
+      ctx.globalAlpha=.10; ctx.fillRect(padL,0,px,H); ctx.globalAlpha=1;
+    }
+    requestAnimationFrame(draw);
+  }
+
+  /* The canvas is laid out in CSS pixels and drawn in CSS pixels; the backing store carries the
+     device ratio and the context is scaled once to match, so nothing downstream has to think
+     about dpr. Re-run on resize because the strip is full-bleed. */
+  function resize(){
+    var r=cv.getBoundingClientRect(), d=Math.min(devicePixelRatio||1,2);
+    cv.width=Math.max(600,Math.round(r.width*d));
+    cv.height=Math.round(132*d);
+    ctx.setTransform(d,0,0,d,0,0);
+  }
+  addEventListener('resize',resize); resize();
+  requestAnimationFrame(draw);
+})();
+</script>
