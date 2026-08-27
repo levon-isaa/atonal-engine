@@ -22,8 +22,8 @@
   --line-3:rgba(255,255,255,.26);
   --ink:#F3F3F8; --ink-2:#9498A8; --ink-3:#5E6272;
   --mag:#FF3E8E; --vio:#8257FF; --amb:#FFB454;
-  --col:min(1560px, calc(100vw - 56px));
-  --pad:clamp(18px,2.6vw,40px);
+  --col:min(2400px, calc(100vw - 96px));
+  --pad:clamp(18px,2.2vw,48px);
   --ease:cubic-bezier(.22,.86,.28,1);
 }
 *{box-sizing:border-box}
@@ -159,7 +159,8 @@ header.cond .mark{transform:scale(.92)}
    the canvas, so the object genuinely sits in the right of the frame and the
    left is real, empty space for the type -- no letters over a busy silhouette. */
 .hero{padding:clamp(20px,2.6vw,38px) 0 0}
-.stageBody{position:relative;height:min(78vh,760px);overflow:hidden}
+.stageBody{position:relative;width:100%;aspect-ratio:1.9;
+  max-height:min(82vh,1150px);min-height:500px;overflow:hidden}
 .stageArt{position:absolute;inset:0;overflow:hidden;background:
   radial-gradient(70% 84% at 66% 48%,rgba(130,87,255,.12),transparent 70%),#08080D}
 .stageArt canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -167,7 +168,7 @@ header.cond .mark{transform:scale(.92)}
   background:linear-gradient(96deg,rgba(7,7,11,.97) 0%,rgba(7,7,11,.94) 30%,
                                     rgba(7,7,11,.66) 46%,rgba(7,7,11,.12) 64%,
                                     rgba(7,7,11,0) 74%)}
-.stageCopy{position:relative;z-index:2;height:100%;max-width:min(600px,56%);
+.stageCopy{position:relative;z-index:2;height:100%;max-width:min(640px,46%);
   padding:clamp(26px,3.6vw,54px);display:flex;flex-direction:column;justify-content:center;
   pointer-events:none}
 .stageCopy>*{pointer-events:auto}
@@ -206,7 +207,8 @@ header.cond .mark{transform:scale(.92)}
 
 @media(max-width:900px){
   /* stacked: the render keeps its own block instead of living behind the words */
-  .stageBody{height:auto;display:flex;flex-direction:column}
+  .stageBody{height:auto;aspect-ratio:auto;max-height:none;min-height:0;
+    display:flex;flex-direction:column}
   .stageArt{position:relative;inset:auto;order:2;height:62vw;min-height:330px;
     border-top:1px solid var(--line)}
   .stageCopy{order:1;position:static;height:auto;max-width:none;padding:clamp(24px,6vw,34px)}
@@ -415,7 +417,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
   font-variant-numeric:tabular-nums;transition:color .5s var(--ease)}
 .howStep.on .n{color:var(--mag)}
 .howStep p{color:var(--ink-2);font-size:14.8px;margin-top:12px;max-width:44ch}
-.howPin{position:sticky;top:66px;height:min(72vh,640px);display:flex;flex-direction:column}
+.howPin{position:sticky;top:66px;height:min(78vh,900px);display:flex;flex-direction:column}
 .howVis{position:relative;flex:1;background:
   radial-gradient(74% 86% at 50% 50%,rgba(130,87,255,.09),transparent 70%),#08080D;overflow:hidden}
 .howVis canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -1601,7 +1603,10 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
          box by CSS, the render came out squashed. One factor applied to both
          axes keeps the buffer the same shape as the element. */
       var w=r.width*d, h=r.height*d;
-      var k=Math.min(1, 620/Math.max(1,w), 620/Math.max(1,h));
+      /* Raised from 620: at a 2000px column the tiles are ~640 CSS wide, and a
+         620 buffer upscaled into that is visibly soft. There is headroom -- the
+         page measures 120fps with all nine gated per tile. */
+      var k=Math.min(1, 760/Math.max(1,w), 760/Math.max(1,h));
       T.R.size(Math.max(2,Math.round(w*k)), Math.max(2,Math.round(h*k)));
     });
   }
