@@ -3598,8 +3598,26 @@ function autoPatch(){
   // Epicness opens the lens, but only on a track that HAS dynamics -- on a flat one this is a
   // permanent wide-angle rather than a moment.
   if(dyn>0.32) P.push({t:'fov', s:'epic', a:0.24});
-  // Something slow, on the bar, so the frame is never completely still between transients.
-  P.push({t:'swirl', s:'bar', a:0.28});
+  /* THE BAR LFO USED TO GO TO 'swirl', AND A RATE IS THE ONE PLACE AN LFO MUST NOT GO.
+     Its stated motive was "something slow, on the bar, so the frame is never completely still
+     between transients". The frame is never completely still: three axes turn continuously and
+     the camera orbits. What this actually did was oscillate the DERIVATIVE of an angle.
+
+     MEASURED on the 176bpm upload, folding the swirl rate onto its position in the bar over 20s
+     of playback -- the profile is a clean sine, not noise:
+
+         deg/s  23.8 24.4 24.7 26.7 28.2 29.7 30.6 31.6 32.4 30.9 30.3 28.8 27.2 25.2 24.1 23.6
+                |----------------------- one bar, sixteenth by sixteenth -----------------------|
+
+     Trough 23.6, peak 32.4: the form's third axis surged 32% and back, once per bar, every bar,
+     for the whole track, whether or not anything in the music happened on that bar. That is the
+     reported "movement looking strange at some point", and it is the third time this file has
+     found the same construction -- spinKick's onset offsets, the bar-locked camera sway, and the
+     fold's own pump were all removed for it. The note two lines below already names the family:
+     "a reversing rotation is the exact fault the bar-locked camera sway was removed for."
+
+     Nothing replaces it, because the gap it filled was not there. The route is removed and
+     RATE_TARGETS below makes the whole class unreachable rather than just this instance. */
   return P;
 }
 function autoMap(reason){
@@ -3635,9 +3653,33 @@ function modUpdate(dt,bpm){
   for(const k in MODTGT) MODV[k]=0;
   for(const r of MODB){
     const v=SIG[r.s]; if(v===undefined) continue;
+    if(RATE_TARGETS[r.t] && OSC_SOURCES[r.s]) continue;    // see RATE_TARGETS
     MODV[r.t]=(MODV[r.t]||0)+r.a*v;
   }
 }
+/* ---- A RATE IS NOT A LEVEL, AND THE MATRIX TREATED THEM ALIKE ----
+   Every other target here is an ABSOLUTE quantity -- a scale, a bloom, a saturation, a hue. Push
+   an oscillator into one and you get the thing itself breathing, which is legible and which is
+   the point of having an LFO at all.
+
+   Three of them are not absolute. spin, tumble and swirl are RATES: they are integrated into an
+   angle before anything is drawn, so modulating one modulates the DERIVATIVE of what the eye
+   sees. A sine on a rate is not a form that pulses, it is a form that accelerates and decelerates
+   -- and this file has now removed that same construction four times (spinKick's onset offsets,
+   the bar-locked camera sway, the fold's pump, and the bar LFO that was wired to swirl in
+   autoPatch, measured there at a 32% surge once per bar for a whole track).
+
+   So it is a rule now rather than a patch. A source that oscillates or spikes may drive any
+   level; it may not drive a rate. Rates take sustained sources only -- energy, tension, the
+   section-level curves -- where a change means the music has actually changed and stayed changed.
+   `steady` is deliberately allowed: a constant offset on a rate is just a different rate.
+
+   This also closes the door properly. The route that caused it was one line in autoPatch, and
+   deleting that line would have fixed today and nothing else; the matrix would still have
+   accepted `beat -> spin` from a future patch, and it would have taken another measurement to
+   find it again. */
+const RATE_TARGETS={spin:1, tumble:1, swirl:1};
+const OSC_SOURCES ={bar:1, beat:1, pulse:1, kick:1, snare:1, hat:1, air:1, sub:1, snap:1, flux:1};
 const MV=k=>(MODV[k]||0);
 /* The largest MV(t) can ever be, from the routes as they stand. Every source is bounded to
    0..1, so the peak is just the sum of the amounts -- and unlike MV() this does not change
