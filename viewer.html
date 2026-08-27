@@ -7156,57 +7156,105 @@ const MP4={
   u16(...v){ const a=new Uint8Array(2*v.length), d=new DataView(a.buffer);
              v.forEach((x,i)=>d.setUint16(i*2, x&65535)); return a; },
   str(s){ const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; },
-  /* samples: [{bytes:Uint8Array, key:boolean}], desc: the avcC from the encoder's decoderConfig.
-     TS is the media timescale; 90000 is the usual choice and divides 60fps exactly (1500 a frame),
-     so no frame duration has to be rounded and the track cannot drift. */
-  build(samples, desc, w, h, fps){
+  /* An MPEG-4 descriptor: a tag, a length, a payload. Lengths here are all short enough for the
+     one-byte form, which is what every real AAC esds uses. */
+  desc(tag, ...parts){
+    let n=0; for(const p of parts) n+=p.length;
+    const out=new Uint8Array(2+n); out[0]=tag; out[1]=n;
+    let o=2; for(const p of parts){ out.set(p,o); o+=p.length; }
+    return out;
+  },
+  /* esds carries the AudioSpecificConfig the decoder needs -- 2 bytes for AAC-LC that say
+     profile, sample rate index and channel count. Without it the track is unplayable however
+     correct the samples are. */
+  esds(asc, avgBr){
+    const dsi=MP4.desc(0x05, asc);
+    const dcd=MP4.desc(0x04, new Uint8Array([0x40,0x15]), new Uint8Array([0,0,0]),
+                             MP4.u32(avgBr, avgBr), dsi);
+    const sl =MP4.desc(0x06, new Uint8Array([0x02]));
+    const es =MP4.desc(0x03, MP4.u16(1), new Uint8Array([0]), dcd, sl);
+    return MP4.fb('esds',0,0, es);
+  },
+  /* samples: [{bytes,key}]. audio (optional): {samples, asc, sampleRate, channels}.
+     Both tracks are written as one chunk each into a single mdat -- no interleaving, which a
+     player only needs for streaming and this file is never streamed. */
+  build(samples, desc, w, h, fps, audio){
     const TS=90000, sdur=Math.round(TS/fps), n=samples.length;
     const durTS=sdur*n, durMS=Math.round(n/fps*1000);
-    let dataLen=0; for(const s of samples) dataLen+=s.bytes.length;
+    let vLen=0; for(const s of samples) vLen+=s.bytes.length;
+    let aLen=0; if(audio) for(const s of audio.samples) aLen+=s.bytes.length;
 
     const ftyp=MP4.b('ftyp', MP4.str('isom'), MP4.u32(512), MP4.str('isomiso2avc1mp41'));
-    // mdat is written before moov, so the sample offsets are known before stco is built.
-    const mdatHdr=new Uint8Array(8); new DataView(mdatHdr.buffer).setUint32(0, 8+dataLen);
+    const mdatHdr=new Uint8Array(8); new DataView(mdatHdr.buffer).setUint32(0, 8+vLen+aLen);
     mdatHdr.set(MP4.str('mdat'),4);
-    const mdatStart=ftyp.length+8;
+    const vStart=ftyp.length+8, aStart=vStart+vLen;
 
+    const MTX=MP4.u32(0x10000,0,0, 0,0x10000,0, 0,0,0x40000000);   // identity matrix
+
+    // ---- video track ----
     const avcC=MP4.b('avcC', desc);
     const avc1=MP4.b('avc1',
-      new Uint8Array(6), MP4.u16(1),                    // reserved, data_reference_index
-      MP4.u16(0,0), MP4.u32(0,0,0),                     // pre_defined and reserved
-      MP4.u16(w,h), MP4.u32(0x00480000,0x00480000),     // 72dpi
-      MP4.u32(0), MP4.u16(1),
-      new Uint8Array(32),                               // compressorname
-      MP4.u16(24), new Uint8Array([255,255]),           // depth, pre_defined -1
-      avcC);
-    const stsd=MP4.fb('stsd',0,0, MP4.u32(1), avc1);
-    const stts=MP4.fb('stts',0,0, MP4.u32(1), MP4.u32(n, sdur));
-    /* Every keyframe is a sync sample. Omitting stss entirely declares EVERY frame a keyframe,
-       which sends a player to the wrong place when it seeks on a track that has P-frames. */
+      new Uint8Array(6), MP4.u16(1), MP4.u16(0,0), MP4.u32(0,0,0),
+      MP4.u16(w,h), MP4.u32(0x00480000,0x00480000), MP4.u32(0), MP4.u16(1),
+      new Uint8Array(32), MP4.u16(24), new Uint8Array([255,255]), avcC);
     const keys=[]; samples.forEach((s,i)=>{ if(s.key) keys.push(i+1); });
-    const stss=MP4.fb('stss',0,0, MP4.u32(keys.length), MP4.u32(...keys));
-    const stsc=MP4.fb('stsc',0,0, MP4.u32(1), MP4.u32(1,n,1));
-    const stsz=MP4.fb('stsz',0,0, MP4.u32(0,n), MP4.u32(...samples.map(s=>s.bytes.length)));
-    const stco=MP4.fb('stco',0,0, MP4.u32(1), MP4.u32(mdatStart));
-    const stbl=MP4.b('stbl', stsd, stts, stss, stsc, stsz, stco);
+    const vStbl=MP4.b('stbl',
+      MP4.fb('stsd',0,0, MP4.u32(1), avc1),
+      MP4.fb('stts',0,0, MP4.u32(1), MP4.u32(n, sdur)),
+      MP4.fb('stss',0,0, MP4.u32(keys.length), MP4.u32(...keys)),
+      MP4.fb('stsc',0,0, MP4.u32(1), MP4.u32(1,n,1)),
+      MP4.fb('stsz',0,0, MP4.u32(0,n), MP4.u32(...samples.map(s=>s.bytes.length))),
+      MP4.fb('stco',0,0, MP4.u32(1), MP4.u32(vStart)));
     const dref=MP4.fb('dref',0,0, MP4.u32(1), MP4.fb('url ',0,1));
-    const minf=MP4.b('minf', MP4.fb('vmhd',0,1, MP4.u16(0,0,0,0)), MP4.b('dinf', dref), stbl);
-    const hdlr=MP4.fb('hdlr',0,0, MP4.u32(0), MP4.str('vide'), MP4.u32(0,0,0), MP4.str('ATONAL '));
-    const mdhd=MP4.fb('mdhd',0,0, MP4.u32(0,0,TS,durTS), MP4.u16(0x55C4,0));   // und language
-    const mdia=MP4.b('mdia', mdhd, hdlr, minf);
-    const MTX=MP4.u32(0x10000,0,0, 0,0x10000,0, 0,0,0x40000000);               // identity matrix
-    const tkhd=MP4.fb('tkhd',0,3, MP4.u32(0,0,1,0,durMS), MP4.u32(0,0),
-                      MP4.u16(0,0,0,0), MTX, MP4.u32(w*65536, h*65536));
-    const trak=MP4.b('trak', tkhd, mdia);
-    const mvhd=MP4.fb('mvhd',0,0, MP4.u32(0,0,1000,durMS,0x10000), MP4.u16(0x100,0),
-                      MP4.u32(0,0), MTX, MP4.u32(0,0,0,0,0,0,2));
-    const moov=MP4.b('moov', mvhd, trak);
+    const vMinf=MP4.b('minf', MP4.fb('vmhd',0,1, MP4.u16(0,0,0,0)), MP4.b('dinf', dref), vStbl);
+    const vMdia=MP4.b('mdia',
+      MP4.fb('mdhd',0,0, MP4.u32(0,0,TS,durTS), MP4.u16(0x55C4,0)),
+      MP4.fb('hdlr',0,0, MP4.u32(0), MP4.str('vide'), MP4.u32(0,0,0), MP4.str('ATONAL ')),
+      vMinf);
+    const vTrak=MP4.b('trak',
+      MP4.fb('tkhd',0,3, MP4.u32(0,0,1,0,durMS), MP4.u32(0,0), MP4.u16(0,0,0,0), MTX,
+             MP4.u32(w*65536, h*65536)),
+      vMdia);
 
-    const out=new Uint8Array(ftyp.length+8+dataLen+moov.length);
+    // ---- audio track, when there is one ----
+    let aTrak=null, aDurMS=0;
+    if(audio && audio.samples.length){
+      const an=audio.samples.length, sr=audio.sampleRate, aFrame=1024;
+      const aDurTS=an*aFrame; aDurMS=Math.round(aDurTS/sr*1000);
+      const mp4a=MP4.b('mp4a',
+        new Uint8Array(6), MP4.u16(1), MP4.u16(0,0), MP4.u32(0),
+        MP4.u16(audio.channels,16), MP4.u16(0,0), MP4.u32(sr*65536),
+        MP4.esds(audio.asc, 192000));
+      const aStbl=MP4.b('stbl',
+        MP4.fb('stsd',0,0, MP4.u32(1), mp4a),
+        MP4.fb('stts',0,0, MP4.u32(1), MP4.u32(an, aFrame)),
+        MP4.fb('stsc',0,0, MP4.u32(1), MP4.u32(1,an,1)),
+        MP4.fb('stsz',0,0, MP4.u32(0,an), MP4.u32(...audio.samples.map(s=>s.bytes.length))),
+        MP4.fb('stco',0,0, MP4.u32(1), MP4.u32(aStart)));
+      // No stss: every AAC frame is a sync sample, and that is what its absence means.
+      const aMinf=MP4.b('minf', MP4.fb('smhd',0,0, MP4.u16(0,0)), MP4.b('dinf',
+        MP4.fb('dref',0,0, MP4.u32(1), MP4.fb('url ',0,1))), aStbl);
+      const aMdia=MP4.b('mdia',
+        MP4.fb('mdhd',0,0, MP4.u32(0,0,sr,aDurTS), MP4.u16(0x55C4,0)),
+        MP4.fb('hdlr',0,0, MP4.u32(0), MP4.str('soun'), MP4.u32(0,0,0), MP4.str('ATONAL ')),
+        aMinf);
+      aTrak=MP4.b('trak',
+        MP4.fb('tkhd',0,3, MP4.u32(0,0,2,0,aDurMS), MP4.u32(0,0),
+               MP4.u16(0x0100,0,0,0), MTX, MP4.u32(0,0)),
+        aMdia);
+    }
+
+    const movieMS=Math.max(durMS, aDurMS);
+    const mvhd=MP4.fb('mvhd',0,0, MP4.u32(0,0,1000,movieMS,0x10000), MP4.u16(0x100,0),
+                      MP4.u32(0,0), MTX, MP4.u32(0,0,0,0,0,0, aTrak?3:2));
+    const moov=aTrak ? MP4.b('moov', mvhd, vTrak, aTrak) : MP4.b('moov', mvhd, vTrak);
+
+    const out=new Uint8Array(ftyp.length+8+vLen+aLen+moov.length);
     let o=0;
     out.set(ftyp,o); o+=ftyp.length;
     out.set(mdatHdr,o); o+=8;
     for(const s of samples){ out.set(s.bytes,o); o+=s.bytes.length; }
+    if(audio) for(const s of audio.samples){ out.set(s.bytes,o); o+=s.bytes.length; }
     out.set(moov,o);
     return new Blob([out],{type:'video/mp4'});
   }
@@ -7218,6 +7266,60 @@ window.RENDER=RENDER;
 /* Ends an OFFLINE take: stop feeding frames, drain the encoder, write the container, save.
    Separate from the live path's recorder.onstop because the two produce a file by entirely
    different means -- one is drained and muxed here, the other is assembled by MediaRecorder. */
+/* ---- THE TRACK GOES IN THE FILE ----
+   The first version of the offline export shipped video only, and the reason given was that the
+   audio graph runs in real time and cannot be stepped. That is true of the GRAPH and irrelevant
+   to the problem: the audio is already sitting in memory as a decoded AudioBuffer, and nothing
+   about encoding it has to happen at playback speed. WebCodecs AudioEncoder takes the samples as
+   fast as they are handed over, exactly as VideoEncoder takes frames.
+
+   So the slice the take covers is cut straight out of the buffer, encoded to AAC, and muxed as a
+   second track. No capture, no real time, no graph.
+
+   AAC frames are 1024 samples, so the media timescale is the sample rate and every sample lasts
+   1024 ticks -- the audio track cannot drift against its own clock any more than the video can. */
+async function encodeAudioSlice(startSec, endSec){
+  if(!audioBuffer || typeof AudioEncoder==='undefined') return null;
+  const sr=audioBuffer.sampleRate, ch=Math.min(2, audioBuffer.numberOfChannels);
+  const i0=Math.max(0, Math.floor(startSec*sr));
+  const i1=Math.min(audioBuffer.length, Math.ceil(endSec*sr));
+  if(i1-i0<sr*0.05) return null;                       // nothing worth encoding
+  const cfg={codec:'mp4a.40.2', sampleRate:sr, numberOfChannels:ch, bitrate:192000};
+  try{ const s=await AudioEncoder.isConfigSupported(cfg); if(!s||!s.supported) return null; }
+  catch(e){ return null; }
+
+  const samples=[]; let asc=null, err=null;
+  const enc=new AudioEncoder({
+    output:(chunk,md)=>{
+      if(md && md.decoderConfig && md.decoderConfig.description && !asc)
+        asc=new Uint8Array(md.decoderConfig.description);
+      const b=new Uint8Array(chunk.byteLength); chunk.copyTo(b);
+      samples.push({bytes:b, key:true});               // every AAC frame is a sync sample
+    },
+    error:e=>{ err=String(e&&e.message||e); }
+  });
+  enc.configure(cfg);
+
+  const L=audioBuffer.getChannelData(0);
+  const R=ch>1?audioBuffer.getChannelData(1):L;
+  const N=1024;
+  for(let p=i0;p<i1;p+=N){
+    const n=Math.min(N, i1-p);
+    const data=new Float32Array(n*ch);
+    for(let i=0;i<n;i++){                              // AudioData 'f32' is interleaved
+      data[i*ch]=L[p+i];
+      if(ch>1) data[i*ch+1]=R[p+i];
+    }
+    enc.encode(new AudioData({format:'f32', sampleRate:sr, numberOfFrames:n,
+      numberOfChannels:ch, timestamp:Math.round((p-i0)/sr*1e6), data}));
+    if(enc.encodeQueueSize>64) await new Promise(r=>setTimeout(r,0));   // same backpressure idea
+  }
+  try{ await enc.flush(); }catch(e){ err=err||String(e&&e.message||e); }
+  try{ enc.close(); }catch(e){}
+  if(err || !samples.length || !asc) return null;
+  return {samples, asc, sampleRate:sr, channels:ch};
+}
+
 let renderFinishing=false;
 async function finishRender(failed){
   if(renderFinishing) return;
@@ -7234,14 +7336,23 @@ async function finishRender(failed){
     endRecording(); renderFinishing=false;
     showStat('Export failed: '+(RENDER.encErr||'no frames encoded'),true); hideStat(3600); return;
   }
+  /* The audio for exactly the span the video covers, cut from the decoded buffer and encoded
+     now -- see encodeAudioSlice. Nothing here needs the graph or real time, so an offline take
+     carries its track like any other. A failure to encode audio is not a failure of the take:
+     the video is already rendered and is worth saving without it. */
+  showStat('Encoding audio\u2026');
+  let audio=null;
+  try{ audio=await encodeAudioSlice(RENDER.startAt, RENDER.startAt + n/RENDER.fps); }
+  catch(e){ audio=null; }
   let blob=null, err=null;
-  try{ blob=MP4.build(RENDER.samples, RENDER.desc, w, h, RENDER.fps); }
+  try{ blob=MP4.build(RENDER.samples, RENDER.desc, w, h, RENDER.fps, audio); }
   catch(e){ err=String(e&&e.message||e); }
   RENDER.samples=[]; RENDER.desc=null;
   endRecording(); renderFinishing=false;
   if(!blob){ showStat('Muxing failed: '+err,true); hideStat(3600); return; }
   saveBlob(blob,'atonal-'+($('selFmt').value)+'-'+stamp()+'.mp4');
-  showStat('Saved MP4 '+px+' · '+(n/60).toFixed(1)+'s at 60fps (offline, no audio)'); hideStat(3200);
+  showStat('Saved MP4 '+px+' · '+(n/60).toFixed(1)+'s at 60fps'
+    +(audio?' with audio':' — video only, audio could not be encoded')); hideStat(3200);
 }
 let recPrevTier='high', recLive=false;
 function endRecording(){
