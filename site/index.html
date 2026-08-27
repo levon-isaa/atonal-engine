@@ -84,6 +84,50 @@ h1 em{font-style:normal;color:var(--violet);display:block}
   color:var(--muted);display:flex;align-items:center;gap:6px}
 .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
 
+/* the output panel: where all the colour on this page lives */
+.stageWrap{display:grid;grid-template-columns:1.35fr 1fr;gap:1px;background:var(--rule);
+  border:1px solid var(--rule);margin-top:clamp(30px,4vw,44px)}
+@media(max-width:900px){.stageWrap{grid-template-columns:1fr}}
+.pane{background:var(--paper);padding:16px 18px 18px;display:flex;flex-direction:column;gap:10px}
+.pane.out{padding:0;position:relative;min-height:300px;background:#1A1030}
+#stage{width:100%;height:100%;position:absolute;inset:0}
+.pane.out .tag{position:absolute;left:16px;top:14px;z-index:2;color:rgba(255,255,255,.82)}
+.pane.out .tag2{position:absolute;left:16px;bottom:14px;z-index:2;color:rgba(255,255,255,.62)}
+
+/* the nine profiles */
+.forms{display:grid;grid-template-columns:repeat(9,1fr);gap:1px;background:var(--rule);
+  border:1px solid var(--rule);margin-top:28px}
+@media(max-width:900px){.forms{grid-template-columns:repeat(3,1fr)}}
+.form{background:var(--paper);padding:14px 8px 12px;display:flex;flex-direction:column;
+  align-items:center;gap:8px}
+.form canvas{width:100%;max-width:78px;aspect-ratio:1}
+.form span{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);text-align:center}
+
+/* format cards drawn at their real proportions */
+.ratios{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--rule);
+  border:1px solid var(--rule);margin-top:28px}
+@media(max-width:860px){.ratios{grid-template-columns:repeat(2,1fr)}}
+.ratio{background:var(--paper);padding:20px 16px;display:flex;flex-direction:column;gap:12px;
+  align-items:flex-start}
+/* The five proportions are the content, so they share one baseline -- boxes bottom-aligned in a
+   fixed well, which puts every caption on the same line and lets the shapes be compared. */
+.ratio .well{width:100%;height:150px;display:flex;align-items:flex-end;justify-content:center}
+/* Sized EXPLICITLY rather than by aspect-ratio plus a max-width. A 16:9 box asked to be 150 tall
+   wants 267 wide; clamping that to 96 leaves a 96x150 rectangle that is not 16:9 at all, and a
+   panel whose whole job is to show proportion had stopped showing it. Each is pre-fitted to the
+   150x110 well instead, so every one is exactly its own ratio. */
+.ratio .box{background:linear-gradient(150deg,var(--violet),#C0399B);border-radius:2px}
+.ratio .meta{display:flex;flex-direction:column;gap:5px}
+.ratio b{font-family:var(--serif);font-weight:600;font-size:15px;line-height:1.25}
+.ratio span{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+
+/* sections arrive */
+.reveal{opacity:0;transform:translateY(14px);
+  transition:opacity .7s cubic-bezier(.2,.7,.3,1), transform .7s cubic-bezier(.2,.7,.3,1)}
+.reveal.in{opacity:1;transform:none}
+
 /* ---- counters ---- */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--rule);
   border:1px solid var(--rule);margin:clamp(40px,6vw,72px) 0}
@@ -193,11 +237,21 @@ footer .lab{margin-left:auto}
           <span class="lab">Analysis &mdash; live read</span>
           <span class="lab" style="color:var(--violet)">176.32 BPM &middot; 17 sections &middot; 4,988 onsets</span>
         </div>
-        <canvas id="analysis" width="2400" height="264" aria-label="A visualisation of one track's analysis: coloured section blocks, a beat grid, and onset markers across five frequency bands, with a playhead sweeping across."></canvas>
-        <div class="scopeKey">
-          <span><i class="dot" style="background:var(--violet)"></i>Sections</span>
-          <span><i class="dot" style="background:var(--muted)"></i>Beat grid</span>
-          <span><i class="dot" style="background:var(--ink-2)"></i>Onsets &mdash; sub / low / mid / high / air</span>
+        <div class="stageWrap">
+          <div class="pane">
+            <span class="lab">In &mdash; what the analysis found</span>
+            <canvas id="analysis" width="2400" height="264" aria-label="A visualisation of one track's analysis: section blocks, a beat grid, and onset markers across five frequency bands, with a playhead sweeping across."></canvas>
+            <div class="scopeKey">
+              <span><i class="dot" style="background:var(--violet)"></i>Sections</span>
+              <span><i class="dot" style="background:var(--muted)"></i>Beat grid</span>
+              <span><i class="dot" style="background:var(--ink-2)"></i>Onsets &mdash; sub / low / mid / high / air</span>
+            </div>
+          </div>
+          <div class="pane out">
+            <span class="lab tag">Out &mdash; what it renders</span>
+            <canvas id="stage" aria-label="An animated impression of the rendered output: a symmetrical form turning over a drifting colour field, changing profile every few seconds."></canvas>
+            <span class="lab tag2">Form &middot; fold &middot; palette, all directed</span>
+          </div>
         </div>
       </div>
     </div>
@@ -213,7 +267,7 @@ footer .lab{margin-left:auto}
     </div>
   </section>
 
-  <section class="sec" id="what">
+  <section class="sec reveal" id="what">
     <div class="wrap"><div class="cols">
       <div class="rail"><span class="num">01</span><span class="lab">What it does</span></div>
       <div>
@@ -232,11 +286,25 @@ footer .lab{margin-left:auto}
             randomness in the direction — a returning chorus comes back as the form it was
             the first time. You can render it again and get the same result.</p>
         </div>
+        <p class="lab" style="margin-top:36px">Nine profiles &mdash; the Director picks from these</p>
+        <div class="forms">
+          <div class="form"><canvas data-form="arc"></canvas><span>Arc</span></div>
+          <div class="form"><canvas data-form="chevron"></canvas><span>Chevron</span></div>
+          <div class="form"><canvas data-form="lattice"></canvas><span>Lattice</span></div>
+          <div class="form"><canvas data-form="clover"></canvas><span>Clover</span></div>
+          <div class="form"><canvas data-form="knot"></canvas><span>Knot</span></div>
+          <div class="form"><canvas data-form="plate"></canvas><span>Plate</span></div>
+          <div class="form"><canvas data-form="wave"></canvas><span>Wave</span></div>
+          <div class="form"><canvas data-form="triskelion"></canvas><span>Triskelion</span></div>
+          <div class="form"><canvas data-form="gear"></canvas><span>Gear</span></div>
+        </div>
+        <p class="lab" style="margin-top:12px">Ordered calm to intense &mdash; where a section lands
+          is where its energy sits among the track&rsquo;s own</p>
       </div>
     </div></div>
   </section>
 
-  <section class="sec" id="how">
+  <section class="sec reveal" id="how">
     <div class="wrap"><div class="cols">
       <div class="rail"><span class="num">02</span><span class="lab">How it works</span></div>
       <div>
@@ -275,7 +343,7 @@ footer .lab{margin-left:auto}
     </div></div>
   </section>
 
-  <section class="sec" id="formats">
+  <section class="sec reveal" id="formats">
     <div class="wrap"><div class="cols">
       <div class="rail"><span class="num">03</span><span class="lab">Formats</span></div>
       <div>
@@ -283,23 +351,23 @@ footer .lab{margin-left:auto}
         <p class="prose" style="margin-top:20px">Rendered at the exact pixel dimensions of the
           destination, so nothing is cropped or rescaled after the fact. H.264 in an MP4 —
           the one file that plays everywhere without being touched.</p>
-        <div class="tableWrap">
-          <table>
-            <thead><tr><th>Destination</th><th>Resolution</th><th>Ratio</th><th>Frame rate</th></tr></thead>
-            <tbody>
-              <tr><td class="name">Reels &middot; TikTok &middot; Shorts</td><td>1080 &times; 1920</td><td>9:16</td><td>60 fps</td></tr>
-              <tr><td class="name">Instagram portrait</td><td>1080 &times; 1350</td><td>4:5</td><td>60 fps</td></tr>
-              <tr><td class="name">Instagram square</td><td>1080 &times; 1080</td><td>1:1</td><td>60 fps</td></tr>
-              <tr><td class="name">YouTube</td><td>1920 &times; 1080</td><td>16:9</td><td>60 fps</td></tr>
-              <tr><td class="name">YouTube 4K</td><td>3840 &times; 2160</td><td>16:9</td><td>60 fps</td></tr>
-            </tbody>
-          </table>
+        <div class="ratios">
+          <div class="ratio"><div class="well"><div class="box" style="width:84px;height:150px"></div></div>
+            <div class="meta"><b>Reels &middot; TikTok<br>Shorts</b><span>1080 &times; 1920 &middot; 9:16</span></div></div>
+          <div class="ratio"><div class="well"><div class="box" style="width:110px;height:138px"></div></div>
+            <div class="meta"><b>Instagram<br>portrait</b><span>1080 &times; 1350 &middot; 4:5</span></div></div>
+          <div class="ratio"><div class="well"><div class="box" style="width:110px;height:110px"></div></div>
+            <div class="meta"><b>Instagram<br>square</b><span>1080 &times; 1080 &middot; 1:1</span></div></div>
+          <div class="ratio"><div class="well"><div class="box" style="width:110px;height:62px"></div></div>
+            <div class="meta"><b>YouTube<br>1080p</b><span>1920 &times; 1080 &middot; 16:9</span></div></div>
+          <div class="ratio"><div class="well"><div class="box" style="width:110px;height:62px"></div></div>
+            <div class="meta"><b>YouTube<br>4K</b><span>3840 &times; 2160 &middot; 16:9</span></div></div>
         </div>
       </div>
     </div></div>
   </section>
 
-  <section class="sec" id="pricing">
+  <section class="sec reveal" id="pricing">
     <div class="wrap"><div class="cols">
       <div class="rail"><span class="num">04</span><span class="lab">Pricing</span></div>
       <div>
@@ -348,7 +416,7 @@ footer .lab{margin-left:auto}
     </div></div>
   </section>
 
-  <section class="sec" id="faq">
+  <section class="sec reveal" id="faq">
     <div class="wrap"><div class="cols">
       <div class="rail"><span class="num">05</span><span class="lab">Questions</span></div>
       <div>
@@ -510,5 +578,166 @@ footer .lab{margin-left:auto}
   }
   addEventListener('resize',resize); resize();
   requestAnimationFrame(draw);
+})();
+</script>
+
+<script>
+/* ---- THE OUTPUT PANEL ----
+   The analysis strip shows what goes in. This shows what comes out, and between them they are
+   the whole product in one screen. It is not the real engine -- that is a raymarched SDF in a
+   WebGL fragment shader and it is not going in a landing page -- but it is built from the same
+   description: a profile with an N-fold polar signature, folded through a kaleidoscope, turning
+   on a beat-locked clock over a colour field that drifts.
+   The colour is the point of this panel. The rest of the page is deliberately paper and ink; the
+   saturation lives here, where it belongs, because it is the thing being sold. */
+(function(){
+  var cv=document.getElementById('stage'); if(!cv) return;
+  var ctx=cv.getContext('2d'); if(!ctx) return;
+  var reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // The nine profiles, as polar radius functions -- the same signatures the SDF profiles have.
+  var FORMS={
+    triskelion:function(a){ return .78+.30*Math.cos(3*a)+.06*Math.cos(9*a); },
+    clover    :function(a){ return .74+.26*Math.abs(Math.cos(2*a)); },
+    /* Arc and Plate both started as near-circles and were indistinguishable in the gallery,
+       which defeats the point of showing nine of them. Plate is a broad faceted mass now, and
+       Arc is drawn as a RING rather than by a radius function at all -- the engine's own note
+       describes it as "a thin hollow one closes into a continuous ring", and a hollow form is
+       the one thing a polar radius cannot express. See the ring branch in the glyph draw. */
+    arc       :function(a){ return .88; },
+    chevron   :function(a){ return .66+.34*Math.pow(Math.abs(Math.cos(1.5*a)),0.6); },
+    wave      :function(a){ return .80+.16*Math.sin(5*a)+.05*Math.sin(11*a); },
+    plate     :function(a){ return .84+.10*Math.pow(Math.abs(Math.cos(3*a)),4); },
+    gear      :function(a){ return .78+.13*(Math.abs(Math.cos(9*a))>.5?1:0)+.05*Math.cos(3*a); },
+    knot      :function(a){ return .74+.18*Math.cos(3*a)+.12*Math.sin(7*a); },
+    lattice   :function(a){ return .80+.10*Math.cos(6*a)+.08*Math.cos(2*a); }
+  };
+  var ORDER=['wave','triskelion','knot','clover','gear','lattice'];
+
+  var t0=performance.now(), formI=0, nextAt=4200;
+
+  function palette(t){
+    // a slow drift through the renderer's own palette range: magenta -> violet -> warm
+    var h1=300+40*Math.sin(t*0.00013), h2=258+30*Math.sin(t*0.00017+1.7),
+        h3=22+18*Math.sin(t*0.00011+3.1);
+    return [h1,h2,h3];
+  }
+
+  function draw(now){
+    var d=Math.min(devicePixelRatio||1,2), W=cv.width/d, H=cv.height/d;
+    var t=reduce?0:(now-t0);
+    ctx.clearRect(0,0,W,H);
+
+    var P=palette(t), cx=W/2, cy=H/2;
+
+    // ---- colour field: three drifting radial washes, the backdrop the engine renders onto
+    ctx.fillStyle='hsl('+P[1]+',42%,18%)';
+    ctx.fillRect(0,0,W,H);
+    var blobs=[[0.30+0.10*Math.sin(t*0.00021),0.32+0.10*Math.cos(t*0.00017),P[0],0.62],
+               [0.74+0.09*Math.cos(t*0.00019),0.66+0.09*Math.sin(t*0.00023),P[1],0.58],
+               [0.55+0.12*Math.sin(t*0.00013+2),0.86+0.07*Math.cos(t*0.00029),P[2],0.40]];
+    ctx.globalCompositeOperation='lighter';
+    for(var i=0;i<blobs.length;i++){
+      var b=blobs[i], g=ctx.createRadialGradient(b[0]*W,b[1]*H,0,b[0]*W,b[1]*H,Math.max(W,H)*b[3]);
+      g.addColorStop(0,'hsla('+b[2]+',88%,58%,0.95)');
+      g.addColorStop(1,'hsla('+b[2]+',88%,50%,0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    }
+    ctx.globalCompositeOperation='source-over';
+
+    // ---- the form, cross-faded between profiles the way the Director changes shape
+    if(!reduce && t>nextAt){ formI=(formI+1)%ORDER.length; nextAt=t+4200; }
+    var into=Math.max(0,Math.min(1,(t-(nextAt-4200))/900));
+    var fa=FORMS[ORDER[formI]], fb=FORMS[ORDER[(formI+ORDER.length-1)%ORDER.length]];
+    var mix=reduce?1:(into*into*(3-2*into));
+
+    var R=Math.min(W,H)*0.33, spin=t*0.00016, seg=6;
+    ctx.save(); ctx.translate(cx,cy); ctx.rotate(spin);
+
+    // kaleidoscope: the profile mirrored into seg wedges, exactly what the fold does
+    for(var s=0;s<seg;s++){
+      ctx.save(); ctx.rotate(s*Math.PI*2/seg);
+      for(var m=0;m<2;m++){
+        ctx.save(); if(m) ctx.scale(1,-1);
+        ctx.beginPath();
+        for(var k=0;k<=64;k++){
+          var a=(k/64)*(Math.PI/seg);
+          var r=R*(fb(a+spin)*(1-mix)+fa(a+spin)*mix);
+          var x=Math.cos(a)*r, y=Math.sin(a)*r;
+          if(k===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        }
+        ctx.lineTo(0,0); ctx.closePath();
+        /* LIT, NOT GLOWING. A near-white fill plus a centred bloom turned the form into a star
+           with a hot core and no readable geometry. The gradient runs across the wedge instead,
+           so each petal has a lit edge and a shadow side and the silhouette does the work --
+           which is what the real renderer's key/fill pair is for. */
+        var lg=ctx.createLinearGradient(-R*0.6,-R*0.9,R*0.9,R*0.7);
+        lg.addColorStop(0,'rgba(255,255,255,0.96)');
+        lg.addColorStop(0.42,'rgba(226,216,252,0.90)');
+        lg.addColorStop(0.78,'rgba(158,138,214,0.80)');
+        lg.addColorStop(1,'rgba(96,74,158,0.72)');
+        ctx.fillStyle=lg; ctx.fill();
+        ctx.strokeStyle='rgba(255,255,255,0.30)'; ctx.lineWidth=0.7; ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+
+    // a soft bloom over the whole panel, as the post pass does
+    // A wide, weak halo rather than a hot centre -- the bloom should sit around the form, not on it.
+    var bg=ctx.createRadialGradient(cx,cy,R*0.85,cx,cy,R*2.3);
+    bg.addColorStop(0,'rgba(255,255,255,0.055)'); bg.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.globalCompositeOperation='lighter'; ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+    ctx.globalCompositeOperation='source-over';
+
+    requestAnimationFrame(draw);
+  }
+
+  function resize(){
+    var r=cv.getBoundingClientRect(), d=Math.min(devicePixelRatio||1,2);
+    cv.width=Math.max(320,Math.round(r.width*d));
+    cv.height=Math.max(240,Math.round(r.height*d));
+    ctx.setTransform(d,0,0,d,0,0);
+  }
+  addEventListener('resize',resize); resize();
+  requestAnimationFrame(draw);
+
+  // ---- the nine profiles, drawn as their own silhouettes
+  document.querySelectorAll('canvas[data-form]').forEach(function(c){
+    var g=c.getContext('2d'); if(!g) return;
+    var d=Math.min(devicePixelRatio||1,2);
+    var rect=c.getBoundingClientRect(), S=Math.max(72,Math.round(rect.width));
+    c.width=S*d; c.height=S*d; g.setTransform(d,0,0,d,0,0);
+    var kind=c.getAttribute('data-form'), f=FORMS[kind]; if(!f) return;
+    var R=S*0.38;
+    g.clearRect(0,0,S,S);
+    g.save(); g.translate(S/2,S/2);
+    g.beginPath();
+    if(kind==='arc'){                       // hollow: outer ring, inner counter-wound
+      g.arc(0,0,R*0.88,0,Math.PI*2,false);
+      g.arc(0,0,R*0.52,0,Math.PI*2,true);
+    } else {
+      for(var k=0;k<=256;k++){
+        var a=(k/256)*Math.PI*2, r=R*f(a);
+        var x=Math.cos(a)*r, y=Math.sin(a)*r;
+        if(k===0) g.moveTo(x,y); else g.lineTo(x,y);
+      }
+    }
+    g.closePath();
+    g.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--ink').trim()||'#14161A';
+    g.globalAlpha=.88; g.fill();
+    g.restore();
+  });
+
+  // ---- sections arrive rather than appear
+  if(!reduce && 'IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+    },{rootMargin:'0px 0px -12% 0px'});
+    document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
+  } else {
+    document.querySelectorAll('.reveal').forEach(function(el){ el.classList.add('in'); });
+  }
 })();
 </script>
