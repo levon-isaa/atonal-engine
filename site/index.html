@@ -42,7 +42,7 @@ h1,h2,h3,.mark,.big{
   font-weight:800; letter-spacing:-.036em; line-height:.98;
   text-wrap:balance; margin:0;
 }
-h1{font-size:clamp(44px,7.6vw,92px);letter-spacing:-.045em}
+h1{font-size:clamp(37px,4.5vw,62px);letter-spacing:-.045em}
 h2{font-size:clamp(30px,4.2vw,52px)}
 h3{font-size:19px;letter-spacing:-.02em;line-height:1.2}
 p{margin:0}
@@ -131,16 +131,31 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
 .btn.sm{height:34px;padding:0 14px;font-size:12.5px}
 
 /* the status pill */
-.pill{display:inline-flex;align-items:center;gap:9px;height:29px;padding:0 13px;
+.pill{display:inline-flex;align-items:center;gap:9px;min-height:29px;padding:5px 14px;
   border:1px solid var(--line-2);border-radius:999px;background:rgba(255,255,255,.03)}
+.hCopy>.pill{align-self:flex-start;margin-bottom:24px}
 .pill i{width:5px;height:5px;border-radius:50%;background:var(--mag);
   box-shadow:0 0 0 0 rgba(255,62,142,.6);animation:beat 2.4s infinite}
 @keyframes beat{0%{box-shadow:0 0 0 0 rgba(255,62,142,.55)}70%{box-shadow:0 0 0 8px rgba(255,62,142,0)}100%{box-shadow:0 0 0 0 rgba(255,62,142,0)}}
 
 /* ============================ HERO ============================ */
-.hero{padding:clamp(56px,9vw,104px) 0 0}
-.hero .lede{color:var(--ink-2);font-size:17px;max-width:48ch;margin-top:26px}
-.cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}
+/* THE FIRST SCREEN SHOWS THE PRODUCT. It used to be a full-width headline with
+   the render panel below it, which meant the whole opening view was type and you
+   had to scroll before anything the engine makes appeared. One bordered panel,
+   split by a hairline: the argument on the left, the thing itself running on the
+   right, both inside the first viewport. */
+.hero{padding:clamp(26px,3.6vw,50px) 0 0}
+.split{display:grid;grid-template-columns:1.04fr .96fr}
+.hCopy{padding:clamp(26px,3.2vw,44px);display:flex;flex-direction:column;justify-content:center}
+.hView{border-left:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+.hero .lede{color:var(--ink-2);font-size:16.5px;max-width:46ch;margin-top:20px}
+.cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}
+.hMeta{display:flex;gap:20px;flex-wrap:wrap;margin-top:30px;padding-top:20px;
+  border-top:1px solid var(--line)}
+@media(max-width:920px){
+  .split{grid-template-columns:1fr}
+  .hView{border-left:0;border-top:1px solid var(--line)}
+}
 .hgrad{background:linear-gradient(96deg,var(--mag),var(--vio) 52%,var(--amb));
   -webkit-background-clip:text;background-clip:text;color:transparent}
 
@@ -150,9 +165,10 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
   border-bottom:1px solid var(--line);flex-wrap:wrap}
 .vpTop .dots{display:flex;gap:5px;margin-right:4px}
 .vpTop .dots b{width:6px;height:6px;border-radius:50%;background:var(--line-3)}
-.vpBody{position:relative;aspect-ratio:16/9;min-height:300px;background:
+.vpBody{position:relative;flex:1;min-height:430px;background:
   radial-gradient(78% 90% at 50% 52%,rgba(130,87,255,.10),transparent 70%),#08080D;overflow:hidden}
-@media(max-width:760px){.vpBody{aspect-ratio:4/5}}
+@media(max-width:920px){.vpBody{min-height:400px}}
+@media(max-width:520px){.vpBody{min-height:330px}}
 .vpBody canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .hud{position:absolute;inset:0;pointer-events:none;padding:16px;display:flex;flex-direction:column;
   justify-content:space-between}
@@ -162,7 +178,8 @@ header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.72);backdrop-fil
   font-variant-numeric:tabular-nums}
 .vpBot{display:flex;align-items:center;gap:10px;padding:9px 16px;min-height:42px;
   border-top:1px solid var(--line);flex-wrap:wrap}
-.seg{display:flex;border:1px solid var(--line);margin-left:auto}
+.seg{display:flex;border:1px solid var(--line);margin-left:auto;flex:1}
+.seg button{flex:1}
 .seg button{appearance:none;background:transparent;border:0;border-left:1px solid var(--line);cursor:pointer;
   font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
   color:var(--ink-3);padding:7px 11px;transition:color .2s,background .2s}
@@ -346,46 +363,53 @@ footer{border-top:1px solid var(--line);padding:22px 0}
 <!-- ============================ HERO ============================ -->
 <section class="hero">
   <div class="wrap">
-    <span class="pill"><i></i><span class="lab on">Renders at 60fps &middot; audio muxed in</span></span>
-    <h1 style="margin-top:26px">Your track,<br><span class="hgrad">rendered as an object.</span></h1>
-    <p class="lede">Upload a track. ATONAL reads its tempo, its sections and every individual
-      hit, then directs a raymarched sculpture that moves to it &mdash; and exports it sized for
-      Reels, TikTok or YouTube.</p>
-    <div class="cta">
-      <a class="btn" href="#pricing">Render a track <span class="k">&rarr;</span></a>
-      <a class="btn o" href="#gallery">See it move</a>
-    </div>
-
-    <!-- the live engine, framed as the instrument it is -->
-    <div class="p vp reveal">
+    <div class="p split reveal">
       <span class="lt"></span>
-      <div class="vpTop">
-        <span class="dots"><b></b><b></b><b></b></span>
-        <span class="lab on">Live render &mdash; WebGL raymarcher</span>
-        <span class="lab" style="margin-left:auto">Signed distance field &middot; 128 steps</span>
-      </div>
-      <div class="vpBody">
-        <canvas id="stage" aria-label="A live raymarched render of an ATONAL form: an extruded profile turning on three axes, folded through a kaleidoscope, lit in magenta and violet."></canvas>
-        <div class="hud">
-          <div class="row">
-            <div class="rd"><span class="lab">Form</span><b id="hForm">Rotor</b></div>
-            <div class="rd"><span class="lab">Material</span><b id="hMat">Chrome</b></div>
-          </div>
-          <div class="row">
-            <div class="rd"><span class="lab">Fold</span><b id="hKal">0.00</b></div>
-            <div class="rd"><span class="lab">Tempo</span><b>176.32 BPM</b></div>
-            <div class="rd"><span class="lab">Frame</span><b id="hFps">60.0 fps</b></div>
-          </div>
+      <div class="hCopy">
+        <span class="pill"><i></i><span class="lab on">Renders at 60fps &middot; audio muxed in</span></span>
+        <h1>Your track,<br><span class="hgrad">rendered as an object.</span></h1>
+        <p class="lede">Upload a track. ATONAL reads its tempo, its sections and every individual
+          hit, then directs a raymarched sculpture that moves to it &mdash; and exports it sized
+          for Reels, TikTok or YouTube.</p>
+        <div class="cta">
+          <a class="btn" href="#pricing">Render a track <span class="k">&rarr;</span></a>
+          <a class="btn o" href="#gallery">See it move</a>
+        </div>
+        <div class="hMeta">
+          <span class="lab">MP3 &middot; WAV &middot; FLAC</span>
+          <span class="lab">Up to 3840&times;2160</span>
+          <span class="lab">No watermark</span>
         </div>
       </div>
-      <div class="vpBot">
-        <span class="lab">Drag to turn &middot; the same nine profiles the engine ships</span>
-        <div class="seg" role="group" aria-label="Form">
-          <button data-m="0" aria-pressed="true">Rotor</button>
-          <button data-m="7" aria-pressed="false">Knot</button>
-          <button data-m="6" aria-pressed="false">Gear</button>
-          <button data-m="8" aria-pressed="false">Lattice</button>
-          <button data-m="1" aria-pressed="false">Clover</button>
+
+      <div class="hView">
+        <div class="vpTop">
+          <span class="dots"><b></b><b></b><b></b></span>
+          <span class="lab on">Live render</span>
+          <span class="lab" style="margin-left:auto">SDF &middot; 128 steps</span>
+        </div>
+        <div class="vpBody">
+          <canvas id="stage" aria-label="A live raymarched render of an ATONAL form: an extruded profile turning on three axes, folded through a kaleidoscope, lit in magenta and violet."></canvas>
+          <div class="hud">
+            <div class="row">
+              <div class="rd"><span class="lab">Form</span><b id="hForm">Rotor</b></div>
+              <div class="rd"><span class="lab">Material</span><b id="hMat">Chrome</b></div>
+            </div>
+            <div class="row">
+              <div class="rd"><span class="lab">Fold</span><b id="hKal">0.00</b></div>
+              <div class="rd"><span class="lab">Tempo</span><b>176.32 BPM</b></div>
+              <div class="rd"><span class="lab">Frame</span><b id="hFps">60.0 fps</b></div>
+            </div>
+          </div>
+        </div>
+        <div class="vpBot">
+          <div class="seg" role="group" aria-label="Form">
+            <button data-m="0" aria-pressed="true">Rotor</button>
+            <button data-m="7" aria-pressed="false">Knot</button>
+            <button data-m="6" aria-pressed="false">Gear</button>
+            <button data-m="8" aria-pressed="false">Lattice</button>
+            <button data-m="1" aria-pressed="false">Clover</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1022,39 +1046,8 @@ vec3 aces(vec3 x){
   return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0);
 }
 
-void main(){
-  setPal();
-  /* Framed on the SHORTER axis, not on height. Dividing by u_res.y frames the
-     form vertically whatever the panel is doing, which is fine while the panel
-     is landscape and crops the form off both sides the moment it is not -- and
-     on a phone the hero panel is 4:5. min() keeps the same framing in landscape
-     and switches to width-framing in portrait. */
-  vec2 uv=(gl_FragCoord.xy-0.5*u_res)/min(u_res.x,u_res.y);
-
-  vec3 ro=vec3(0.0,0.0,3.35/u_zoom);
-  vec3 rd=normalize(vec3(uv*1.05,-1.55));
-
-  float t=0.02, md=1e9;
-  bool hit=false;
-  for(int i=0;i<170;i++){
-    if(float(i)>=u_steps) break;
-    vec3 p=ro+rd*t;
-    float d=map(p);
-    /* Only steps that are ALREADY NEAR the form contribute to the halo. The
-       bounding-sphere early-out returns one enormous step, and letting that into
-       the closest-approach term quantised it into visible concentric shells --
-       the halo was reporting the shape of the early-out, not of the object. */
-    if(d<0.42) md=min(md, d/max(t,0.8));
-    if(d<0.00085*t){ hit=true; break; }
-    t+=d;
-    if(t>7.5) break;
-  }
-
-  vec3 col; float alpha;
-
-  /* Material set, matching the engine's names. Roughness blurs the reflection by
-     leaning it from the mirror direction toward the normal, which is a cheap
-     stand-in for a prefiltered probe and reads correctly at these sizes. */
+/* The surface, factored out so the silhouette pass can call it too. */
+vec3 shade(vec3 p, vec3 rd, float t){
   float m=u_mat;
   float rough = m<0.5?0.05 : m<1.5?0.30 : m<2.5?0.19 : m<3.5?0.03 : m<4.5?0.13 : 0.44;
   float metal = m<0.5?1.00 : m<1.5?0.42 : m<2.5?1.00 : m<3.5?0.12 : m<4.5?1.00 : 0.30;
@@ -1062,39 +1055,78 @@ void main(){
   vec3  base  = m<0.5?vec3(0.94,0.95,1.00) : m<1.5?vec3(0.99,0.96,0.97)
               : m<2.5?vec3(1.00,0.79,0.42) : m<3.5?vec3(0.92,0.96,1.00)
               : m<4.5?vec3(0.88,0.90,1.00) : vec3(0.93,0.93,0.97);
+  vec3 n=nrm(p, max(0.0012, 0.0016*t));
+  vec3 v=-rd;
+  float fres=pow(1.0-clamp(dot(n,v),0.0,1.0), 5.0);
+  vec3 R=reflect(rd,n);
+  /* Roughness blurs the reflection by leaning it from the mirror direction
+     toward the normal -- a cheap stand-in for a prefiltered probe, and it reads
+     correctly at these sizes. */
+  vec3 spec=env(normalize(mix(R,n,rough*0.85)));
+  vec3 diff=env(n)*0.55;
+  /* thin-film tint riding the grazing angle: holo is this turned all the way up,
+     the others carry a trace of it */
+  vec3 film=0.5+0.5*cos(6.28318*(vec3(0.0,0.33,0.67)+fres*2.1+u_hue*0.7));
+  vec3 tint=mix(base, base*film*1.25, irid);
+  float ao=occ(p,n);
+  vec3 col = mix(diff*tint, spec*tint, metal);
+  col = mix(col, spec, (0.035+0.90*fres)*(1.0-rough*0.7));
+  col *= mix(0.56, 1.0, ao);
+  col += PA*fres*0.30*(1.0-rough);            /* the rim the bevel sweeps */
+  return col;
+}
+
+void main(){
+  setPal();
+  /* Framed on the SHORTER axis, not on height. Dividing by u_res.y frames the
+     form vertically whatever the panel is doing, which is fine while the panel
+     is landscape and crops the form off both sides the moment it is not. */
+  float S=min(u_res.x,u_res.y);
+  vec2 uv=(gl_FragCoord.xy-0.5*u_res)/S;
+
+  vec3 ro=vec3(0.0,0.0,3.35/u_zoom);
+  vec3 rd=normalize(vec3(uv*1.05,-1.55));
+
+  float t=0.02, md=1e9, tBest=0.02;
+  bool hit=false;
+  for(int i=0;i<170;i++){
+    if(float(i)>=u_steps) break;
+    vec3 p=ro+rd*t;
+    float d=map(p);
+    /* Only steps ALREADY NEAR the form contribute to the closest approach. The
+       bounding-sphere early-out returns one enormous step, and letting that in
+       quantised the term into visible concentric shells. */
+    if(d<0.42 && d/max(t,0.8)<md){ md=d/max(t,0.8); tBest=t; }
+    if(d<0.00085*t){ hit=true; break; }
+    t+=d;
+    if(t>7.5) break;
+  }
+
+  vec3 col; float alpha;
 
   if(hit){
-    vec3 p=ro+rd*t;
-    vec3 n=nrm(p, max(0.0012, 0.0016*t));
-    vec3 v=-rd;
-    float fres=pow(1.0-clamp(dot(n,v),0.0,1.0), 5.0);
-    vec3 R=reflect(rd,n);
-
-    vec3 spec=env(normalize(mix(R,n,rough*0.85)));
-    vec3 diff=env(n)*0.55;
-
-    /* thin-film tint riding the grazing angle -- the holo material is this
-       turned all the way up, the others carry a trace of it */
-    vec3 film=0.5+0.5*cos(6.28318*(vec3(0.0,0.33,0.67)+fres*2.1+u_hue*0.7));
-    vec3 tint=mix(base, base*film*1.25, irid);
-
-    float ao=occ(p,n);
-    col = mix(diff*tint, spec*tint, metal);
-    col = mix(col, spec, (0.035+0.90*fres)*(1.0-rough*0.7));
-    col *= mix(0.56, 1.0, ao);
-    col += PA*fres*0.30*(1.0-rough);            /* the rim the bevel sweeps */
+    col=shade(ro+rd*t, rd, t);
     alpha=1.0;
   } else {
-    /* the halo. md is the march's closest angular approach, so this hugs the
-       real silhouette instead of being a circle painted behind it. */
-    float g=pow(1.0-clamp(md*20.0,0.0,1.0), 3.0);
-    col=mix(PA,PB,0.45)*g*0.50 + PC*g*g*0.18;
-    alpha=clamp(g*0.70,0.0,1.0);
+    /* NO HALO. What was here was a coloured bloom hugging the silhouette, and it
+       read as the form being lit from behind rather than as an object sitting on
+       the page. This is ANTI-ALIASING in its place and nothing else: md is the
+       march's closest angular approach, and one pixel subtends 1.0/S in exactly
+       those units, so feathering md across about a pixel and a half is coverage,
+       not glow. The colour comes from shading the closest point on the ray
+       rather than from the palette -- a palette-tinted feather is a glow again,
+       however narrow it is made. Past that width alpha is a hard zero, so no
+       light at all leaves the form. */
+    float pw=1.5/S;
+    float cov=1.0-smoothstep(0.0, pw, md);
+    if(cov<=0.001){ O=vec4(0.0); return; }
+    col=shade(ro+rd*tBest, rd, tBest);
+    alpha=cov;
   }
 
   col=aces(col*1.16);
   col=pow(col, vec3(1.0/2.2));
-  /* dither, or the halo bands visibly across a dark ground */
+  /* dither, or the shading bands visibly across a dark ground */
   col+=(fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-0.5)/255.0;
   O=vec4(col, alpha);
 }
