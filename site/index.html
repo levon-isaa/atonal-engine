@@ -1,493 +1,678 @@
 <title>ATONAL</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
 
 <style>
+/* ATONAL — the render IS the page.
+   The first pass at this was a spec sheet on paper: restrained, typographic, colour held back to
+   a single accent. It was the wrong read. This product's entire output is spectacle, and a page
+   that whispers about it implies the thing itself is quiet. So the field the engine renders onto
+   now runs the full height of the document, live, and the content floats over it in the same
+   glass the app's own control panel is made of. That tie is the point — it is this product's
+   interface language rather than a stock dark landing page. */
 :root{
-  --paper:#EDEFF2; --paper-2:#E4E7EC; --card:#F6F7F9;
-  --ink:#14161A; --ink-2:#3A414B; --muted:#5C636E; --rule:#D2D7DE;
-  --violet:#5B3FD9; --violet-ink:#4930B0; --violet-wash:#E6E2FA;
+  --void:#08060F; --ink:#F4F1FF; --ink-2:#C4BCDC; --muted:#8E86A8;
+  --glass:rgba(18,13,32,.56); --glass-hi:rgba(255,255,255,.30); --rim:rgba(255,255,255,.13);
+  --magenta:#F0479A; --violet:#8B6BFF; --amber:#FFB454;
   --display:"Bricolage Grotesque","Helvetica Neue",Arial,sans-serif;
   --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
   --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
-  --gap:clamp(20px,4vw,48px);
-  --maxw:1240px;
+  --gap:clamp(20px,4vw,44px); --maxw:1200px;
+  --lift:0 24px 60px -20px rgba(0,0,0,.8), 0 6px 20px -8px rgba(0,0,0,.6);
 }
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme="light"]){
-    --paper:#0E1013; --paper-2:#15181D; --card:#161A20;
-    --ink:#EDEFF2; --ink-2:#BEC5D0; --muted:#8B93A0; --rule:#272C34;
-    --violet:#9B86FF; --violet-ink:#B9A8FF; --violet-wash:#1E1934;
-  }
-}
-:root[data-theme="dark"]{
-  --paper:#0E1013; --paper-2:#15181D; --card:#161A20;
-  --ink:#EDEFF2; --ink-2:#BEC5D0; --muted:#8B93A0; --rule:#272C34;
-  --violet:#9B86FF; --violet-ink:#B9A8FF; --violet-wash:#1E1934;
-}
-
+/* A single committed visual world — a lit room with the form glowing in it. It carries its own
+   ground in every host theme rather than borrowing one, so light-mode viewers get the same
+   picture instead of an inverted, muddy one. */
 *{box-sizing:border-box}
-body{margin:0;background:var(--paper);color:var(--ink);
-  font-family:var(--serif);font-size:17px;line-height:1.62;
-  -webkit-font-smoothing:antialiased}
-img,canvas{max-width:100%;display:block}
-a{color:var(--violet-ink);text-decoration-thickness:1px;text-underline-offset:3px}
-a:focus-visible,button:focus-visible{outline:2px solid var(--violet);outline-offset:3px;border-radius:2px}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--void);color:var(--ink);font-family:var(--serif);
+  font-size:17px;line-height:1.62;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+canvas{display:block}
+a{color:var(--ink);text-underline-offset:3px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--magenta);outline-offset:3px}
+
+/* the live field, behind everything */
+#field{position:fixed;inset:0;width:100vw;height:100vh;z-index:0}
+#grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.32;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E")}
+#veil{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(120% 80% at 50% 0%, rgba(8,6,15,0) 0%, rgba(8,6,15,.55) 62%, rgba(8,6,15,.86) 100%)}
+main,header,footer{position:relative;z-index:2}
 
 .wrap{max-width:var(--maxw);margin:0 auto;padding:0 var(--gap)}
-.lab{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.16em;
-  text-transform:uppercase;color:var(--muted)}
-h1,h2,h3{font-family:var(--display);font-weight:800;letter-spacing:-.025em;
-  line-height:1.02;text-wrap:balance;margin:0}
-h1{font-size:clamp(46px,8.2vw,104px)}
-h2{font-size:clamp(30px,4.4vw,52px);letter-spacing:-.03em}
-h3{font-size:19px;font-weight:700;letter-spacing:-.01em;line-height:1.25}
+.lab{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+h1,h2,h3{font-family:var(--display);font-weight:800;letter-spacing:-.03em;line-height:.98;
+  text-wrap:balance;margin:0}
+h1{font-size:clamp(56px,11vw,152px);letter-spacing:-.045em}
+h2{font-size:clamp(34px,5.4vw,68px)}
+h3{font-size:20px;font-weight:700;letter-spacing:-.012em;line-height:1.22}
 p{margin:0}
-.lede{font-size:clamp(19px,2.1vw,23px);line-height:1.5;color:var(--ink-2);max-width:34ch}
-.prose{max-width:63ch;color:var(--ink-2)}
+.lede{font-size:clamp(19px,2.2vw,25px);line-height:1.46;color:var(--ink-2);max-width:36ch}
+.prose{max-width:62ch;color:var(--ink-2)}
+.glow{background:linear-gradient(96deg,var(--magenta),var(--violet) 52%,var(--amber));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
 
-/* ---- masthead ---- */
-.top{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--paper) 88%,transparent);
-  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--rule)}
-.top .wrap{display:flex;align-items:center;gap:18px;height:58px}
-.mark{font-family:var(--display);font-weight:800;font-size:17px;letter-spacing:.12em}
-.mark b{color:var(--violet)}
-.top nav{margin-left:auto;display:flex;gap:22px}
-.top nav a{font-family:var(--mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;
-  color:var(--muted);text-decoration:none}
+.glass{background:var(--glass);
+  -webkit-backdrop-filter:blur(22px) saturate(200%);backdrop-filter:blur(22px) saturate(200%);
+  box-shadow:inset 0 1px 0 0 var(--glass-hi), inset 0 0 0 .5px var(--rim), var(--lift);
+  border-radius:22px}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  .glass{background:rgba(14,10,26,.93)}
+}
+@media (prefers-reduced-transparency:reduce){
+  .glass{background:rgba(14,10,26,.95);-webkit-backdrop-filter:none;backdrop-filter:none}
+}
+
+/* masthead */
+.top{position:sticky;top:0;z-index:40}
+.top .bar{max-width:var(--maxw);margin:12px auto 0;display:flex;align-items:center;gap:18px;
+  height:56px;padding:0 20px;border-radius:999px}
+.mark{font-family:var(--display);font-weight:800;font-size:16px;letter-spacing:.16em}
+.top nav{margin-left:auto;display:flex;gap:20px}
+.top nav a{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);text-decoration:none;transition:color .18s}
 .top nav a:hover{color:var(--ink)}
-@media(max-width:760px){.top nav{display:none}}
+@media(max-width:820px){.top nav{display:none}}
 
-/* ---- hero ---- */
-.hero{padding:clamp(48px,7vw,96px) 0 0}
-.hero .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:var(--gap);align-items:end}
-@media(max-width:900px){.hero .grid{grid-template-columns:1fr}}
-h1 em{font-style:normal;color:var(--violet);display:block}
-.heroMeta{display:flex;flex-direction:column;gap:16px;padding-bottom:8px}
-.cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
-.btn{font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.1em;text-transform:uppercase;
-  padding:13px 22px;border:1px solid var(--ink);background:var(--ink);color:var(--paper);
-  text-decoration:none;cursor:pointer;transition:transform .16s ease,opacity .16s ease}
-.btn:hover{transform:translateY(-1px);opacity:.9}
-.btn.ghost{background:transparent;color:var(--ink);border-color:var(--rule)}
-.btn.ghost:hover{border-color:var(--ink)}
+.btn{display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.12em;
+  text-transform:uppercase;padding:15px 26px;border-radius:999px;border:0;cursor:pointer;
+  text-decoration:none;color:#14061A;
+  background:linear-gradient(96deg,var(--magenta),var(--violet));
+  box-shadow:0 10px 34px -10px rgba(240,71,154,.75), inset 0 1px 0 rgba(255,255,255,.4);
+  transition:transform .2s cubic-bezier(.3,1.2,.4,1), box-shadow .2s}
+.btn:hover{transform:translateY(-2px);box-shadow:0 16px 44px -10px rgba(240,71,154,.9), inset 0 1px 0 rgba(255,255,255,.5)}
+.btn.ghost{background:rgba(255,255,255,.07);color:var(--ink);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.24), inset 0 0 0 .5px var(--rim)}
+.btn.ghost:hover{background:rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.3), inset 0 0 0 .5px var(--rim)}
 
-/* the analysis strip: the product's own read of a track, drawn */
-.scope{margin-top:clamp(36px,5vw,64px);border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
-  background:var(--card)}
-.scope .inner{max-width:var(--maxw);margin:0 auto;padding:18px var(--gap) 22px}
-.scopeHead{display:flex;gap:18px;align-items:baseline;flex-wrap:wrap;margin-bottom:12px}
-#analysis{width:100%;height:132px}
-.scopeKey{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px}
-.scopeKey span{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--muted);display:flex;align-items:center;gap:6px}
-.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+/* hero */
+.hero{padding:clamp(60px,13vh,140px) 0 clamp(40px,7vh,80px);min-height:88vh;
+  display:flex;flex-direction:column;justify-content:center}
+h1 .l2{display:block}
+.heroRow{display:flex;gap:clamp(20px,4vw,56px);align-items:flex-end;flex-wrap:wrap;margin-top:34px}
+.cta{display:flex;gap:12px;flex-wrap:wrap}
 
-/* the output panel: where all the colour on this page lives */
-.stageWrap{display:grid;grid-template-columns:1.35fr 1fr;gap:1px;background:var(--rule);
-  border:1px solid var(--rule);margin-top:clamp(30px,4vw,44px)}
-@media(max-width:900px){.stageWrap{grid-template-columns:1fr}}
-.pane{background:var(--paper);padding:16px 18px 18px;display:flex;flex-direction:column;gap:10px}
-.pane.out{padding:0;position:relative;min-height:300px;background:#1A1030}
-#stage{width:100%;height:100%;position:absolute;inset:0}
-.pane.out .tag{position:absolute;left:16px;top:14px;z-index:2;color:rgba(255,255,255,.82)}
-.pane.out .tag2{position:absolute;left:16px;bottom:14px;z-index:2;color:rgba(255,255,255,.62)}
+/* the analysis readout, luminous */
+.scope{margin-top:clamp(34px,6vh,64px);padding:20px 22px 18px}
+.scopeHead{display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;margin-bottom:14px}
+#analysis{width:100%;height:112px}
+.scopeKey{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px}
+.scopeKey span{font-family:var(--mono);font-size:10px;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--muted);display:flex;align-items:center;gap:7px}
+.dot{width:7px;height:7px;border-radius:50%}
 
-/* the nine profiles */
-.forms{display:grid;grid-template-columns:repeat(9,1fr);gap:1px;background:var(--rule);
-  border:1px solid var(--rule);margin-top:28px}
-@media(max-width:900px){.forms{grid-template-columns:repeat(3,1fr)}}
-.form{background:var(--paper);padding:14px 8px 12px;display:flex;flex-direction:column;
-  align-items:center;gap:8px}
-.form canvas{width:100%;max-width:78px;aspect-ratio:1}
-.form span{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--muted);text-align:center}
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);margin-top:clamp(28px,5vh,52px);overflow:hidden}
+@media(max-width:760px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{padding:24px 20px;border-right:1px solid rgba(255,255,255,.08)}
+.stat:last-child{border-right:0}
+@media(max-width:760px){.stat:nth-child(2){border-right:0}}
+.stat b{display:block;font-family:var(--display);font-weight:800;font-size:clamp(30px,4vw,46px);
+  letter-spacing:-.04em;line-height:1;font-variant-numeric:tabular-nums}
+.stat span{display:block;margin-top:8px}
 
-/* format cards drawn at their real proportions */
-.ratios{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--rule);
-  border:1px solid var(--rule);margin-top:28px}
+/* sections */
+.sec{padding:clamp(70px,11vh,140px) 0;scroll-margin-top:80px}
+.card{padding:clamp(28px,4vw,52px)}
+.secHead{display:flex;gap:14px;align-items:baseline;margin-bottom:26px;flex-wrap:wrap}
+.secHead .num{font-family:var(--mono);font-size:11px;letter-spacing:.16em;
+  background:linear-gradient(96deg,var(--magenta),var(--violet));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+
+/* the gallery — six renders at once, which is the argument */
+.gal{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:32px}
+@media(max-width:820px){.gal{grid-template-columns:repeat(2,1fr)}}
+.tile{position:relative;aspect-ratio:1;border-radius:16px;overflow:hidden;
+  box-shadow:inset 0 0 0 .5px var(--rim), 0 14px 34px -14px rgba(0,0,0,.8)}
+.tile canvas{width:100%;height:100%}
+.tile span{position:absolute;left:12px;bottom:10px;font-family:var(--mono);font-size:9.5px;
+  letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.72);z-index:2}
+
+/* steps */
+.steps{display:grid;gap:14px;margin-top:30px}
+.step{padding:24px 26px;display:grid;grid-template-columns:40px 1fr;gap:18px;border-radius:16px;
+  background:rgba(255,255,255,.045);box-shadow:inset 0 0 0 .5px var(--rim)}
+.step .n{font-family:var(--mono);font-size:12px;letter-spacing:.1em;padding-top:3px;color:var(--magenta)}
+.step p{margin-top:9px;color:var(--muted);font-size:15.5px;line-height:1.56;max-width:60ch}
+
+/* formats */
+.ratios{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:30px}
 @media(max-width:860px){.ratios{grid-template-columns:repeat(2,1fr)}}
-.ratio{background:var(--paper);padding:20px 16px;display:flex;flex-direction:column;gap:12px;
-  align-items:flex-start}
-/* The five proportions are the content, so they share one baseline -- boxes bottom-aligned in a
-   fixed well, which puts every caption on the same line and lets the shapes be compared. */
-.ratio .well{width:100%;height:150px;display:flex;align-items:flex-end;justify-content:center}
-/* Sized EXPLICITLY rather than by aspect-ratio plus a max-width. A 16:9 box asked to be 150 tall
-   wants 267 wide; clamping that to 96 leaves a 96x150 rectangle that is not 16:9 at all, and a
-   panel whose whole job is to show proportion had stopped showing it. Each is pre-fitted to the
-   150x110 well instead, so every one is exactly its own ratio. */
-.ratio .box{background:linear-gradient(150deg,var(--violet),#C0399B);border-radius:2px}
-.ratio .meta{display:flex;flex-direction:column;gap:5px}
-.ratio b{font-family:var(--serif);font-weight:600;font-size:15px;line-height:1.25}
-.ratio span{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--muted);
+.ratio{padding:20px 16px 18px;border-radius:16px;background:rgba(255,255,255,.045);
+  box-shadow:inset 0 0 0 .5px var(--rim);display:flex;flex-direction:column;gap:14px}
+.well{height:150px;display:flex;align-items:flex-end;justify-content:center}
+.box{border-radius:3px;background:linear-gradient(150deg,var(--violet),var(--magenta));
+  box-shadow:0 8px 24px -8px rgba(240,71,154,.6)}
+.ratio b{font-family:var(--serif);font-weight:600;font-size:15px;line-height:1.24}
+.ratio span{font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;color:var(--muted);
   font-variant-numeric:tabular-nums}
 
-/* sections arrive */
-.reveal{opacity:0;transform:translateY(14px);
-  transition:opacity .7s cubic-bezier(.2,.7,.3,1), transform .7s cubic-bezier(.2,.7,.3,1)}
-.reveal.in{opacity:1;transform:none}
+/* profiles */
+.forms{display:grid;grid-template-columns:repeat(9,1fr);gap:8px;margin-top:26px}
+@media(max-width:900px){.forms{grid-template-columns:repeat(3,1fr)}}
+.form{padding:12px 6px 10px;border-radius:14px;background:rgba(255,255,255,.04);
+  box-shadow:inset 0 0 0 .5px var(--rim);display:flex;flex-direction:column;align-items:center;gap:9px}
+.form canvas{width:100%;max-width:70px;aspect-ratio:1}
+.form span{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 
-/* ---- counters ---- */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--rule);
-  border:1px solid var(--rule);margin:clamp(40px,6vw,72px) 0}
-@media(max-width:760px){.stats{grid-template-columns:repeat(2,1fr)}}
-.stat{background:var(--paper);padding:20px 18px}
-.stat b{display:block;font-family:var(--display);font-weight:800;font-size:clamp(26px,3.4vw,38px);
-  letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1.05}
-.stat span{display:block;margin-top:6px}
-
-/* ---- sections with an index rail ---- */
-.sec{padding:clamp(52px,7vw,96px) 0;border-top:1px solid var(--rule);scroll-margin-top:58px}
-.sec .cols{display:grid;grid-template-columns:150px 1fr;gap:var(--gap);align-items:start}
-@media(max-width:860px){.sec .cols{grid-template-columns:1fr;gap:22px}}
-.rail{position:sticky;top:82px}
-@media(max-width:860px){.rail{position:static}}
-.rail .lab{display:block}
-.rail .num{font-family:var(--mono);font-size:11px;color:var(--violet);letter-spacing:.14em;
-  display:block;margin-bottom:8px}
-
-/* ---- steps: a real sequence, so it is numbered ---- */
-.steps{display:grid;gap:2px;background:var(--rule);border:1px solid var(--rule);margin-top:30px}
-.step{background:var(--paper);padding:24px 24px 26px;display:grid;grid-template-columns:38px 1fr;gap:18px}
-.step .n{font-family:var(--mono);font-size:12px;color:var(--violet);letter-spacing:.1em;padding-top:3px}
-.step p{margin-top:8px;color:var(--muted);font-size:15.5px;line-height:1.58;max-width:60ch}
-
-/* ---- tables ---- */
-.tableWrap{overflow-x:auto;margin-top:28px;border:1px solid var(--rule)}
-table{border-collapse:collapse;width:100%;min-width:520px;background:var(--paper)}
-th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--rule);font-size:14.5px}
-th{font-family:var(--mono);font-size:10.5px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--muted);background:var(--card)}
-td{font-family:var(--mono);font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
-td.name{font-family:var(--serif);font-size:15.5px;color:var(--ink)}
-tr:last-child td{border-bottom:0}
-
-/* ---- pricing ---- */
-.packs{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);
-  border:1px solid var(--rule);margin-top:30px}
+/* pricing */
+.packs{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:32px}
 @media(max-width:860px){.packs{grid-template-columns:1fr}}
-.pack{background:var(--paper);padding:26px 24px 28px;display:flex;flex-direction:column;gap:14px}
-.pack.feature{background:var(--violet-wash)}
-.pack .price{font-family:var(--display);font-weight:800;font-size:44px;letter-spacing:-.035em;
-  font-variant-numeric:tabular-nums;line-height:1}
-.pack .price small{font-family:var(--mono);font-size:12px;font-weight:400;letter-spacing:.08em;
-  color:var(--muted);margin-left:6px;white-space:nowrap}
-.pack ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:9px}
-.pack li{font-size:14.5px;color:var(--ink-2);padding-left:18px;position:relative}
-.pack li::before{content:"";position:absolute;left:0;top:.62em;width:7px;height:1.5px;background:var(--violet)}
+.pack{padding:30px 26px 30px;border-radius:20px;background:rgba(255,255,255,.045);
+  box-shadow:inset 0 0 0 .5px var(--rim);display:flex;flex-direction:column;gap:16px}
+.pack.feature{background:linear-gradient(165deg,rgba(240,71,154,.20),rgba(139,107,255,.16));
+  box-shadow:inset 0 0 0 1px rgba(240,71,154,.4), 0 20px 50px -20px rgba(240,71,154,.5)}
+.pack .price{font-family:var(--display);font-weight:800;font-size:50px;letter-spacing:-.045em;
+  line-height:1;font-variant-numeric:tabular-nums}
+.pack .price small{font-family:var(--mono);font-size:12px;font-weight:400;letter-spacing:.06em;
+  color:var(--muted);margin-left:7px;white-space:nowrap}
+.pack ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.pack li{font-size:14.5px;color:var(--ink-2);padding-left:20px;position:relative}
+.pack li::before{content:"";position:absolute;left:0;top:.6em;width:9px;height:2px;border-radius:2px;
+  background:linear-gradient(90deg,var(--magenta),var(--violet))}
 .pack .btn{margin-top:auto;text-align:center}
 
-/* ---- faq ---- */
-.faq{margin-top:26px;border-top:1px solid var(--rule)}
-details{border-bottom:1px solid var(--rule)}
-summary{cursor:pointer;list-style:none;padding:17px 0;font-family:var(--display);font-weight:700;
-  font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:14px}
+/* faq */
+details{border-bottom:1px solid rgba(255,255,255,.09)}
+details:last-of-type{border-bottom:0}
+summary{cursor:pointer;list-style:none;padding:19px 0;font-family:var(--display);font-weight:700;
+  font-size:18px;letter-spacing:-.012em;display:flex;align-items:center;gap:14px}
 summary::-webkit-details-marker{display:none}
-summary::after{content:"+";margin-left:auto;font-family:var(--mono);color:var(--violet);font-size:17px}
+summary::after{content:"+";margin-left:auto;font-family:var(--mono);font-size:18px;color:var(--magenta)}
 details[open] summary::after{content:"\2212"}
-details .prose{padding:0 0 20px;font-size:15.5px}
+details .prose{padding:0 0 22px;font-size:15.5px}
 
-/* ---- close ---- */
-.end{padding:clamp(60px,9vw,120px) 0;border-top:1px solid var(--rule);text-align:left}
-.end h2{max-width:16ch}
-footer{border-top:1px solid var(--rule);padding:26px 0 40px}
+/* close */
+.end{padding:clamp(80px,14vh,170px) 0}
+.end h2{max-width:15ch}
+footer{padding:34px 0 52px}
 footer .wrap{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
-footer .lab{margin-left:auto}
+footer .lab:last-child{margin-left:auto}
 
-@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.reveal{opacity:0;transform:translateY(20px);
+  transition:opacity .8s cubic-bezier(.2,.7,.3,1),transform .8s cubic-bezier(.2,.7,.3,1)}
+.reveal.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *{animation:none!important;transition:none!important}
+  .reveal{opacity:1;transform:none}
+}
+/* ---- MICRO-INTERACTIONS ----
+   Small, and each one tied to something real: where the pointer is, how far the page has been
+   read, whether a tile is being looked at. Movement that answers the reader rather than movement
+   that runs at them. All of it collapses under prefers-reduced-motion at the foot of the sheet. */
+
+/* how far through the page you are, on the top edge */
+#prog{position:fixed;top:0;left:0;height:2px;width:0;z-index:60;
+  background:linear-gradient(90deg,var(--magenta),var(--violet),var(--amber));
+  box-shadow:0 0 12px rgba(240,71,154,.8);transition:width .08s linear}
+
+/* a highlight that follows the pointer across the glass, as a real sheet would catch a light */
+.glass{position:relative;overflow:hidden}
+.glass::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(340px circle at var(--mx,50%) var(--my,0%),
+    rgba(255,255,255,.09), transparent 62%);
+  opacity:0;transition:opacity .35s ease}
+.glass:hover::before{opacity:1}
+.card>*,.scope>*,.stats>*,.bar>*{position:relative;z-index:1}
+
+/* buttons: a shine that sweeps across on hover, and a pull toward the cursor */
+.btn{position:relative;overflow:hidden;will-change:transform}
+.btn::after{content:"";position:absolute;top:0;left:-140%;width:60%;height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.42),transparent);
+  transform:skewX(-18deg);transition:left .6s cubic-bezier(.3,.9,.3,1)}
+.btn:hover::after{left:160%}
+
+/* nav: the rule draws itself in from the left */
+.top nav a{position:relative;padding-bottom:3px}
+.top nav a::after{content:"";position:absolute;left:0;bottom:0;width:100%;height:1px;
+  background:linear-gradient(90deg,var(--magenta),var(--violet));
+  transform:scaleX(0);transform-origin:left;transition:transform .32s cubic-bezier(.3,.9,.3,1)}
+.top nav a:hover::after{transform:scaleX(1)}
+
+/* gallery tiles lift and warm when you look at one */
+.tile{transition:transform .4s cubic-bezier(.2,.9,.3,1), box-shadow .4s ease;will-change:transform}
+.tile:hover{transform:translateY(-6px) scale(1.018);
+  box-shadow:inset 0 0 0 .5px rgba(255,255,255,.3), 0 26px 54px -18px rgba(240,71,154,.55)}
+.tile span{transition:color .3s ease}
+.tile:hover span{color:#fff}
+
+/* the profile glyphs turn when hovered -- the forms actually rotate in the render */
+.form{transition:transform .34s cubic-bezier(.2,1.1,.35,1), background .3s ease}
+.form:hover{transform:translateY(-4px);background:rgba(255,255,255,.09)}
+.form canvas{transition:transform .5s cubic-bezier(.25,.9,.3,1)}
+.form:hover canvas{transform:rotate(28deg) scale(1.07)}
+
+/* pricing: the featured pack breathes very slightly, the others lift on hover */
+.pack{transition:transform .34s cubic-bezier(.2,.9,.3,1), box-shadow .34s ease}
+.pack:hover{transform:translateY(-5px)}
+.pack.feature{animation:packBreathe 6s ease-in-out infinite}
+@keyframes packBreathe{
+  0%,100%{box-shadow:inset 0 0 0 1px rgba(240,71,154,.4), 0 20px 50px -20px rgba(240,71,154,.45)}
+  50%    {box-shadow:inset 0 0 0 1px rgba(240,71,154,.62), 0 26px 62px -20px rgba(240,71,154,.72)}
+}
+
+/* steps and format cards: a quiet lift, so the grid feels touchable rather than printed */
+.step,.ratio{transition:transform .3s cubic-bezier(.2,.9,.3,1), background .3s ease}
+.step:hover,.ratio:hover{transform:translateY(-3px);background:rgba(255,255,255,.075)}
+
+/* the FAQ answer unrolls instead of appearing */
+details[open] .prose{animation:unroll .42s cubic-bezier(.2,.8,.3,1)}
+@keyframes unroll{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+summary::after{transition:transform .3s cubic-bezier(.3,1.2,.4,1)}
+summary:hover::after{transform:rotate(90deg) scale(1.15)}
+
+/* children of a revealed block arrive one after another rather than all at once */
+.stagger>*{opacity:0;transform:translateY(14px)}
+.in .stagger>*{animation:riseIn .62s cubic-bezier(.2,.8,.3,1) forwards}
+.in .stagger>*:nth-child(1){animation-delay:.04s}
+.in .stagger>*:nth-child(2){animation-delay:.10s}
+.in .stagger>*:nth-child(3){animation-delay:.16s}
+.in .stagger>*:nth-child(4){animation-delay:.22s}
+.in .stagger>*:nth-child(5){animation-delay:.28s}
+.in .stagger>*:nth-child(6){animation-delay:.34s}
+@keyframes riseIn{to{opacity:1;transform:none}}
+
+@media(prefers-reduced-motion:reduce){
+  #prog{transition:none}
+  .btn::after,.pack.feature{animation:none;transition:none}
+  .stagger>*{opacity:1;transform:none;animation:none}
+  .tile:hover,.pack:hover,.step:hover,.ratio:hover,.form:hover{transform:none}
+}
 </style>
 
+<div id="prog" aria-hidden="true"></div>
+<canvas id="field" aria-hidden="true"></canvas>
+<div id="veil" aria-hidden="true"></div>
+<div id="grain" aria-hidden="true"></div>
+
 <header class="top">
-  <div class="wrap">
-    <span class="mark">ATON<b>A</b>L</span>
-    <nav>
-      <a href="#what">What it does</a>
-      <a href="#how">How it works</a>
-      <a href="#formats">Formats</a>
-      <a href="#pricing">Pricing</a>
-    </nav>
+  <div class="wrap" style="padding:0">
+    <div class="bar glass" style="margin-left:var(--gap);margin-right:var(--gap)">
+      <span class="mark">ATONAL</span>
+      <nav>
+        <a href="#what">What it does</a>
+        <a href="#gallery">Gallery</a>
+        <a href="#how">How it works</a>
+        <a href="#formats">Formats</a>
+        <a href="#pricing">Pricing</a>
+      </nav>
+    </div>
   </div>
 </header>
 
 <main>
   <section class="hero">
     <div class="wrap">
-      <div class="grid">
-        <div>
-          <p class="lab" style="margin-bottom:20px">Music&nbsp;→&nbsp;Moving image</p>
-          <h1>Your track,<br>rendered as<em>an object.</em></h1>
-        </div>
-        <div class="heroMeta">
-          <p class="lede">Upload a track. ATONAL analyses it — tempo, sections, every
-            individual hit — and directs a sculpture that moves to it. Export for
-            Reels, TikTok or YouTube.</p>
-          <div class="cta">
-            <a class="btn" href="#pricing">Render a track</a>
-            <a class="btn ghost" href="#how">See how it works</a>
-          </div>
-          <p class="lab">Pay per export &middot; no subscription</p>
+      <p class="lab">Music &rarr; moving image</p>
+      <h1 style="margin-top:22px">Your track,<span class="l2 glow">made visible.</span></h1>
+      <div class="heroRow">
+        <p class="lede">Upload a track. ATONAL reads its tempo, its sections and every
+          individual hit, then directs a sculpture that moves to it &mdash; and renders it
+          for Reels, TikTok or YouTube.</p>
+        <div class="cta">
+          <a class="btn" href="#pricing">Render a track</a>
+          <a class="btn ghost" href="#gallery">See it move</a>
         </div>
       </div>
-    </div>
 
-    <div class="scope">
-      <div class="inner">
+      <div class="scope glass reveal">
         <div class="scopeHead">
           <span class="lab">Analysis &mdash; live read</span>
-          <span class="lab" style="color:var(--violet)">176.32 BPM &middot; 17 sections &middot; 4,988 onsets</span>
+          <span class="lab" style="color:var(--magenta)">176.32 BPM &middot; 17 sections &middot; 4,988 onsets</span>
         </div>
-        <div class="stageWrap">
-          <div class="pane">
-            <span class="lab">In &mdash; what the analysis found</span>
-            <canvas id="analysis" width="2400" height="264" aria-label="A visualisation of one track's analysis: section blocks, a beat grid, and onset markers across five frequency bands, with a playhead sweeping across."></canvas>
-            <div class="scopeKey">
-              <span><i class="dot" style="background:var(--violet)"></i>Sections</span>
-              <span><i class="dot" style="background:var(--muted)"></i>Beat grid</span>
-              <span><i class="dot" style="background:var(--ink-2)"></i>Onsets &mdash; sub / low / mid / high / air</span>
-            </div>
-          </div>
-          <div class="pane out">
-            <span class="lab tag">Out &mdash; what it renders</span>
-            <canvas id="stage" aria-label="An animated impression of the rendered output: a symmetrical form turning over a drifting colour field, changing profile every few seconds."></canvas>
-            <span class="lab tag2">Form &middot; fold &middot; palette, all directed</span>
-          </div>
+        <canvas id="analysis" aria-label="One track's analysis: section blocks, a beat grid and onset markers across five frequency bands, with a playhead sweeping across."></canvas>
+        <div class="scopeKey">
+          <span><i class="dot" style="background:var(--magenta)"></i>Sections</span>
+          <span><i class="dot" style="background:var(--violet)"></i>Beat grid</span>
+          <span><i class="dot" style="background:var(--ink-2)"></i>Onsets &mdash; sub / low / mid / high / air</span>
         </div>
       </div>
-    </div>
 
-    <div class="wrap">
-      <div class="stats">
-        <div class="stat"><b>4,988</b><span class="lab">Sounds located</span></div>
-        <div class="stat"><b>734</b><span class="lab">Beats tracked</span></div>
-        <div class="stat"><b>17</b><span class="lab">Sections found</span></div>
-        <div class="stat"><b>60<small style="font-size:.5em"> fps</small></b><span class="lab">Every exported frame</span></div>
+      <div class="stats glass reveal">
+        <div class="stat"><b class="glow" data-count="4988">0</b><span class="lab">Sounds located</span></div>
+        <div class="stat"><b class="glow" data-count="734">0</b><span class="lab">Beats tracked</span></div>
+        <div class="stat"><b class="glow" data-count="17">0</b><span class="lab">Sections found</span></div>
+        <div class="stat"><b class="glow" data-count="60">0</b><span class="lab">Frames a second, every one</span></div>
       </div>
-      <p class="lab" style="margin-top:-40px">Figures from one four-minute track</p>
     </div>
   </section>
 
+  <section class="sec reveal" id="gallery">
+    <div class="wrap"><div class="card glass">
+      <div class="secHead"><span class="num">01</span><span class="lab">Gallery</span></div>
+      <h2>One engine. Every track its own.</h2>
+      <p class="prose" style="margin-top:20px">Nine forms, nine materials, a palette that follows
+        the music. Every one of these came out of the same renderer &mdash; what separates them
+        is the track underneath.</p>
+      <div class="gal stagger">
+        <div class="tile"><canvas data-tile="0"></canvas><span>Triskelion &middot; chrome</span></div>
+        <div class="tile"><canvas data-tile="1"></canvas><span>Clover &middot; pearl</span></div>
+        <div class="tile"><canvas data-tile="2"></canvas><span>Gear &middot; gold</span></div>
+        <div class="tile"><canvas data-tile="3"></canvas><span>Knot &middot; glass</span></div>
+        <div class="tile"><canvas data-tile="4"></canvas><span>Lattice &middot; holo</span></div>
+        <div class="tile"><canvas data-tile="5"></canvas><span>Wave &middot; frosted</span></div>
+      </div>
+    </div></div>
+  </section>
+
   <section class="sec reveal" id="what">
-    <div class="wrap"><div class="cols">
-      <div class="rail"><span class="num">01</span><span class="lab">What it does</span></div>
-      <div>
-        <h2>It isn&rsquo;t reacting to the music. It&rsquo;s reading it.</h2>
-        <div class="prose" style="margin-top:22px;display:flex;flex-direction:column;gap:18px">
-          <p>Most music visualisers are a level meter with a shape attached. They bounce
-            when the volume goes up, and that is the whole of the relationship.</p>
-          <p>ATONAL analyses the whole track before it draws a single frame. It finds the
-            beat grid and where the bars start. It segments the track into intro, breakdown,
-            build, groove, drop. It locates every individual hit and files it by frequency
-            band, so a kick and a hi-hat drive different things. Then it directs the piece
-            from that: the form changes shape at section boundaries and lands on downbeats,
-            the kaleidoscope opens for the loudest passages, the rotation is locked to the
-            tempo rather than to a clock.</p>
-          <p><strong>The same track always produces the same film.</strong> There is no
-            randomness in the direction — a returning chorus comes back as the form it was
-            the first time. You can render it again and get the same result.</p>
-        </div>
-        <p class="lab" style="margin-top:36px">Nine profiles &mdash; the Director picks from these</p>
-        <div class="forms">
-          <div class="form"><canvas data-form="arc"></canvas><span>Arc</span></div>
-          <div class="form"><canvas data-form="chevron"></canvas><span>Chevron</span></div>
-          <div class="form"><canvas data-form="lattice"></canvas><span>Lattice</span></div>
-          <div class="form"><canvas data-form="clover"></canvas><span>Clover</span></div>
-          <div class="form"><canvas data-form="knot"></canvas><span>Knot</span></div>
-          <div class="form"><canvas data-form="plate"></canvas><span>Plate</span></div>
-          <div class="form"><canvas data-form="wave"></canvas><span>Wave</span></div>
-          <div class="form"><canvas data-form="triskelion"></canvas><span>Triskelion</span></div>
-          <div class="form"><canvas data-form="gear"></canvas><span>Gear</span></div>
-        </div>
-        <p class="lab" style="margin-top:12px">Ordered calm to intense &mdash; where a section lands
-          is where its energy sits among the track&rsquo;s own</p>
+    <div class="wrap"><div class="card glass">
+      <div class="secHead"><span class="num">02</span><span class="lab">What it does</span></div>
+      <h2>It isn&rsquo;t reacting to the music. It&rsquo;s reading it.</h2>
+      <div class="prose" style="margin-top:24px;display:flex;flex-direction:column;gap:18px">
+        <p>Most music visualisers are a level meter with a shape attached. They bounce when the
+          volume goes up, and that is the whole of the relationship.</p>
+        <p>ATONAL analyses the whole track before it draws a single frame. It finds the beat grid
+          and where the bars start. It segments the track into intro, breakdown, build, groove,
+          drop. It locates every individual hit and files it by frequency band, so a kick and a
+          hi-hat drive different things. Then it directs from that: the form changes shape at
+          section boundaries and lands on downbeats, the kaleidoscope opens for the loudest
+          passages, the rotation is locked to the tempo rather than to a clock.</p>
+        <p><strong style="color:var(--ink)">The same track always produces the same film.</strong>
+          There is no randomness in the direction &mdash; a returning chorus comes back as the form
+          it was the first time.</p>
+      </div>
+      <p class="lab" style="margin-top:36px">Nine profiles &mdash; ordered calm to intense</p>
+      <div class="forms">
+        <div class="form"><canvas data-form="arc"></canvas><span>Arc</span></div>
+        <div class="form"><canvas data-form="chevron"></canvas><span>Chevron</span></div>
+        <div class="form"><canvas data-form="lattice"></canvas><span>Lattice</span></div>
+        <div class="form"><canvas data-form="clover"></canvas><span>Clover</span></div>
+        <div class="form"><canvas data-form="knot"></canvas><span>Knot</span></div>
+        <div class="form"><canvas data-form="plate"></canvas><span>Plate</span></div>
+        <div class="form"><canvas data-form="wave"></canvas><span>Wave</span></div>
+        <div class="form"><canvas data-form="triskelion"></canvas><span>Triskelion</span></div>
+        <div class="form"><canvas data-form="gear"></canvas><span>Gear</span></div>
       </div>
     </div></div>
   </section>
 
   <section class="sec reveal" id="how">
-    <div class="wrap"><div class="cols">
-      <div class="rail"><span class="num">02</span><span class="lab">How it works</span></div>
-      <div>
-        <h2>Three steps, one of which is waiting.</h2>
-        <div class="steps">
-          <div class="step">
-            <span class="n">01</span>
-            <div>
-              <h3>Upload a track</h3>
-              <p>MP3, WAV or FLAC. Analysis takes about ten seconds for a four-minute track
-                and reports what it found — tempo, genre, the section map — before you commit
-                to anything.</p>
-            </div>
-          </div>
-          <div class="step">
-            <span class="n">02</span>
-            <div>
-              <h3>Direct it, or don&rsquo;t</h3>
-              <p>The default is fully automatic: shape, material, palette, motion and camera
-                are all chosen from the analysis. If you want a say, every one of them is a
-                control — nine forms, nine materials from chrome to glass, six palettes, and
-                a set of film filters. Change nothing and it still works.</p>
-            </div>
-          </div>
-          <div class="step">
-            <span class="n">03</span>
-            <div>
-              <h3>Pick a format and render</h3>
-              <p>Choose the destination and the length, and it renders offline at full
-                quality — every frame at 60fps with none dropped, however heavy the scene.
-                A fifteen-second clip takes a few minutes. You get an MP4.</p>
-            </div>
-          </div>
-        </div>
+    <div class="wrap"><div class="card glass">
+      <div class="secHead"><span class="num">03</span><span class="lab">How it works</span></div>
+      <h2>Three steps, one of which is waiting.</h2>
+      <div class="steps stagger">
+        <div class="step"><span class="n">01</span><div>
+          <h3>Upload a track</h3>
+          <p>MP3, WAV or FLAC. Analysis takes about ten seconds for a four-minute track and
+            reports what it found &mdash; tempo, genre, the section map &mdash; before you commit
+            to anything.</p></div></div>
+        <div class="step"><span class="n">02</span><div>
+          <h3>Direct it, or don&rsquo;t</h3>
+          <p>The default is fully automatic. If you want a say, every decision is a control &mdash;
+            nine forms, nine materials from chrome to glass, six palettes, a set of film filters.
+            Change nothing and it still works.</p></div></div>
+        <div class="step"><span class="n">03</span><div>
+          <h3>Pick a format and render</h3>
+          <p>Choose the destination and the length. It renders offline at full quality &mdash;
+            every frame at 60fps with none dropped, however heavy the scene &mdash; and gives you
+            an MP4 with your audio in it.</p></div></div>
       </div>
     </div></div>
   </section>
 
   <section class="sec reveal" id="formats">
-    <div class="wrap"><div class="cols">
-      <div class="rail"><span class="num">03</span><span class="lab">Formats</span></div>
-      <div>
-        <h2>Sized for where it&rsquo;s going.</h2>
-        <p class="prose" style="margin-top:20px">Rendered at the exact pixel dimensions of the
-          destination, so nothing is cropped or rescaled after the fact. H.264 in an MP4 —
-          the one file that plays everywhere without being touched.</p>
-        <div class="ratios">
-          <div class="ratio"><div class="well"><div class="box" style="width:84px;height:150px"></div></div>
-            <div class="meta"><b>Reels &middot; TikTok<br>Shorts</b><span>1080 &times; 1920 &middot; 9:16</span></div></div>
-          <div class="ratio"><div class="well"><div class="box" style="width:110px;height:138px"></div></div>
-            <div class="meta"><b>Instagram<br>portrait</b><span>1080 &times; 1350 &middot; 4:5</span></div></div>
-          <div class="ratio"><div class="well"><div class="box" style="width:110px;height:110px"></div></div>
-            <div class="meta"><b>Instagram<br>square</b><span>1080 &times; 1080 &middot; 1:1</span></div></div>
-          <div class="ratio"><div class="well"><div class="box" style="width:110px;height:62px"></div></div>
-            <div class="meta"><b>YouTube<br>1080p</b><span>1920 &times; 1080 &middot; 16:9</span></div></div>
-          <div class="ratio"><div class="well"><div class="box" style="width:110px;height:62px"></div></div>
-            <div class="meta"><b>YouTube<br>4K</b><span>3840 &times; 2160 &middot; 16:9</span></div></div>
-        </div>
+    <div class="wrap"><div class="card glass">
+      <div class="secHead"><span class="num">04</span><span class="lab">Formats</span></div>
+      <h2>Sized for where it&rsquo;s going.</h2>
+      <p class="prose" style="margin-top:20px">Rendered at the exact pixel dimensions of the
+        destination, so nothing is cropped or rescaled afterwards. H.264 in an MP4 &mdash; the one
+        file that plays everywhere without being touched.</p>
+      <div class="ratios stagger">
+        <div class="ratio"><div class="well"><div class="box" style="width:84px;height:150px"></div></div>
+          <b>Reels &middot; TikTok<br>Shorts</b><span>1080 &times; 1920 &middot; 9:16</span></div>
+        <div class="ratio"><div class="well"><div class="box" style="width:110px;height:138px"></div></div>
+          <b>Instagram<br>portrait</b><span>1080 &times; 1350 &middot; 4:5</span></div>
+        <div class="ratio"><div class="well"><div class="box" style="width:110px;height:110px"></div></div>
+          <b>Instagram<br>square</b><span>1080 &times; 1080 &middot; 1:1</span></div>
+        <div class="ratio"><div class="well"><div class="box" style="width:110px;height:62px"></div></div>
+          <b>YouTube<br>1080p</b><span>1920 &times; 1080 &middot; 16:9</span></div>
+        <div class="ratio"><div class="well"><div class="box" style="width:110px;height:62px"></div></div>
+          <b>YouTube<br>4K</b><span>3840 &times; 2160 &middot; 16:9</span></div>
       </div>
     </div></div>
   </section>
 
   <section class="sec reveal" id="pricing">
-    <div class="wrap"><div class="cols">
-      <div class="rail"><span class="num">04</span><span class="lab">Pricing</span></div>
-      <div>
-        <h2>Pay for what you render.</h2>
-        <p class="prose" style="margin-top:20px">One credit renders one clip up to 60 seconds,
-          at any format including 4K. Credits don&rsquo;t expire. Analysis and preview are free
-          and unlimited — you only spend a credit when you export.</p>
-        <div class="packs">
-          <div class="pack">
-            <span class="lab">Single</span>
-            <div class="price">&euro;6<small>/ clip</small></div>
-            <ul>
-              <li>One export, up to 60 seconds</li>
-              <li>Every format up to 4K</li>
-              <li>No watermark</li>
-            </ul>
-            <a class="btn ghost" href="#">Render one</a>
-          </div>
-          <div class="pack feature">
-            <span class="lab">Pack of 10</span>
-            <div class="price">&euro;45<small>/ &euro;4.50 ea</small></div>
-            <ul>
-              <li>Ten exports, credits never expire</li>
-              <li>Every format up to 4K</li>
-              <li>No watermark</li>
-              <li>Commercial use included</li>
-            </ul>
-            <a class="btn" href="#">Buy 10 credits</a>
-          </div>
-          <div class="pack">
-            <span class="lab">Pack of 50</span>
-            <div class="price">&euro;175<small>/ &euro;3.50 ea</small></div>
-            <ul>
-              <li>Fifty exports, credits never expire</li>
-              <li>Every format up to 4K</li>
-              <li>No watermark</li>
-              <li>Commercial use included</li>
-              <li>Priority render queue</li>
-            </ul>
-            <a class="btn ghost" href="#">Buy 50 credits</a>
-          </div>
+    <div class="wrap"><div class="card glass">
+      <div class="secHead"><span class="num">05</span><span class="lab">Pricing</span></div>
+      <h2>Pay for what you render.</h2>
+      <p class="prose" style="margin-top:20px">One credit renders one clip up to 60 seconds, at any
+        format including 4K, with audio. Credits don&rsquo;t expire. Analysis and preview are free
+        and unlimited &mdash; you only spend a credit when you export.</p>
+      <div class="packs stagger">
+        <div class="pack">
+          <span class="lab">Single</span>
+          <div class="price">&euro;6<small>/ clip</small></div>
+          <ul><li>One export, up to 60 seconds</li><li>Every format up to 4K</li><li>No watermark</li></ul>
+          <a class="btn ghost" href="#">Render one</a>
         </div>
-        <p class="lab" style="margin-top:18px">Label or agency, rendering at volume?
-          <a href="#" style="color:var(--violet-ink)">Talk to us</a></p>
+        <div class="pack feature">
+          <span class="lab">Pack of 10</span>
+          <div class="price">&euro;45<small>/ &euro;4.50 ea</small></div>
+          <ul><li>Ten exports, credits never expire</li><li>Every format up to 4K</li>
+            <li>No watermark</li><li>Commercial use included</li></ul>
+          <a class="btn" href="#">Buy 10 credits</a>
+        </div>
+        <div class="pack">
+          <span class="lab">Pack of 50</span>
+          <div class="price">&euro;175<small>/ &euro;3.50 ea</small></div>
+          <ul><li>Fifty exports, credits never expire</li><li>Every format up to 4K</li>
+            <li>No watermark</li><li>Commercial use included</li><li>Priority render queue</li></ul>
+          <a class="btn ghost" href="#">Buy 50 credits</a>
+        </div>
       </div>
+      <p class="lab" style="margin-top:20px">Label or agency, rendering at volume?
+        <a href="#" style="color:var(--magenta)">Talk to us</a></p>
     </div></div>
   </section>
 
   <section class="sec reveal" id="faq">
-    <div class="wrap"><div class="cols">
-      <div class="rail"><span class="num">05</span><span class="lab">Questions</span></div>
-      <div>
-        <h2>Before you upload.</h2>
-        <div class="faq">
-          <details open>
-            <summary>Do I own what comes out?</summary>
-            <div class="prose">Yes. Exports on a paid credit are yours to use commercially —
-              releases, promos, client work, paid ads. We claim nothing over your music or
-              the visuals rendered from it.</div>
-          </details>
-          <details>
-            <summary>Does the export include my audio?</summary>
-            <div class="prose">Not yet. Exports are video only, at exactly the length you
-              chose, so the track lines up when you drop it into an editor or add the
-              original audio in the platform&rsquo;s own picker. Muxed audio is coming.</div>
-          </details>
-          <details>
-            <summary>How long does a render take?</summary>
-            <div class="prose">A few minutes for a fifteen-second clip. It renders offline
-              rather than in real time, which is deliberate: it means every frame is drawn at
-              full quality and none are dropped, regardless of how heavy the scene gets. A
-              real-time capture would judder on exactly the busiest moments.</div>
-          </details>
-          <details>
-            <summary>What kind of music suits it?</summary>
-            <div class="prose">Anything with a discernible pulse. It calibrates to each track
-              — the fold opens for whatever counts as loud <em>for that track</em>, not against
-              a fixed threshold — so a quiet ambient piece gets the same range of expression as
-              a hardcore record. Tracks with no rhythmic structure at all get less out of it.</div>
-          </details>
-          <details>
-            <summary>Can I change how it looks?</summary>
-            <div class="prose">Every decision the director makes is a control you can override:
-              form, material, finish, lighting, palette, filter, camera, and the rate of each
-              axis of motion. Or leave all of it alone — the automatic result is the point.</div>
-          </details>
-        </div>
+    <div class="wrap"><div class="card glass">
+      <div class="secHead"><span class="num">06</span><span class="lab">Questions</span></div>
+      <h2>Before you upload.</h2>
+      <div style="margin-top:22px">
+        <details open><summary>Do I own what comes out?</summary>
+          <div class="prose">Yes. Exports on a paid credit are yours to use commercially &mdash;
+            releases, promos, client work, paid ads. We claim nothing over your music or the
+            visuals rendered from it.</div></details>
+        <details><summary>Does the export include my audio?</summary>
+          <div class="prose">Yes. The slice of the track your clip covers is encoded and muxed
+            into the same MP4, aligned to the frame.</div></details>
+        <details><summary>How long does a render take?</summary>
+          <div class="prose">A few minutes for a fifteen-second clip. It renders offline rather
+            than in real time, which is deliberate: every frame is drawn at full quality and none
+            are dropped, however heavy the scene gets. A real-time capture would judder on exactly
+            the busiest moments.</div></details>
+        <details><summary>What kind of music suits it?</summary>
+          <div class="prose">Anything with a discernible pulse. It calibrates to each track &mdash;
+            the fold opens for whatever counts as loud <em>for that track</em>, not against a fixed
+            threshold &mdash; so a quiet ambient piece gets the same range of expression as a
+            hardcore record.</div></details>
+        <details><summary>Can I change how it looks?</summary>
+          <div class="prose">Every decision the director makes is a control you can override: form,
+            material, finish, lighting, palette, filter, camera, and the rate of each axis of
+            motion. Or leave it all alone &mdash; the automatic result is the point.</div></details>
       </div>
     </div></div>
   </section>
 
   <section class="end">
-    <div class="wrap">
-      <p class="lab" style="margin-bottom:20px">Ready when you are</p>
-      <h2>Upload a track and see what it looks like.</h2>
-      <div class="cta" style="margin-top:26px">
+    <div class="wrap" style="text-align:center">
+      <p class="lab">Ready when you are</p>
+      <h2 style="margin:22px auto 0" class="glow">Upload a track and see what it looks like.</h2>
+      <div class="cta" style="margin-top:32px;justify-content:center">
         <a class="btn" href="#pricing">Render a track</a>
-        <a class="btn ghost" href="#what">Read how it works</a>
+        <a class="btn ghost" href="#what">How it works</a>
       </div>
-      <p class="lab" style="margin-top:18px">Analysis and preview are free</p>
+      <p class="lab" style="margin-top:20px">Analysis and preview are free</p>
     </div>
   </section>
 </main>
 
 <footer>
   <div class="wrap">
-    <span class="mark" style="font-size:14px">ATON<b>A</b>L</span>
+    <span class="mark" style="font-size:14px">ATONAL</span>
     <span class="lab">AI music visualisation</span>
     <span class="lab">&copy; 2026</span>
   </div>
 </footer>
 
 <script>
-/* The hero strip draws a real analysis: the section map, beat grid and per-band onsets from an
-   actual four-minute track, with a playhead sweeping it. Canvas rather than SVG because the
-   onset layer alone is ~5,000 marks and hand-authored path data at that count is a liability. */
+(function(){
+var reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* The nine profiles as polar radius functions -- the same N-fold signatures the engine's own
+   2D profiles have. Arc is the exception and is drawn as a ring: the engine describes it as
+   "a thin hollow one closes into a continuous ring", and hollow is the one thing a polar
+   radius cannot say. */
+var FORMS={
+  triskelion:function(a){ return .78+.30*Math.cos(3*a)+.06*Math.cos(9*a); },
+  clover    :function(a){ return .74+.26*Math.abs(Math.cos(2*a)); },
+  arc       :function(a){ return .88; },
+  chevron   :function(a){ return .66+.34*Math.pow(Math.abs(Math.cos(1.5*a)),0.6); },
+  wave      :function(a){ return .80+.16*Math.sin(5*a)+.05*Math.sin(11*a); },
+  plate     :function(a){ return .84+.10*Math.pow(Math.abs(Math.cos(3*a)),4); },
+  gear      :function(a){ return .78+.13*(Math.abs(Math.cos(9*a))>.5?1:0)+.05*Math.cos(3*a); },
+  knot      :function(a){ return .74+.18*Math.cos(3*a)+.12*Math.sin(7*a); },
+  lattice   :function(a){ return .80+.10*Math.cos(6*a)+.08*Math.cos(2*a); }
+};
+
+/* One renderer, used by the full-page field and by every tile. Colour field first (three drifting
+   radial washes, the backdrop the engine renders onto), then the form folded into `seg` mirrored
+   wedges, then a wide halo. Lit across the wedge rather than glowing from the centre: a centred
+   bloom makes a star with a hot core and no readable geometry, where a gradient across each petal
+   gives it a lit edge and a shadow side, which is what the real key/fill pair does. */
+function render(ctx,W,H,o){
+  var t=o.t, hues=o.hues, seg=o.seg, R=Math.min(W,H)*o.scale;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='hsl('+hues[1]+',46%,'+(o.dark?9:15)+'%)';
+  ctx.fillRect(0,0,W,H);
+  var blobs=[[.30+.11*Math.sin(t*.00021),.32+.10*Math.cos(t*.00017),hues[0],.64],
+             [.74+.10*Math.cos(t*.00019),.66+.09*Math.sin(t*.00023),hues[1],.60],
+             [.52+.13*Math.sin(t*.00013+2),.88+.08*Math.cos(t*.00029),hues[2],.44]];
+  ctx.globalCompositeOperation='lighter';
+  for(var i=0;i<3;i++){
+    var b=blobs[i], g=ctx.createRadialGradient(b[0]*W,b[1]*H,0,b[0]*W,b[1]*H,Math.max(W,H)*b[3]);
+    g.addColorStop(0,'hsla('+b[2]+',92%,'+(o.dark?52:58)+'%,.92)');
+    g.addColorStop(1,'hsla('+b[2]+',92%,50%,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  var fa=FORMS[o.form], spin=t*o.spin;
+  ctx.save(); ctx.translate(W/2,H*o.cy); ctx.rotate(spin);
+  for(var s=0;s<seg;s++){
+    ctx.save(); ctx.rotate(s*Math.PI*2/seg);
+    for(var m=0;m<2;m++){
+      ctx.save(); if(m) ctx.scale(1,-1);
+      ctx.beginPath();
+      for(var k=0;k<=56;k++){
+        var a=(k/56)*(Math.PI/seg), r=R*fa(a+spin);
+        var x=Math.cos(a)*r, y=Math.sin(a)*r;
+        if(k===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.lineTo(0,0); ctx.closePath();
+      var lg=ctx.createLinearGradient(-R*.6,-R*.9,R*.9,R*.7);
+      lg.addColorStop(0,'rgba(255,255,255,.97)');
+      lg.addColorStop(.42,'rgba(230,220,255,.90)');
+      lg.addColorStop(.78,'rgba('+o.tint+',.82)');
+      lg.addColorStop(1,'rgba(72,52,128,.74)');
+      ctx.fillStyle=lg; ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,.26)'; ctx.lineWidth=.7; ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+  var bg=ctx.createRadialGradient(W/2,H*o.cy,R*.85,W/2,H*o.cy,R*2.4);
+  bg.addColorStop(0,'rgba(255,255,255,.06)'); bg.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.globalCompositeOperation='lighter'; ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation='source-over';
+}
+
+/* ---- the field behind the whole page ----
+   SCROLL IS THE TIMELINE. The form and the palette advance as the page is read, the way they
+   advance as a track plays -- so the page is never the same picture twice and the movement is
+   driven by the reader rather than running at them. */
+var fc=document.getElementById('field'), fx=fc&&fc.getContext('2d');
+var ORDER=['wave','triskelion','knot','clover','gear','lattice'];
+var scrollP=0;
+function onScroll(){
+  var h=Math.max(1,document.body.scrollHeight-innerHeight);
+  scrollP=Math.min(1,Math.max(0,scrollY/h));
+}
+addEventListener('scroll',onScroll,{passive:true}); onScroll();
+
+var t0=performance.now();
+function frame(now){
+  if(fx){
+    var d=Math.min(devicePixelRatio||1,1.5), W=fc.width/d, H=fc.height/d;
+    var t=reduce?12000:(now-t0);
+    var p=scrollP*ORDER.length;
+    var fi=Math.min(ORDER.length-1,Math.floor(p));
+    render(fx,W,H,{t:t, hues:[318+50*Math.sin(t*.00012)+scrollP*40,
+                              262+26*Math.sin(t*.00017+1.7)+scrollP*30,
+                              26+18*Math.sin(t*.00011+3.1)],
+      seg:6, scale:.30, cy:.46, spin:.00014, form:ORDER[fi],
+      tint:'150,128,222', dark:true});
+  }
+  requestAnimationFrame(frame);
+}
+function sizeField(){
+  if(!fc) return;
+  var d=Math.min(devicePixelRatio||1,1.5);
+  fc.width=Math.round(innerWidth*d); fc.height=Math.round(innerHeight*d);
+  fx.setTransform(d,0,0,d,0,0);
+}
+addEventListener('resize',sizeField); sizeField();
+requestAnimationFrame(frame);
+
+/* ---- the gallery: six renders at once, which is the argument the page is making ---- */
+var TILES=[
+  {form:'triskelion', hues:[290,258,30],  seg:5, tint:'196,196,214'},
+  {form:'clover',     hues:[330,300,20],  seg:6, tint:'224,208,236'},
+  {form:'gear',       hues:[36,20,300],   seg:8, tint:'236,196,120'},
+  {form:'knot',       hues:[268,220,320], seg:4, tint:'170,190,236'},
+  {form:'lattice',    hues:[190,280,330], seg:6, tint:'190,220,236'},
+  {form:'wave',       hues:[318,272,24],  seg:7, tint:'226,214,244'}
+];
+var tiles=[];
+document.querySelectorAll('canvas[data-tile]').forEach(function(c){
+  var i=+c.getAttribute('data-tile'), g=c.getContext('2d');
+  if(!g||!TILES[i]) return;
+  tiles.push({c:c,g:g,o:TILES[i],phase:i*1700});
+});
+function sizeTiles(){
+  tiles.forEach(function(T){
+    var r=T.c.getBoundingClientRect(), d=Math.min(devicePixelRatio||1,1.5);
+    T.c.width=Math.max(120,Math.round(r.width*d));
+    T.c.height=Math.max(120,Math.round(r.height*d));
+    T.g.setTransform(d,0,0,d,0,0);
+  });
+}
+addEventListener('resize',sizeTiles); sizeTiles();
+function tileFrame(now){
+  var d=Math.min(devicePixelRatio||1,1.5);
+  tiles.forEach(function(T){
+    var r=T.c.getBoundingClientRect();
+    if(r.bottom<-100||r.top>innerHeight+100) return;       // offscreen tiles cost nothing
+    var t=reduce?9000:(now-t0)+T.phase;
+    render(T.g, T.c.width/d, T.c.height/d,
+      {t:t, hues:T.o.hues, seg:T.o.seg, scale:.34, cy:.5,
+       spin:(T.c.dataset.hot?.00058:.00019),
+       form:T.o.form, tint:T.o.tint, dark:false});
+  });
+  requestAnimationFrame(tileFrame);
+}
+requestAnimationFrame(tileFrame);
+
+/* ---- the analysis strip: measurements from one real four-minute track ---- */
 (function(){
   var cv=document.getElementById('analysis'); if(!cv) return;
   var ctx=cv.getContext('2d'); if(!ctx) return;
-
   var DUR=249.678, BPM=176.32;
   var SECS=[['intro',0,8.5,.46],['breakdown',8.5,22.1,.45],['build',22.1,26.2,.70],
     ['groove',26.2,37.0,.57],['breakdown',37.0,46.7,.40],['breakdown',46.7,76.7,.21],
@@ -495,249 +680,167 @@ footer .lab{margin-left:auto}
     ['breakdown',145.9,155.4,.40],['breakdown',155.4,160.9,.49],['groove',160.9,174.5,.72],
     ['drop',174.5,179.9,.83],['breakdown',179.9,207.3,.22],['drop',207.3,216.9,.85],
     ['groove',216.9,227.7,.77],['groove',227.7,249.7,.74]];
-  var BANDS=[834,1008,1157,1088,901];          // real onset counts, sub -> air
-
-  /* Deterministic pseudo-random, so the strip is identical on every load -- the same property
-     the product itself is sold on. Onset TIMES are synthesised from the real counts and the
-     real section energies; the counts, the grid and the map are measurements. */
+  var BANDS=[834,1008,1157,1088,901];       // the real per-band onset counts
+  /* Seeded, so the strip is identical on every load -- the same property the product is sold on
+     two sections down. The counts, the grid and the section map are measurements; only the
+     individual onset TIMES are synthesised from them. */
   var seed=20260227;
   function rnd(){ seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }
-
   var onsets=[];
   for(var b=0;b<BANDS.length;b++){
     var arr=[];
     for(var i=0;i<BANDS[b];i++){
-      var t=rnd()*DUR, e=0.4;
-      for(var s=0;s<SECS.length;s++) if(t>=SECS[s][1]&&t<SECS[s][2]){ e=SECS[s][3]; break; }
-      if(rnd()<e*1.15) arr.push(t);            // busier sections carry more hits
+      var tt=rnd()*DUR, e=.4;
+      for(var s=0;s<SECS.length;s++) if(tt>=SECS[s][1]&&tt<SECS[s][2]){ e=SECS[s][3]; break; }
+      if(rnd()<e*1.15) arr.push(tt);
     }
     onsets.push(arr);
   }
-
-  function css(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
-  var t0=performance.now(), reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
-
+  var a0=performance.now();
   function draw(now){
-    var d=Math.min(devicePixelRatio||1,2);
-    var W=cv.width/d, H=cv.height/d;
-    var violet=css('--violet')||'#5B3FD9', rule=css('--rule')||'#D2D7DE',
-        muted=css('--muted')||'#5C636E', ink=css('--ink-2')||'#3A414B',
-        card=css('--card')||'#F6F7F9';
+    var d=Math.min(devicePixelRatio||1,2), W=cv.width/d, H=cv.height/d;
     ctx.clearRect(0,0,W,H);
-
-    var padL=0, padR=0, w=W-padL-padR;
-    var secTop=6, secH=30, gridTop=44, gridH=16, bandTop=68, bandH=30, bandGap=4;
-
-    // section map -- height carries the section's energy, colour marks a drop
+    var secH=26, gridTop=36, gridH=14, bandTop=58;
     for(var s=0;s<SECS.length;s++){
-      var x=padL+SECS[s][1]/DUR*w, x2=padL+SECS[s][2]/DUR*w, e=SECS[s][3];
-      var h=Math.max(5,secH*e);
-      ctx.fillStyle = SECS[s][0]==='drop' ? violet : rule;
-      ctx.globalAlpha = SECS[s][0]==='drop' ? .95 : .85;
-      ctx.fillRect(x, secTop+(secH-h), Math.max(1,x2-x-2), h);
+      var x=SECS[s][1]/DUR*W, x2=SECS[s][2]/DUR*W, e=SECS[s][3], h=Math.max(4,secH*e);
+      ctx.fillStyle=SECS[s][0]==='drop'?'#F0479A':'rgba(196,188,220,.30)';
+      ctx.fillRect(x, secH-h+4, Math.max(1,x2-x-2), h);
     }
-    ctx.globalAlpha=1;
-
-    // beat grid -- every beat a hairline, every downbeat taller
     var beat=60/BPM, n=Math.floor(DUR/beat);
-    for(var i=0;i<n;i++){
-      var bx=padL+(i*beat)/DUR*w, down=(i%4===0);
-      ctx.fillStyle=down?muted:rule;
-      ctx.globalAlpha=down?.85:.5;
-      ctx.fillRect(bx, gridTop+(down?0:5), 1, down?gridH:gridH-8);
+    for(var i2=0;i2<n;i2++){
+      var bx=(i2*beat)/DUR*W, down=(i2%4===0);
+      ctx.fillStyle=down?'rgba(139,107,255,.85)':'rgba(139,107,255,.32)';
+      ctx.fillRect(bx, gridTop+(down?0:4), 1, down?gridH:gridH-7);
     }
-    ctx.globalAlpha=1;
-
-    // onsets, one lane per band
     for(var b2=0;b2<onsets.length;b2++){
-      var lane=bandTop+b2*(bandH+bandGap)*0.72;
-      ctx.fillStyle=ink; ctx.globalAlpha=.34+b2*0.055;
-      for(var k=0;k<onsets[b2].length;k++){
-        ctx.fillRect(padL+onsets[b2][k]/DUR*w, lane, 1.4, 9);
-      }
+      var lane=bandTop+b2*9;
+      ctx.fillStyle='rgba(244,241,255,'+(.26+b2*.055)+')';
+      for(var k=0;k<onsets[b2].length;k++) ctx.fillRect(onsets[b2][k]/DUR*W, lane, 1.3, 7);
     }
-    ctx.globalAlpha=1;
-
-    // playhead
     if(!reduce){
-      var el=((now-t0)/1000)%DUR, px=padL+el/DUR*w;
-      ctx.fillStyle=violet; ctx.fillRect(px,0,2,H);
-      ctx.globalAlpha=.10; ctx.fillRect(padL,0,px,H); ctx.globalAlpha=1;
+      var el=((now-a0)/1000)%DUR, px=el/DUR*W;
+      ctx.fillStyle='#FFB454'; ctx.fillRect(px,0,2,H);
+      ctx.fillStyle='rgba(255,180,84,.10)'; ctx.fillRect(0,0,px,H);
     }
     requestAnimationFrame(draw);
   }
-
-  /* The canvas is laid out in CSS pixels and drawn in CSS pixels; the backing store carries the
-     device ratio and the context is scaled once to match, so nothing downstream has to think
-     about dpr. Re-run on resize because the strip is full-bleed. */
-  function resize(){
+  function sizeA(){
     var r=cv.getBoundingClientRect(), d=Math.min(devicePixelRatio||1,2);
-    cv.width=Math.max(600,Math.round(r.width*d));
-    cv.height=Math.round(132*d);
+    cv.width=Math.max(400,Math.round(r.width*d)); cv.height=Math.round(112*d);
     ctx.setTransform(d,0,0,d,0,0);
   }
-  addEventListener('resize',resize); resize();
+  addEventListener('resize',sizeA); sizeA();
   requestAnimationFrame(draw);
+})();
+
+/* ---- the nine profiles as their own silhouettes ---- */
+document.querySelectorAll('canvas[data-form]').forEach(function(c){
+  var g=c.getContext('2d'); if(!g) return;
+  var d=Math.min(devicePixelRatio||1,2), r=c.getBoundingClientRect();
+  var S=Math.max(56,Math.round(r.width));
+  c.width=S*d; c.height=S*d; g.setTransform(d,0,0,d,0,0);
+  var kind=c.getAttribute('data-form'), f=FORMS[kind]; if(!f) return;
+  var R=S*.38;
+  g.clearRect(0,0,S,S); g.save(); g.translate(S/2,S/2);
+  g.beginPath();
+  if(kind==='arc'){ g.arc(0,0,R*.88,0,Math.PI*2,false); g.arc(0,0,R*.52,0,Math.PI*2,true); }
+  else{
+    for(var k=0;k<=256;k++){
+      var a=(k/256)*Math.PI*2, rr=R*f(a);
+      var x=Math.cos(a)*rr, y=Math.sin(a)*rr;
+      if(k===0) g.moveTo(x,y); else g.lineTo(x,y);
+    }
+  }
+  g.closePath();
+  var lg=g.createLinearGradient(-R,-R,R,R);
+  lg.addColorStop(0,'#F0479A'); lg.addColorStop(1,'#8B6BFF');
+  g.fillStyle=lg; g.fill();
+  g.restore();
+});
+
+/* ---- sections arrive ---- */
+if(!reduce && 'IntersectionObserver' in window){
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  },{rootMargin:'0px 0px -10% 0px'});
+  document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
+} else {
+  document.querySelectorAll('.reveal').forEach(function(el){ el.classList.add('in'); });
+}
 })();
 </script>
 
 <script>
-/* ---- THE OUTPUT PANEL ----
-   The analysis strip shows what goes in. This shows what comes out, and between them they are
-   the whole product in one screen. It is not the real engine -- that is a raymarched SDF in a
-   WebGL fragment shader and it is not going in a landing page -- but it is built from the same
-   description: a profile with an N-fold polar signature, folded through a kaleidoscope, turning
-   on a beat-locked clock over a colour field that drifts.
-   The colour is the point of this panel. The rest of the page is deliberately paper and ink; the
-   saturation lives here, where it belongs, because it is the thing being sold. */
+/* ---- MICRO-INTERACTIONS, the parts CSS cannot reach ---- */
 (function(){
-  var cv=document.getElementById('stage'); if(!cv) return;
-  var ctx=cv.getContext('2d'); if(!ctx) return;
   var reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // The nine profiles, as polar radius functions -- the same signatures the SDF profiles have.
-  var FORMS={
-    triskelion:function(a){ return .78+.30*Math.cos(3*a)+.06*Math.cos(9*a); },
-    clover    :function(a){ return .74+.26*Math.abs(Math.cos(2*a)); },
-    /* Arc and Plate both started as near-circles and were indistinguishable in the gallery,
-       which defeats the point of showing nine of them. Plate is a broad faceted mass now, and
-       Arc is drawn as a RING rather than by a radius function at all -- the engine's own note
-       describes it as "a thin hollow one closes into a continuous ring", and a hollow form is
-       the one thing a polar radius cannot express. See the ring branch in the glyph draw. */
-    arc       :function(a){ return .88; },
-    chevron   :function(a){ return .66+.34*Math.pow(Math.abs(Math.cos(1.5*a)),0.6); },
-    wave      :function(a){ return .80+.16*Math.sin(5*a)+.05*Math.sin(11*a); },
-    plate     :function(a){ return .84+.10*Math.pow(Math.abs(Math.cos(3*a)),4); },
-    gear      :function(a){ return .78+.13*(Math.abs(Math.cos(9*a))>.5?1:0)+.05*Math.cos(3*a); },
-    knot      :function(a){ return .74+.18*Math.cos(3*a)+.12*Math.sin(7*a); },
-    lattice   :function(a){ return .80+.10*Math.cos(6*a)+.08*Math.cos(2*a); }
-  };
-  var ORDER=['wave','triskelion','knot','clover','gear','lattice'];
-
-  var t0=performance.now(), formI=0, nextAt=4200;
-
-  function palette(t){
-    // a slow drift through the renderer's own palette range: magenta -> violet -> warm
-    var h1=300+40*Math.sin(t*0.00013), h2=258+30*Math.sin(t*0.00017+1.7),
-        h3=22+18*Math.sin(t*0.00011+3.1);
-    return [h1,h2,h3];
+  /* Read progress. The one number a long page owes the reader. */
+  var prog=document.getElementById('prog');
+  function onProg(){
+    var h=Math.max(1,document.body.scrollHeight-innerHeight);
+    if(prog) prog.style.width=(Math.min(1,Math.max(0,scrollY/h))*100).toFixed(2)+'%';
   }
+  addEventListener('scroll',onProg,{passive:true}); onProg();
 
-  function draw(now){
-    var d=Math.min(devicePixelRatio||1,2), W=cv.width/d, H=cv.height/d;
-    var t=reduce?0:(now-t0);
-    ctx.clearRect(0,0,W,H);
-
-    var P=palette(t), cx=W/2, cy=H/2;
-
-    // ---- colour field: three drifting radial washes, the backdrop the engine renders onto
-    ctx.fillStyle='hsl('+P[1]+',42%,18%)';
-    ctx.fillRect(0,0,W,H);
-    var blobs=[[0.30+0.10*Math.sin(t*0.00021),0.32+0.10*Math.cos(t*0.00017),P[0],0.62],
-               [0.74+0.09*Math.cos(t*0.00019),0.66+0.09*Math.sin(t*0.00023),P[1],0.58],
-               [0.55+0.12*Math.sin(t*0.00013+2),0.86+0.07*Math.cos(t*0.00029),P[2],0.40]];
-    ctx.globalCompositeOperation='lighter';
-    for(var i=0;i<blobs.length;i++){
-      var b=blobs[i], g=ctx.createRadialGradient(b[0]*W,b[1]*H,0,b[0]*W,b[1]*H,Math.max(W,H)*b[3]);
-      g.addColorStop(0,'hsla('+b[2]+',88%,58%,0.95)');
-      g.addColorStop(1,'hsla('+b[2]+',88%,50%,0)');
-      ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
-    }
-    ctx.globalCompositeOperation='source-over';
-
-    // ---- the form, cross-faded between profiles the way the Director changes shape
-    if(!reduce && t>nextAt){ formI=(formI+1)%ORDER.length; nextAt=t+4200; }
-    var into=Math.max(0,Math.min(1,(t-(nextAt-4200))/900));
-    var fa=FORMS[ORDER[formI]], fb=FORMS[ORDER[(formI+ORDER.length-1)%ORDER.length]];
-    var mix=reduce?1:(into*into*(3-2*into));
-
-    var R=Math.min(W,H)*0.33, spin=t*0.00016, seg=6;
-    ctx.save(); ctx.translate(cx,cy); ctx.rotate(spin);
-
-    // kaleidoscope: the profile mirrored into seg wedges, exactly what the fold does
-    for(var s=0;s<seg;s++){
-      ctx.save(); ctx.rotate(s*Math.PI*2/seg);
-      for(var m=0;m<2;m++){
-        ctx.save(); if(m) ctx.scale(1,-1);
-        ctx.beginPath();
-        for(var k=0;k<=64;k++){
-          var a=(k/64)*(Math.PI/seg);
-          var r=R*(fb(a+spin)*(1-mix)+fa(a+spin)*mix);
-          var x=Math.cos(a)*r, y=Math.sin(a)*r;
-          if(k===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-        }
-        ctx.lineTo(0,0); ctx.closePath();
-        /* LIT, NOT GLOWING. A near-white fill plus a centred bloom turned the form into a star
-           with a hot core and no readable geometry. The gradient runs across the wedge instead,
-           so each petal has a lit edge and a shadow side and the silhouette does the work --
-           which is what the real renderer's key/fill pair is for. */
-        var lg=ctx.createLinearGradient(-R*0.6,-R*0.9,R*0.9,R*0.7);
-        lg.addColorStop(0,'rgba(255,255,255,0.96)');
-        lg.addColorStop(0.42,'rgba(226,216,252,0.90)');
-        lg.addColorStop(0.78,'rgba(158,138,214,0.80)');
-        lg.addColorStop(1,'rgba(96,74,158,0.72)');
-        ctx.fillStyle=lg; ctx.fill();
-        ctx.strokeStyle='rgba(255,255,255,0.30)'; ctx.lineWidth=0.7; ctx.stroke();
-        ctx.restore();
-      }
-      ctx.restore();
-    }
-    ctx.restore();
-
-    // a soft bloom over the whole panel, as the post pass does
-    // A wide, weak halo rather than a hot centre -- the bloom should sit around the form, not on it.
-    var bg=ctx.createRadialGradient(cx,cy,R*0.85,cx,cy,R*2.3);
-    bg.addColorStop(0,'rgba(255,255,255,0.055)'); bg.addColorStop(1,'rgba(255,255,255,0)');
-    ctx.globalCompositeOperation='lighter'; ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
-    ctx.globalCompositeOperation='source-over';
-
-    requestAnimationFrame(draw);
-  }
-
-  function resize(){
-    var r=cv.getBoundingClientRect(), d=Math.min(devicePixelRatio||1,2);
-    cv.width=Math.max(320,Math.round(r.width*d));
-    cv.height=Math.max(240,Math.round(r.height*d));
-    ctx.setTransform(d,0,0,d,0,0);
-  }
-  addEventListener('resize',resize); resize();
-  requestAnimationFrame(draw);
-
-  // ---- the nine profiles, drawn as their own silhouettes
-  document.querySelectorAll('canvas[data-form]').forEach(function(c){
-    var g=c.getContext('2d'); if(!g) return;
-    var d=Math.min(devicePixelRatio||1,2);
-    var rect=c.getBoundingClientRect(), S=Math.max(72,Math.round(rect.width));
-    c.width=S*d; c.height=S*d; g.setTransform(d,0,0,d,0,0);
-    var kind=c.getAttribute('data-form'), f=FORMS[kind]; if(!f) return;
-    var R=S*0.38;
-    g.clearRect(0,0,S,S);
-    g.save(); g.translate(S/2,S/2);
-    g.beginPath();
-    if(kind==='arc'){                       // hollow: outer ring, inner counter-wound
-      g.arc(0,0,R*0.88,0,Math.PI*2,false);
-      g.arc(0,0,R*0.52,0,Math.PI*2,true);
-    } else {
-      for(var k=0;k<=256;k++){
-        var a=(k/256)*Math.PI*2, r=R*f(a);
-        var x=Math.cos(a)*r, y=Math.sin(a)*r;
-        if(k===0) g.moveTo(x,y); else g.lineTo(x,y);
-      }
-    }
-    g.closePath();
-    g.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--ink').trim()||'#14161A';
-    g.globalAlpha=.88; g.fill();
-    g.restore();
+  /* Where the pointer is on each sheet of glass, handed to CSS as a custom property so the
+     highlight is drawn by the compositor rather than by script. */
+  document.querySelectorAll('.glass').forEach(function(el){
+    el.addEventListener('pointermove',function(e){
+      var r=el.getBoundingClientRect();
+      el.style.setProperty('--mx',((e.clientX-r.left)/r.width*100).toFixed(1)+'%');
+      el.style.setProperty('--my',((e.clientY-r.top)/r.height*100).toFixed(1)+'%');
+    });
   });
 
-  // ---- sections arrive rather than appear
-  if(!reduce && 'IntersectionObserver' in window){
-    var io=new IntersectionObserver(function(es){
-      es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
-    },{rootMargin:'0px 0px -12% 0px'});
-    document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
-  } else {
-    document.querySelectorAll('.reveal').forEach(function(el){ el.classList.add('in'); });
+  /* Magnetic buttons: a few pixels of pull toward the cursor, released on leave. Small enough to
+     feel like weight rather than like the button running away. */
+  if(!reduce) document.querySelectorAll('.btn').forEach(function(b){
+    b.addEventListener('pointermove',function(e){
+      var r=b.getBoundingClientRect();
+      var dx=(e.clientX-(r.left+r.width/2))/r.width, dy=(e.clientY-(r.top+r.height/2))/r.height;
+      b.style.transform='translate('+(dx*7).toFixed(1)+'px,'+(dy*5-2).toFixed(1)+'px)';
+    });
+    b.addEventListener('pointerleave',function(){ b.style.transform=''; });
+  });
+
+  /* The counters count. They are the page's evidence, and a number that arrives at its value
+     is read; a number that is simply printed is skimmed. Driven off the reveal so it happens
+     when the panel is actually on screen, and only once. */
+  function countUp(el){
+    var target=parseFloat(el.getAttribute('data-count')), t0=null, D=1100;
+    var suffix=el.getAttribute('data-suffix')||'';
+    function step(now){
+      if(t0===null) t0=now;
+      var p=Math.min(1,(now-t0)/D), e=1-Math.pow(1-p,3);      // ease out, so it settles
+      el.textContent=Math.round(target*e).toLocaleString('en-GB')+suffix;
+      if(p<1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
   }
+  var statsBlock=document.querySelector('.stats');
+  if(statsBlock){
+    var counted=false;
+    var cio=new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(e.isIntersecting && !counted){
+          counted=true;
+          if(reduce){ e.target.querySelectorAll('[data-count]').forEach(function(el){
+              el.textContent=(+el.getAttribute('data-count')).toLocaleString('en-GB')+(el.getAttribute('data-suffix')||''); }); }
+          else e.target.querySelectorAll('[data-count]').forEach(countUp);
+          cio.disconnect();
+        }
+      });
+    },{threshold:.4});
+    cio.observe(statsBlock);
+  }
+
+  /* A tile you are looking at turns faster. The gallery loop reads this, so hovering a render
+     does what hovering a render should: shows you more of it. */
+  document.querySelectorAll('.tile').forEach(function(t){
+    var c=t.querySelector('canvas'); if(!c) return;
+    t.addEventListener('pointerenter',function(){ c.dataset.hot='1'; });
+    t.addEventListener('pointerleave',function(){ c.dataset.hot=''; });
+  });
 })();
 </script>
