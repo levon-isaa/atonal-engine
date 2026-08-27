@@ -379,6 +379,14 @@
        and a slow swirl to the bar. That now runs unconditionally, which is the whole point --
        the engine drives the movement and the panel above is where you tweak it. See autoMap(). -->
 
+  <details id="gCredits"><summary>Credits</summary>
+    <div class="row"><label>Balance</label><span class="val" id="credBal">&mdash;</span></div>
+    <div class="row"><label>Render key</label>
+      <input type="password" id="credKey" placeholder="atk_…" autocomplete="off" spellcheck="false"
+             title="The key from your purchase. Stored in this browser only, and sent with each analysis so the credit comes off the right balance."></div>
+    <div class="row"><label></label>
+      <span class="val"><a id="credBuy" href="./site/pricing.html" target="_blank" rel="noopener">Get credits</a></span></div>
+  </details>
   <details id="gExport" open><summary>Export</summary>
     <div class="row"><label>Format</label>
       <select id="selFmt" title="What the recording is framed and sized for. The canvas is retargeted to this exact pixel size while recording, so the file needs no cropping or scaling afterwards.">
@@ -460,7 +468,48 @@
 <script>
 const SERVER = location.hostname && location.protocol.startsWith('http')
   ? location.origin.replace(/:\d+$/, ':8770') : 'http://127.0.0.1:8770';
+
+/* ---- THE RENDER KEY ----
+   A credit buys one ANALYSIS, which is the only thing on the server side that
+   costs anything: the export encodes and muxes here in the browser and never
+   calls home, so metering it would be both unenforceable and a charge for work
+   nobody did. See billing.py.
+
+   The key is a bearer token. It lives in localStorage on this machine and goes
+   out as a header with each upload; there is no account behind it, which is why
+   the field below is a password input and why it is never written to the log. */
+const RKEY = (function(){
+  const K='atonal.key';
+  const get = ()=>{ try{ return (localStorage.getItem(K)||'').trim(); }catch(e){ return ''; } };
+  const set = v=>{ try{ v ? localStorage.setItem(K,v.trim()) : localStorage.removeItem(K); }catch(e){} };
+  let last = 0;
+  async function refresh(){
+    const el = document.getElementById('credBal'); if(!el) return;
+    const k = get();
+    try{
+      const r = await fetch(SERVER+'/credits'+(k?('?key='+encodeURIComponent(k)):''),{cache:'no-store'});
+      const j = await r.json();
+      if(k && j.known===false){ el.textContent='key not recognised'; el.style.color='#ff6b8a'; return; }
+      el.style.color='';
+      /* With no key the honest number is the free allowance, not zero -- the app
+         works without ever buying anything and should say so. */
+      el.textContent = k ? (j.balance + (j.balance===1?' credit':' credits'))
+                         : (j.free_left + ' free today');
+    }catch(e){ el.textContent='—'; }
+  }
+  return {get,set,refresh};
+})();
 const $=id=>document.getElementById(id);
+/* The key field. `change` rather than `input`, so a balance lookup is not fired
+   off on every keystroke of a 47-character token. */
+(function(){
+  const f=$('credKey');
+  if(f){
+    f.value=RKEY.get();
+    f.addEventListener('change',()=>{ RKEY.set(f.value); RKEY.refresh(); });
+  }
+  RKEY.refresh();
+})();
 window.__errs=[];
 function __showErr(m){ let d=document.getElementById('__err'); if(!d){ d=document.createElement('div'); d.id='__err';
   d.style.cssText='position:fixed;left:12px;bottom:70px;z-index:999;max-width:64ch;padding:10px 12px;background:rgba(40,8,8,.94);border:1px solid #f66;border-radius:4px;color:#fbb;font:11px/1.5 ui-monospace,monospace;white-space:pre-wrap'; document.body.appendChild(d);} d.textContent=m; }
@@ -5391,6 +5440,10 @@ async function loadFile(file){
          '%' in the name round-trips too, because it encodes to %25 first -- which matters here,
          since files downloaded with escaped names really do arrive containing %20. */
       xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+      /* The render key rides along with the upload. Absent, the server falls back to the
+         free daily allowance -- so the app works out of the box and only asks for a key
+         when someone has actually run out. */
+      { const rk = RKEY.get(); if(rk) xhr.setRequestHeader('X-Render-Key', rk); }
       xhr.upload.onprogress = e=>{
         if(e.lengthComputable) setProg((e.loaded/e.total)*UPLOAD_SHARE,'Uploading…');
       };
@@ -5433,7 +5486,19 @@ async function loadFile(file){
           try{ resolve(JSON.parse(xhr.responseText)); }catch(e){ reject(new Error('bad response')); }
         } else {
           let m='server '+xhr.status;
-          try{ const j=JSON.parse(xhr.responseText); if(j.error) m=j.error; }catch(e){}
+          try{
+            const j=JSON.parse(xhr.responseText);
+            if(j.error) m=j.error;
+            /* 402 means "this needs paying for", which is a different thing from a
+               fault: nothing is broken, and the useful response is a route to
+               credits rather than an error message. */
+            if(xhr.status===402){
+              m += (j.code==='bad_key') ? '  Check the key in the Credits panel.'
+                                        : '  Open Credits in the panel to top up.';
+              const g=$('gCredits'); if(g) g.open=true;
+              RKEY.refresh();
+            }
+          }catch(e){}
           reject(new Error(m));
         }
       };

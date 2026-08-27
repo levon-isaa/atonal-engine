@@ -1,0 +1,105 @@
+/* ============================================================================
+   Shared chrome for the pages that are not the landing page.
+   index.html keeps its own inline sheet -- it carries the WebGL layout and a
+   lot of motion that only it uses. These two pages want the same VOICE without
+   dragging that along: same tokens, same hairline panels, same mono readouts.
+   ========================================================================== */
+:root{
+  --bg:#07070B; --bg-2:#0B0B11; --bg-3:#0E0E15;
+  --line:rgba(255,255,255,.075); --line-2:rgba(255,255,255,.145); --line-3:rgba(255,255,255,.28);
+  --ink:#F3F3F8; --ink-2:#9498A8; --ink-3:#5E6272;
+  --mag:#FF3E8E; --vio:#8257FF; --amb:#FFB454;
+  --ok:#43D9A3;
+  --col:min(2400px, calc(100vw - 96px));
+  --pad:clamp(18px,2.2vw,48px);
+  --ease:cubic-bezier(.22,.86,.28,1);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:'Instrument Sans',ui-sans-serif,system-ui,sans-serif;
+  font-size:15.5px;line-height:1.62;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+::selection{background:var(--mag);color:#0A0A10}
+a{color:inherit;text-decoration:none}
+h1,h2,h3,.mark{font-family:Syne,ui-sans-serif,system-ui,sans-serif;font-weight:800;
+  letter-spacing:-.026em;line-height:1.0;text-wrap:balance;margin:0}
+h1{font-size:clamp(29px,4vw,56px);letter-spacing:-.036em;line-height:.98;overflow-wrap:break-word}
+h2{font-size:clamp(24px,2.9vw,36px)}
+h3{font-size:17px;font-weight:700;letter-spacing:-.014em;line-height:1.25}
+p{margin:0}
+.lab{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10.5px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--ink-3);font-weight:500}
+.lab.on{color:var(--ink-2)}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.wrap{width:var(--col);margin:0 auto;position:relative;z-index:3}
+
+#aurora{position:fixed;inset:-25% -10% auto -10%;height:80vh;z-index:1;pointer-events:none;
+  background:radial-gradient(46% 52% at 28% 34%,rgba(130,87,255,.26),transparent 68%),
+             radial-gradient(40% 46% at 74% 22%,rgba(255,62,142,.18),transparent 66%);
+  animation:drift 34s ease-in-out infinite alternate;will-change:transform}
+@keyframes drift{0%{transform:translate3d(-3%,-2%,0) scale(1)}
+  50%{transform:translate3d(4%,3%,0) scale(1.1)}100%{transform:translate3d(-2%,4%,0) scale(1.04)}}
+#grain{position:fixed;inset:0;z-index:2;pointer-events:none;opacity:.28;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E")}
+
+/* panels */
+.p{position:relative;border:1px solid var(--line);
+  background:linear-gradient(180deg,rgba(255,255,255,.030),rgba(255,255,255,.010))}
+.p::before,.p::after{content:"";position:absolute;width:9px;height:9px;pointer-events:none;
+  border-color:var(--line-3);border-style:solid;border-width:0}
+.p::before{left:-1px;top:-1px;border-left-width:1px;border-top-width:1px}
+.p::after{right:-1px;bottom:-1px;border-right-width:1px;border-bottom-width:1px}
+.sh{display:flex;align-items:center;gap:13px;padding:12px var(--pad);border-bottom:1px solid var(--line)}
+.sh .ix{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--mag);letter-spacing:.14em}
+.sh .rl{flex:1;height:1px;background:var(--line)}
+.pad{padding:var(--pad)}
+.prose{color:var(--ink-2);max-width:68ch}
+.prose strong{color:var(--ink);font-weight:600}
+
+/* nav */
+header{position:sticky;top:0;z-index:50;background:rgba(7,7,11,.78);
+  backdrop-filter:blur(14px) saturate(1.3);border-bottom:1px solid var(--line)}
+.nav{width:var(--col);margin:0 auto;display:flex;align-items:center;gap:26px;height:66px}
+.mark{font-size:18px;font-weight:800;letter-spacing:-.01em}
+.mark i{color:var(--mag);font-style:normal}
+.nav nav{display:flex;gap:24px;margin-left:auto}
+.nav nav a{position:relative;padding:4px 0;color:var(--ink-2);font-size:13.5px;transition:color .25s}
+.nav nav a:hover{color:var(--ink)}
+@media(max-width:860px){.nav nav{display:none}.nav .btn{margin-left:auto}}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;height:46px;padding:0 22px;
+  position:relative;overflow:hidden;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;
+  background:var(--ink);color:#08080C;border:1px solid var(--ink);
+  font-family:inherit;transition:opacity .2s}
+.btn::after{content:"";position:absolute;top:0;left:-150%;width:55%;height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.5),transparent);
+  transform:skewX(-18deg);transition:left .65s var(--ease)}
+.btn:hover::after{left:180%}
+.btn.o{background:transparent;color:var(--ink);border-color:var(--line-2)}
+.btn.o:hover{border-color:var(--line-3);background:rgba(255,255,255,.045)}
+.btn.sm{height:34px;padding:0 14px;font-size:12.5px}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn .k{font-family:'JetBrains Mono',monospace;font-size:11px;opacity:.55}
+
+.pill{display:inline-flex;align-items:center;gap:9px;min-height:29px;padding:5px 14px;
+  border:1px solid var(--line-2);border-radius:999px;background:rgba(255,255,255,.03)}
+.pill i{width:5px;height:5px;border-radius:50%;background:var(--mag)}
+.pill.ok i{background:var(--ok)}
+
+/* notices */
+.note{border:1px solid var(--line);border-left:2px solid var(--mag);
+  background:rgba(255,62,142,.055);padding:14px 18px;color:var(--ink-2);font-size:14px}
+.note strong{color:var(--ink)}
+.note.warn{border-left-color:var(--amb);background:rgba(255,180,84,.06)}
+.note.good{border-left-color:var(--ok);background:rgba(67,217,163,.06)}
+
+footer{border-top:1px solid var(--line);padding:22px 0;margin-top:clamp(48px,6vw,88px)}
+.foot{width:var(--col);margin:0 auto;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.foot .lab:nth-child(2){margin-left:auto}
+:focus-visible{outline:2px solid var(--mag);outline-offset:3px}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  #aurora{animation:none}
+  .btn::after{transition:none}
+}

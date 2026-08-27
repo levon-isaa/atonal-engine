@@ -6,3 +6,7 @@ testdata/
 *.wav
 .DS_Store
 .claude/
+
+# billing
+out/billing.db*
+.env

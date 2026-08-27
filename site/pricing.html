@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pricing — ATONAL</title>
+<meta name="description" content="Pay per track analysed. One credit reads a track; rendering and exporting it afterwards is unlimited and free.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="./atonal.css">
+<style>
+.hero{padding:clamp(40px,5vw,80px) 0 clamp(28px,3vw,44px)}
+.hero .prose{margin-top:22px;font-size:17px}
+
+.packs{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}
+@media(max-width:900px){.packs{grid-template-columns:1fr}}
+.pack{background:var(--bg-2);padding:var(--pad);display:flex;flex-direction:column;gap:18px;
+  position:relative;transition:background .3s var(--ease)}
+.pack:hover{background:var(--bg-3)}
+.pack.f{background:linear-gradient(180deg,rgba(255,62,142,.08),rgba(130,87,255,.045))}
+.pack.f::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;
+  background:linear-gradient(90deg,var(--mag),var(--vio))}
+.price{font-family:Syne,sans-serif;font-weight:800;font-size:clamp(38px,4vw,52px);
+  letter-spacing:-.045em;line-height:1;font-variant-numeric:tabular-nums}
+.price small{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:400;
+  color:var(--ink-3);letter-spacing:.06em;margin-left:9px}
+.pack ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px;flex:1}
+.pack li{font-size:14px;color:var(--ink-2);padding-left:19px;position:relative}
+.pack li::before{content:"";position:absolute;left:0;top:9px;width:7px;height:1px;background:var(--mag)}
+
+/* what a credit is: the model, stated plainly, because it is not the usual one */
+.model{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
+@media(max-width:900px){.model{grid-template-columns:1fr}}
+.model>div{background:var(--bg-2);padding:var(--pad)}
+.mrow{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line)}
+.mrow:first-of-type{border-top:0}
+.mrow b{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--mag);min-width:88px;padding-top:3px}
+.mrow span{color:var(--ink-2);font-size:14.5px}
+.mrow span em{color:var(--ink);font-style:normal;font-weight:600}
+
+details{border-top:1px solid var(--line)}
+details:last-of-type{border-bottom:1px solid var(--line)}
+summary{list-style:none;cursor:pointer;padding:18px 0;display:flex;align-items:center;gap:16px;
+  font-size:16px;font-weight:500;transition:color .25s}
+summary::-webkit-details-marker{display:none}
+summary:hover{color:var(--mag)}
+summary::after{content:"+";margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:17px;
+  color:var(--ink-3);transition:transform .34s var(--ease),color .25s}
+details[open] summary::after{transform:rotate(45deg);color:var(--mag)}
+details .prose{padding:0 0 20px;font-size:14.5px}
+
+#status{margin-top:18px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div id="aurora" aria-hidden="true"></div>
+<div id="grain" aria-hidden="true"></div>
+
+<header>
+  <div class="nav">
+    <a class="mark" href="./index.html">ATONAL<i>.</i></a>
+    <nav>
+      <a href="./index.html#gallery">Gallery</a>
+      <a href="./index.html#what">What it does</a>
+      <a href="./index.html#formats">Formats</a>
+      <a href="./pricing.html" style="color:var(--ink)">Pricing</a>
+    </nav>
+    <a class="btn sm" href="../viewer.html" style="margin-left:20px">Open the renderer</a>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap">
+    <span class="pill"><i></i><span class="lab on" id="freeLab">Two tracks a day, free, no account</span></span>
+    <h1 style="margin-top:22px;max-width:16ch">Pay for the tracks you read.</h1>
+    <p class="prose">One credit analyses one track. After that, rendering it, changing every
+      control and exporting it as many times as you like &mdash; at any format up to 4K, with your
+      audio &mdash; costs nothing more, because none of that runs on our machines.</p>
+    <div id="status"></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="p">
+    <div class="sh"><span class="ix">01</span><span class="lab">Credits</span><span class="rl"></span>
+      <span class="lab">They never expire</span></div>
+    <div class="packs" id="packs">
+      <div class="pack" data-pack="single">
+        <span class="lab">Single track</span>
+        <div class="price" data-price>&euro;6<small>/ 1 credit</small></div>
+        <ul><li>One track analysed</li><li>Unlimited renders and exports of it</li>
+          <li>Every format up to 4K</li><li>No watermark</li></ul>
+        <button class="btn o" data-buy="single">Buy 1 credit</button>
+      </div>
+      <div class="pack f" data-pack="ten">
+        <span class="lab" style="color:var(--mag)">Pack of 10 &middot; most taken</span>
+        <div class="price" data-price>&euro;45<small>/ &euro;4.50 each</small></div>
+        <ul><li>Ten tracks analysed</li><li>Unlimited renders and exports</li>
+          <li>Every format up to 4K</li><li>No watermark</li><li>Commercial use included</li></ul>
+        <button class="btn" data-buy="ten">Buy 10 credits <span class="k">&rarr;</span></button>
+      </div>
+      <div class="pack" data-pack="fifty">
+        <span class="lab">Pack of 50</span>
+        <div class="price" data-price>&euro;175<small>/ &euro;3.50 each</small></div>
+        <ul><li>Fifty tracks analysed</li><li>Unlimited renders and exports</li>
+          <li>Every format up to 4K</li><li>No watermark</li><li>Commercial use included</li>
+          <li>Priority queue</li></ul>
+        <button class="btn o" data-buy="fifty">Buy 50 credits</button>
+      </div>
+    </div>
+    <div class="pad" style="padding-top:16px;padding-bottom:16px;border-top:1px solid var(--line)">
+      <span class="lab">Card handling is Stripe&rsquo;s &mdash; payment details never touch this site.
+        Label or agency, at volume? <a href="mailto:hello@example.com" style="color:var(--mag)">Talk to us</a></span>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" style="margin-top:clamp(36px,4vw,64px)">
+  <div class="p">
+    <div class="sh"><span class="ix">02</span><span class="lab">What a credit buys</span><span class="rl"></span>
+      <span class="lab">And what stays free</span></div>
+    <div class="model">
+      <div>
+        <h2>The reading is the work. The film is free.</h2>
+        <p class="prose" style="margin-top:18px">Most tools of this kind charge per video, because
+          for them each video is a machine somewhere rendering for minutes. ATONAL renders in
+          <em style="color:var(--ink);font-style:normal;font-weight:600">your</em> browser, on your
+          own GPU. There is no cost for us to pass on, so we don&rsquo;t invent one.</p>
+        <p class="prose" style="margin-top:14px">What does cost something is the analysis: about ten
+          seconds of real computation to find the tempo, the bar lines, the section map and every
+          individual hit filed by frequency band. That is what a credit pays for, once per track.</p>
+      </div>
+      <div>
+        <div class="mrow"><b>Free</b><span>Analysing up to <em id="freeN">two</em> tracks a day,
+          without an account.</span></div>
+        <div class="mrow"><b>1 credit</b><span>Analysing a new track. <em>Once</em> &mdash; upload the
+          same file again and it is served from cache at no charge.</span></div>
+        <div class="mrow"><b>Free</b><span>Every render of a track you have analysed: all nine forms,
+          all nine materials, every palette, filter and camera.</span></div>
+        <div class="mrow"><b>Free</b><span>Every export. Reels, TikTok, Shorts, square, 1080p, 4K,
+          with your audio muxed in, no watermark, as many times as you want.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" style="margin-top:clamp(36px,4vw,64px)">
+  <div class="p">
+    <div class="sh"><span class="ix">03</span><span class="lab">Billing questions</span><span class="rl"></span></div>
+    <div class="pad">
+      <details open><summary>How do I get my credits back on a new machine?</summary>
+        <div class="prose">Checkout gives you a <strong>render key</strong> &mdash; one long string,
+          shown on the confirmation page and sent to the email you paid with. Paste it into the
+          renderer on any machine and your balance follows you. There is no account and no password,
+          which is also why the key is worth keeping somewhere safe: anyone holding it can spend the
+          credits on it.</div></details>
+      <details><summary>What if an analysis fails?</summary>
+        <div class="prose">The credit goes back automatically. A failure on our side is never
+          charged for &mdash; the balance is an append-only ledger, so the refund is a visible entry
+          rather than a number being quietly adjusted.</div></details>
+      <details><summary>Do credits expire?</summary>
+        <div class="prose">No. They sit on your key until you spend them.</div></details>
+      <details><summary>Can I use the exports commercially?</summary>
+        <div class="prose">Yes, on the 10 and 50 packs &mdash; releases, promos, client work, paid
+          ads. We claim nothing over your music or the visuals rendered from it.</div></details>
+      <details><summary>Do you keep my music?</summary>
+        <div class="prose">The uploaded file is analysed and deleted. What is kept is the analysis
+          itself &mdash; tempo, sections, onset times &mdash; cached against the file&rsquo;s
+          fingerprint so that re-uploading the same track costs you nothing.</div></details>
+      <details><summary>Refunds?</summary>
+        <div class="prose">Unspent credits, within 14 days, no argument. Reply to your receipt.
+          Spent ones are a conversation &mdash; tell us what went wrong.</div></details>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer><div class="foot">
+  <a class="mark" style="font-size:14px" href="./index.html">ATONAL<i>.</i></a>
+  <span class="lab">AI music visualisation</span>
+  <span class="lab">&copy; 2026</span>
+</div></footer>
+
+<script>
+/* ============================================================================
+   Checkout is a redirect to Stripe, and that is the whole client side of it.
+   No card field exists on this page, so there is nothing here for anyone to
+   harvest and nothing for us to be careless with.
+   ========================================================================== */
+(function(){
+  'use strict';
+  var API = location.origin;
+  var status = document.getElementById('status');
+
+  function say(kind, html){
+    status.innerHTML = '<div class="note ' + kind + '">' + html + '</div>';
+  }
+  var WORDS=['no','one','two','three','four','five','six','seven','eight','nine','ten'];
+
+  /* The packs come FROM THE SERVER so the page and the ledger cannot disagree
+     about what a pack costs. The markup already holds the same numbers, so a
+     failed fetch leaves a correct page rather than an empty one. */
+  fetch(API + '/packs').then(function(r){ return r.json(); }).then(function(d){
+    var fmt = new Intl.NumberFormat(undefined,{style:'currency',currency:(d.currency||'eur').toUpperCase(),
+                                               maximumFractionDigits:2});
+    Object.keys(d.packs || {}).forEach(function(k){
+      var el = document.querySelector('[data-pack="'+k+'"] [data-price]');
+      if(!el) return;
+      var p = d.packs[k], each = p.amount / p.credits / 100;
+      el.innerHTML = fmt.format(p.amount/100) +
+        '<small>/ ' + (p.credits === 1 ? '1 credit' : fmt.format(each) + ' each') + '</small>';
+    });
+    if(typeof d.free_per_day === 'number'){
+      var n = d.free_per_day, w = WORDS[n] || String(n);
+      var lab = document.getElementById('freeLab');
+      if(lab) lab.textContent = (n === 1 ? 'One track a day, free, no account'
+                                         : w.charAt(0).toUpperCase()+w.slice(1) + ' tracks a day, free, no account');
+      var fn = document.getElementById('freeN'); if(fn) fn.textContent = w;
+    }
+    if(!d.stripe){
+      say('warn','<strong>Checkout is not live yet.</strong> The buttons below are wired and the ' +
+        'ledger is running &mdash; they need Stripe keys in the server environment before they can ' +
+        'take a payment. Until then, everyone gets the free daily tracks.');
+      document.querySelectorAll('[data-buy]').forEach(function(b){ b.disabled = true; });
+    }
+  }).catch(function(){
+    say('warn','<strong>Could not reach the server</strong>, so live prices and checkout are ' +
+      'unavailable. The figures below are the current ones.');
+    document.querySelectorAll('[data-buy]').forEach(function(b){ b.disabled = true; });
+  });
+
+  document.querySelectorAll('[data-buy]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var pack = btn.getAttribute('data-buy');
+      var was = btn.innerHTML;
+      btn.disabled = true; btn.textContent = 'Opening Stripe…';
+      fetch(API + '/checkout', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({pack: pack})
+      }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+        .then(function(res){
+          if(res.ok && res.j.url){ location.href = res.j.url; return; }
+          throw new Error(res.j.error || 'checkout unavailable');
+        })
+        .catch(function(e){
+          btn.disabled = false; btn.innerHTML = was;
+          say('warn','<strong>Checkout could not start.</strong> ' +
+              String(e.message || e).replace(/[<>]/g,'') + ' Nothing has been charged.');
+        });
+    });
+  });
+
+  if(new URLSearchParams(location.search).get('cancelled')){
+    say('', 'Checkout was cancelled &mdash; nothing was charged.');
+  }
+})();
+</script>
+</body>
+</html>

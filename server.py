@@ -11,10 +11,10 @@ POST an audio file -> runs the understanding pipeline -> returns director.json.
 CORS is open so the browser renderer (any origin, incl. file://) can call it.
 Run:  python server.py   (default http://127.0.0.1:8770)
 """
-import os, json, time, socket, tempfile, traceback, threading, hashlib
+import os, json, time, socket, tempfile, traceback, threading, hashlib, secrets
 from urllib.parse import urlparse, parse_qs, unquote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import analyze, tagger
+import analyze, tagger, billing
 
 # One analysis at a time. librosa + a 300MB PANNs model are both CPU and memory heavy; two
 # concurrent requests do not run twice as fast, they thrash and can exhaust memory.
@@ -97,7 +97,7 @@ class H(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Render-Key")
         # Private Network Access. Chrome treats a request from a public or opaque origin (which
         # includes file://) to a loopback address as a private-network request, preflights it with
         # Access-Control-Request-Private-Network, and BLOCKS it unless the response opts in.
@@ -117,7 +117,104 @@ class H(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204); self._cors(); self.end_headers()
 
+    def _ip(self):
+        """The free tier counts per IP, so behind a proxy the header is the only
+        real client address -- but it is client-settable, so it is trusted ONLY
+        when ATONAL_TRUST_PROXY says a proxy is in front of us. Trusting it
+        unconditionally would make the free-tier limit one header away from
+        infinite."""
+        if os.environ.get("ATONAL_TRUST_PROXY"):
+            fwd = self.headers.get("X-Forwarded-For", "")
+            if fwd:
+                return fwd.split(",")[0].strip()[:64]
+        return self.client_address[0]
+
+    def _billing_get(self, path, q):
+        """GET side of billing. Returns True if it handled the request."""
+        if path.startswith("/credits"):
+            key = (q.get("key") or [""])[0].strip()
+            out = {"free_left": billing.free_left(self._ip()),
+                   "free_per_day": billing.FREE_PER_DAY,
+                   "stripe": billing.stripe_ready()}
+            if key:
+                out["known"] = billing.key_exists(key)
+                out["balance"] = billing.balance(key) if out["known"] else 0
+            self._json(200, out)
+            return True
+        if path.startswith("/packs"):
+            self._json(200, {"currency": billing.CURRENCY,
+                             "stripe": billing.stripe_ready(),
+                             "free_per_day": billing.FREE_PER_DAY,
+                             "packs": billing.PACKS})
+            return True
+        if path.startswith("/claim"):
+            sid = (q.get("session_id") or [""])[0].strip()
+            if not sid:
+                self._json(400, {"error": "missing session_id"}); return True
+            if not billing.stripe_ready():
+                self._json(503, {"error": "billing is not configured"}); return True
+            try:
+                self._json(200, billing.claim(sid))
+            except Exception as e:
+                traceback.print_exc()
+                self._json(400, {"error": "could not confirm that purchase"})
+            return True
+        return False
+
+    def _body(self, cap=1 << 20):
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            return None
+        if n <= 0 or n > cap:
+            return None
+        return self.rfile.read(n)
+
+    def _checkout(self):
+        """Creates a Stripe Checkout Session and hands back its URL. No card
+        details ever reach this server or the site -- the browser goes to Stripe's
+        own hosted page, which is the entire point of using it."""
+        if not billing.stripe_ready():
+            return self._json(503, {"error": "billing is not configured yet"})
+        raw = self._body()
+        if raw is None:
+            return self._json(400, {"error": "bad body"})
+        try:
+            pack = (json.loads(raw or b"{}") or {}).get("pack", "")
+        except Exception:
+            return self._json(400, {"error": "bad JSON"})
+        if pack not in billing.PACKS:
+            return self._json(400, {"error": "unknown pack"})
+        # The origin the browser is actually on, so the redirect comes back here
+        # whether that is localhost or the live domain. Restricted to a host we
+        # serve, so this cannot be used to bounce a customer somewhere else.
+        origin = os.environ.get("ATONAL_ORIGIN") or ("http://" + (self.headers.get("Host") or f"127.0.0.1:{PORT}"))
+        try:
+            return self._json(200, {"url": billing.checkout_url(pack, origin)})
+        except Exception:
+            traceback.print_exc()
+            return self._json(502, {"error": "could not start checkout"})
+
+    def _webhook(self):
+        """Stripe calls this. The signature check is what makes it safe to expose:
+        without it, this is an unauthenticated endpoint that mints credits."""
+        raw = self._body()
+        if raw is None:
+            return self._json(400, {"error": "bad body"})
+        sig = self.headers.get("Stripe-Signature", "")
+        try:
+            out = billing.webhook(raw, sig)
+            return self._json(200, out)
+        except Exception as e:
+            # 400 so Stripe retries a genuine transient failure, and so a forged
+            # call gets nothing. The reason stays in our log, not the response.
+            traceback.print_exc()
+            return self._json(400, {"error": "webhook rejected"})
+
     def do_GET(self):
+        _q = parse_qs(urlparse(self.path).query)
+        if self._billing_get(urlparse(self.path).path, _q):
+            return
         if self.path.startswith("/progress"):
             job = (parse_qs(urlparse(self.path).query).get("job") or [""])[0]
             with _PLOCK:
@@ -203,7 +300,12 @@ class H(BaseHTTPRequestHandler):
         return True
 
     def do_POST(self):
-        if not self.path.startswith("/analyze"):
+        path = urlparse(self.path).path
+        if path == "/checkout":
+            return self._checkout()
+        if path == "/stripe/webhook":
+            return self._webhook()
+        if not path.startswith("/analyze"):
             return self._json(404, {"error": "not found"})
         # Parsed BEFORE the try below, so a non-numeric header used to raise ValueError straight
         # out of do_POST: no response at all, just a dropped connection and a traceback in the
@@ -224,6 +326,7 @@ class H(BaseHTTPRequestHandler):
         name = unquote(self.headers.get("X-Filename", "upload.mp3"))
         ext = os.path.splitext(name)[1] or ".mp3"
         tmp = None
+        charged = None            # (key, attempt-ref) once a credit has been taken
         try:
             data = self.rfile.read(n)
             # Cache on the CONTENT, not the filename: the same track renamed is the same
@@ -237,6 +340,32 @@ class H(BaseHTTPRequestHandler):
                 print(f"[cache] {name} -> {digest[:12]}", flush=True)
                 del data
                 return self._json(200, hit)
+            # ---- THE GATE ----
+            # Below the cache check on purpose: a cache hit does no work, so
+            # charging for it would be charging for a dictionary lookup. Above
+            # everything expensive, so nothing is spent before payment is.
+            # The ref is per ATTEMPT rather than per track, so a refund below
+            # cannot leave a track permanently free to re-analyse.
+            key = (self.headers.get("X-Render-Key") or "").strip()
+            attempt = digest[:16] + ":" + secrets.token_hex(6)
+            if key:
+                if not billing.key_exists(key):
+                    del data
+                    return self._json(402, {"error": "That render key is not recognised.",
+                                            "code": "bad_key"})
+                if not billing.spend(key, "analyze " + name[:60], "an:" + attempt):
+                    del data
+                    return self._json(402, {"error": "No credits left on this key.",
+                                            "code": "no_credits", "balance": 0})
+                charged = (key, attempt)
+            else:
+                if not billing.free_take(self._ip()):
+                    del data
+                    return self._json(402, {
+                        "error": f"That is your free "
+                                 f"{'track' if billing.FREE_PER_DAY == 1 else 'tracks'} for today. "
+                                 f"A credit unlocks the next one.",
+                        "code": "free_used"})
             fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
             with os.fdopen(fd, "wb") as fp: fp.write(data)
             del data                                     # drop the upload copy before analysis allocates
@@ -257,6 +386,9 @@ class H(BaseHTTPRequestHandler):
             self._json(200, d)
             print(f"[done] {name}: {secs} sections, genre={genre} bpm={bpm}", flush=True)
         except Exception as e:
+            # A crash on our side must never cost the customer a credit.
+            if charged:
+                billing.refund(charged[0], "refund: analysis failed", "rf:" + charged[1])
             traceback.print_exc()                        # full detail to the server log...
             # ...but never to the client: the raw exception carried absolute filesystem paths
             # and the full ffmpeg command line.
