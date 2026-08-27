@@ -265,7 +265,7 @@
   <details id="gForm" open><summary>Form</summary>
     <div class="row"><label>Shape</label><select id="selShape">
       <option value="auto">Auto &middot; Director</option>
-      <option value="0">Triskelion</option><option value="1">Clover</option>
+      <option value="0">Rotor</option><option value="1">Clover</option>
       <option value="2">Arc</option><option value="3">Chevron</option>
       <option value="4">Wave</option><option value="5">Plate</option>
       <option value="6">Gear</option><option value="7">Knot</option>
@@ -679,6 +679,30 @@ float s2Seg(vec2 p,vec2 a,vec2 b,float r){
 float s2Disc(vec2 p,float r){ return length(p)-r; }
 float s2Box(vec2 p,vec2 b,float r){ vec2 d=abs(p)-b+r; return min(max(d.x,d.y),0.0)+length(max(d,0.0))-r; }
 float sMax2(float a,float b,float k){ float h=clamp(0.5-0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)+k*h*(1.0-h); }
+/* THE TAPERED STROKE. Every other primitive here is a CONSTANT-weight stroke --
+   a capsule, a disc, a rounded box -- which is why the family reads as cut from
+   one sheet. This is the one that tapers, and a taper is what gives extr()'s
+   bevel band a width that CHANGES along the form instead of running round it
+   unvarying.
+   NOT the exact rounded cone. That version costs three square roots and three
+   branches per call; measured on the hero panel at 128 steps, with eleven calls
+   per map() and a hundred-odd map() calls per pixel, it took the frame from
+   8.4ms to 50ms. This is the interpolated-radius form scaled by the tangent's
+   inclination. Inside the tangent band, length(pa-ba*h)-mix(r1,r2,h) is the
+   distance to the AXIS less the local radius, and the true distance to the
+   inclined tangent line is exactly that times cos(theta) -- so with the scale it
+   is not an approximation there, it is exact. Past the caps h clamps and the
+   bracket is the exact distance to the end circle, which cos(theta) then
+   understates slightly. An UNDERestimate is the safe direction for sphere
+   tracing, so the march still cannot step through the surface. */
+float s2Cone(vec2 p, vec2 a, vec2 b, float r1, float r2){
+  vec2 pa=p-a, ba=b-a;
+  float L2=dot(ba,ba);
+  float h=clamp(dot(pa,ba)/L2, 0.0, 1.0);
+  float k=r1-r2;
+  float c=sqrt(max(1.0-k*k/L2, 0.0));
+  return (length(pa-ba*h)-mix(r1,r2,h))*c;
+}
 mat2 rr2(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
 
 /* Flat faces + straight walls + rounded bevel. Inflate the profile and the slab by the bevel,
@@ -800,21 +824,58 @@ float exBevel(){ return (0.055 + u_gCut*0.012)*u_pEdge*u_bevK*u_kalBev; }
 const float FILLET = 0.48;
 // TRISKELION — three arms, each running out from the centre then hooking a quarter turn. The
 // reference's own shape; the hook is what makes the silhouette read differently from every angle.
-float p2Tris(vec2 p){
-  float d=1e9, w=0.19+u_gDense*0.03;
-  // Segment count is a uniform, so the step is 2pi/N rather than a baked 2pi/3. GLSL ES 3.00
-  // allows a non-constant loop bound, which is what makes this a parameter and not a rebuild.
-  int N=int(clamp(u_segN,2.0,8.0));
-  for(int i=0;i<N;i++){
-    vec2 q=rr2(float(i)*6.2831853/float(N)+u_gTwist*0.25)*p;
-    float a=s2Seg(q,vec2(0.02,0.0),vec2(0.66,0.0),w);
-    float b=s2Seg(q,vec2(0.66,0.0),vec2(0.66,0.70),w);
-    d=smin3(d, smin3(a,b,0.24), FILLET*w);   // arm-to-arm, was min() -- the radial crease
+/* ROTOR -- N swept, tapered blades on a tie ring, each blade slotted, around a
+   hub with a bore.
 
+   IT REPLACES THE TRISKELION, which occupied this slot (mode 0) until now.
+   Anything below still naming the Triskelion, or p2Tris, is talking about this
+   slot -- the kaleidoscope narrative that follows is a record of what was tried
+   and measured against the old profile, and renaming it there would falsify the
+   record rather than update it.
+   The Triskelion was three hooked arms in one constant-weight stroke, and the
+   kaleidoscope note below is the argument against it in its own words: a fold
+   keeps a wedge and mirrors it, so a profile whose entire interest is its
+   OUTLINE has nothing left once the wedge is taken and comes through as the same
+   bland petal as everything else. The forms that survive the fold are the ones
+   carrying repeated structure at a scale BELOW the wedge -- teeth, bores, rings,
+   a weave. The Triskelion was in FOLD_FRIENDLY on the strength of its arms, and
+   its arms are exactly what the wedge cuts off.
+   So this one is built to have that structure: the slot, the tie ring and the
+   bore all sit well inside a wedge and the mirrors multiply them.
+
+   Still C_segN, so it keeps its entry in the fold-order table and Segments still
+   means something obvious here -- it is the blade count.
+
+   REACH IS 0.9499, MEASURED, not read off the constants: the tip sits at 0.92
+   but the tip cap, the sweep and smin3's inflation all move it. Swept over every
+   segment count 2..8 and the full range of Density, Twist and Cut on a 1400x1400
+   grid, the largest inside-radius came out 0.9496-0.9499 every time -- the tip
+   dominates, so one constant is right for all of them. mRotor normalises on it.
+   Y REACH IS THE SAME as the radius, so REACH_Y gets 1.15 like the Gear and the
+   Knot: the blades are radial, and under swirl a tip reaches straight up. */
+float p2Rotor(vec2 p){
+  int N=int(clamp(u_segN,2.0,8.0));
+  float w=0.165+u_gDense*0.035;
+  float sw=0.30+u_gTwist*0.42;                 // the sweep, so Twist reads as blade pitch
+  float r=length(p);
+  float d=r-(0.185+u_gDense*0.025);                                 // hub
+  d=smin3(d, abs(r-0.485)-(0.052+u_gThick*0.012), 0.10);            // tie ring
+  /* ONE PASS over the blades. Each slot is subtracted straight after its own
+     blade is unioned in, which is what lets it pierce the tie ring as well --
+     cut before the union, the ring would simply fill it back in; cut in a second
+     loop, it costs another N rotations for the same field, because no later
+     blade ever overlaps an earlier slot. */
+  for(int i=0;i<8;i++){
+    if(i>=N) break;
+    vec2 q=rr2(float(i)*6.2831853/float(N))*p;
+    vec2 A=vec2(0.14,0.0), M=rr2(sw*0.42)*vec2(0.55,0.0), T=rr2(sw)*vec2(0.92,0.0);
+    float b=smin3(s2Cone(q,A,M,w,w*0.66), s2Cone(q,M,T,w*0.66,w*0.15), FILLET*w);
+    d=smin3(d,b,FILLET*w);
+    vec2 S0=rr2(sw*0.25)*vec2(0.33,0.0), S1=rr2(sw*0.86)*vec2(0.79,0.0);
+    d=sMax2(d, -s2Cone(q,S0,S1,0.062+u_gCut*0.018,0.016), 0.050);
   }
-  return d;
+  return max(d, -(r-(0.075+u_gCut*0.02)));                          // bore
 }
-// CLOVER — three fat lobes on a hub, the simplest bold poster form
 float p2Clover(vec2 p){
   float d=s2Disc(p,0.30+u_gDense*0.04);
   int N=int(clamp(u_segN,2.0,8.0));
@@ -888,7 +949,7 @@ float p2Plate(vec2 p){
    All three are exact unions of primitives rather than folded domains, for the reason the
    kaleidoscope note gives at length: a fold's result depends on a symmetry the shape has to
    actually possess, while min() of real primitives cannot be wrong about one. They also stay
-   cheap -- the cost is a fixed number of segment/circle distances, the same order as p2Tris. */
+   cheap -- the cost is a fixed number of segment/circle distances, the same order as p2Rotor. */
 // GEAR — a toothed annulus with a bore. u_segN sets the teeth, at two per segment, so the
 // Segments slider means something obvious here: 3 gives six teeth, 8 gives sixteen.
 float p2Gear(vec2 p){
@@ -934,7 +995,7 @@ float p2Lattice(vec2 p){
   }
   return max(d, length(p)-(0.74+u_gThick*0.04));           // clipped, or the bars run forever
 }
-float mArray(vec3 p){    float S=EXR/1.152; return extr(p2Tris (p.xy/S)*S, p, exDepth(), exBevel()); }
+float mRotor(vec3 p){    float S=EXR/0.950; return extr(p2Rotor(p.xy/S)*S, p, exDepth(), exBevel()); }
 float mStack(vec3 p){    float S=EXR/1.020; return extr(p2Clover(p.xy/S)*S, p, exDepth(), exBevel()); }
 float mRings(vec3 p){    float S=EXR/0.930; return extr(p2Arc  (p.xy/S)*S, p, exDepth(), exBevel()); }
 float mTruss(vec3 p){    float S=EXR/0.870; return extr(p2Chev (p.xy/S)*S, p, exDepth()*0.92, exBevel()); }
@@ -992,7 +1053,7 @@ float mVol(vec3 p){
 float evalMode(vec3 p,float m){
   if(u_volOn>0.5) return mVol(p);   // an imported mesh replaces the generated set entirely
   if(u_svgOn>0.5) return mSVG(p);   // an uploaded shape replaces the generated set entirely
-  if(m<0.5)       return mArray(p);
+  if(m<0.5)       return mRotor(p);
   else if(m<1.5)  return mStack(p);
   else if(m<2.5)  return mRings(p);
   else if(m<3.5)  return mTruss(p);
@@ -1154,7 +1215,7 @@ float evalForm(vec3 p){
    replicates a slice, and the surviving pieces come apart. Read off the constructions rather than
    assumed -- and the reading disagrees with the older note, which said only p2Tris and p2Clover:
 
-     mArray   p2Tris     loop at i*2PI/N, N=clamp(segN,2,8)          -> C_segN
+     mRotor   p2Rotor    loop at i*2PI/N, N=clamp(segN,2,8)          -> C_segN
      mStack   p2Clover   loop at i*2PI/N plus a centred disc         -> C_segN
      mGear    p2Gear     teeth at i*2PI/2N, circular rim and bore    -> C_2segN, so C_segN holds
      mKnot    p2Knot     loop at i*2PI/N, N=clamp(segN,2,6)          -> C_segN AT ITS OWN CLAMP
@@ -4497,8 +4558,9 @@ const CALM=[3,2,8], MID=[1,3,7], HOT=[0,4,5,6];
    which is why every shape looked alike once the fold was on. A profile carrying repeated
    internal structure at a scale below the wedge -- teeth, bores, rings, a weave -- still has
    detail inside the slice, and the mirrors multiply it into something worth looking at.
-   Triskelion, Clover, Gear, Knot and Lattice have that. Arc, Chevron, Wave and Plate are single
-   smooth strokes and do not. */
+   Rotor, Clover, Gear, Knot and Lattice have that. Arc, Chevron, Wave and Plate are single
+   smooth strokes and do not. (The Rotor was built for this line: the Triskelion it replaced was
+   in this list on the strength of its arms, and its arms are what the wedge cuts off.) */
 const FOLD_FRIENDLY=[0,1,6,7,8];
 let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 // Object-space reach per mode — the radius that actually sets the silhouette, read off each
@@ -4516,8 +4578,11 @@ const REACH=[1.15,1.15,1.15,1.15,1.15,1.15, 1.15,1.15,1.15];
 // DISC is the case this table exists for: 1.00 across and 0.64 deep, so framing it on the
 // radius alone would leave a third of the frame empty above and below it.
 // Gear and Knot are radially symmetric, so their Y extent IS their radius; the Lattice is a
-// square weave clipped to a disc, so likewise.
-const REACH_Y=[0.89,1.15,1.15,1.00,0.58,0.92, 1.15,1.15,1.10];
+// square weave clipped to a disc, so likewise. The Rotor joins them: its blades are radial, so
+// under swirl a blade tip reaches straight up and its Y extent is its radius too -- measured
+// 0.9497 against a reach of 0.9499 on the raw profile, which normalises to the same 1.15.
+// (This row read 0.89 while mode 0 was the Triskelion, whose three arms are NOT radial.)
+const REACH_Y=[1.15,1.15,1.15,1.00,0.58,0.92, 1.15,1.15,1.10];
 // The uploaded artwork is not one of the generated modes, so its extent is not in REACH[].
 // svgReach is measured from the field itself at upload time — the real silhouette radius, not an
 // assumption — so framing normalises an uploaded logo exactly the way it does a built-in shape.
@@ -6459,7 +6524,7 @@ function frame(){
   gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_swirl'),formSwirl);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
-     have segments (p2Tris, p2Clover) and just a reasonable angle on the four that do not. See
+     have segments (p2Rotor, p2Clover) and just a reasonable angle on the four that do not. See
      the kaleidoscope note in map() for why that is fine and why this is a dial to look at rather
      than a lattice to compute. window.KAL={phase} to try others. */
   const KALO=window.KAL||{};
@@ -8162,13 +8227,13 @@ function rollAll(seedStr){
   // ---- things every family gets, rolled BEFORE the recipe so the recipe can override them
   setCtl('selPal', pick(r,['auto','auto','auto','blood','acid','ultra','cyber','solar','mono']));
   /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count and only two of the six
-     profiles use it (p2Tris and p2Clover -- see the symmetry table in the shader); on the others the
+     profiles use it (p2Rotor and p2Clover -- see the symmetry table in the shader); on the others the
      slider is inert, so rolling a high count there is a roll that did nothing. And the Arc is a
      broken ring: repeated eight times it stops reading as a single stroke. */
   const shape=pick(r,['0','1','2','3','4','5','6','7','8','6','7','8']);   // the complex three, twice as often
   setCtl('selShape',shape);
   /* Segments means something different per profile: teeth on the Gear, rings on the Knot, bars
-     on the Lattice, arms on the Triskelion -- and nothing at all on the Wave or the Plate. The
+     on the Lattice, blades on the Rotor -- and nothing at all on the Wave or the Plate. The
      ceiling is per shape so a roll never spends its randomness on a slider that is inert, and
      never asks the Arc (a broken ring) for eight of itself. */
   const segMax = (shape==='0'||shape==='1'||shape==='6') ? 6
