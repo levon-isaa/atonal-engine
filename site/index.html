@@ -7,7 +7,7 @@
 <title>ATONAL Engine</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
 /* ============================================================================
    ATONAL — landing page
@@ -38,18 +38,22 @@ body{
 a{color:inherit;text-decoration:none}
 /* DISPLAY IS SYNE. Archivo is a good grotesque and that was the problem -- it is
    the same neutral voice every technical landing page uses, so the type carried
-   none of the character the renders do. Syne is a display face from the art-book
+   none of the character the renders do. Space Grotesk is a technical display face
    end of things: wide, geometric, with a lowercase that is unmistakably itself.
    It runs at the two large sizes only. Everything small stays in Instrument Sans
-   or the mono, because Syne is a poster face and knows it. */
+   or the mono, because it holds its own next to a monospace. */
 h1,h2,h3,.mark,.big{
-  font-family:Syne,ui-sans-serif,system-ui,sans-serif;
-  font-weight:800; letter-spacing:-.026em; line-height:1.0;
+  font-family:'Space Grotesk',ui-sans-serif,system-ui,sans-serif;
+  font-weight:700; letter-spacing:-.014em; line-height:1.02;
   text-wrap:balance; margin:0;
 }
-/* Syne is a wide face -- 'rendered' at 36px overruns a 375px column. The
-   floor comes down and vw does the work sooner. */
-h1{font-size:clamp(29px,4.4vw,60px);letter-spacing:-.036em;line-height:.98;
+/* TRACKING RELAXED WITH THE FACE. -.036em was set against Syne, which is wide
+   enough to want pulling in; Space Grotesk is narrower and already tightly
+   fitted, so the same value closed the counters up and read as cramped at
+   display size. The small-screen floor stays where it is -- it came down
+   because 'rendered' overran a 375px column, and a narrower face only makes
+   that safer. */
+h1{font-size:clamp(29px,4.4vw,60px);letter-spacing:-.022em;line-height:1.0;
   overflow-wrap:break-word}
 h2{font-size:clamp(28px,3.9vw,48px)}
 h3{font-size:18.5px;letter-spacing:-.014em;line-height:1.22;font-weight:700}
@@ -121,7 +125,7 @@ header.cond .nav{height:52px}
 header.cond{background:rgba(7,7,11,.88);border-bottom-color:var(--line-2)}
 .mark{transition:transform .4s var(--ease);transform-origin:left center}
 header.cond .mark{transform:scale(.92)}
-.mark{font-size:18px;letter-spacing:-.01em;font-weight:800}
+.mark{font-size:18px;letter-spacing:-.01em;font-weight:700}
 .mark i{color:var(--mag);font-style:normal}
 .nav nav{display:flex;gap:24px;margin-left:auto}
 .nav nav a{position:relative;padding:4px 0;color:var(--ink-2);font-size:13.5px;transition:color .25s}
@@ -229,7 +233,7 @@ header.cond .mark{transform:scale(.92)}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);border-top:0}
 .stats .s{padding:22px var(--pad);border-left:1px solid var(--line)}
 .stats .s:first-child{border-left:0}
-.stats b{display:block;font-family:Syne,sans-serif;
+.stats b{display:block;font-family:'Space Grotesk',sans-serif;
   font-weight:700;font-size:clamp(26px,3.4vw,40px);letter-spacing:-.04em;line-height:1;
   font-variant-numeric:tabular-nums;margin-bottom:9px}
 @media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}
@@ -303,7 +307,7 @@ header.cond .mark{transform:scale(.92)}
 .pack.f{background:linear-gradient(180deg,rgba(255,62,142,.075),rgba(130,87,255,.045))}
 .pack.f::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;
   background:linear-gradient(90deg,var(--mag),var(--vio))}
-.price{font-family:Syne,sans-serif;font-weight:800;
+.price{font-family:'Space Grotesk',sans-serif;font-weight:700;
   font-size:44px;letter-spacing:-.045em;line-height:1}
 .price small{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:400;color:var(--ink-3);
   letter-spacing:.06em;margin-left:8px}
@@ -420,7 +424,7 @@ footer{border-top:1px solid var(--line);padding:22px 0}
   opacity:.34;transition:opacity .5s var(--ease)}
 .howStep:first-child{border-top:0}
 .howStep.on{opacity:1}
-.howStep .n{font-family:Syne,sans-serif;font-weight:800;
+.howStep .n{font-family:'Space Grotesk',sans-serif;font-weight:700;
   font-size:44px;line-height:1;color:var(--line-2);margin-bottom:16px;
   font-variant-numeric:tabular-nums;transition:color .5s var(--ease)}
 .howStep.on .n{color:var(--mag)}
