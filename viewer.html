@@ -7623,6 +7623,30 @@ $('rec').addEventListener('click',async()=>{
    exact O(n) transform (1D parabola lower-envelope along rows, then columns). A cheap
    approximation such as a chamfer pass leaves directional bias that shows up as faceting on
    the extruded sides once the surface is lit. */
+/* THE FIELD IS BUILT AT SVG_SS x THIS AND AVERAGED DOWN, and the distinction matters:
+   raising SVG_RES alone does NOT help, which was measured in the browser (1024 vs 2048 moved the
+   visible ripple not at all) because it shrinks the texel and the staircase error together and
+   leaves the error in OBJECT units where it was. Binarising finer and then averaging down keeps
+   the texel size and shrinks only the error.
+   WHAT THE ERROR IS. The mask is binary, so a diagonal edge is a staircase, and the EDT measures
+   distance to that staircase rather than to the real line. On a straight diagonal the staircase
+   is regular, so the error is PERIODIC along the edge -- measured at a dominant period of about
+   15 texels, which is what the eye reads as ridges running down an extruded wall. It also grows
+   with distance from the edge: peak-to-peak 0.34 texels at 2 texels out, 2.73 at 20.
+   The coverage refinement below does not touch any of it. It is confined to 1.5 texels of the
+   boundary and the wall's surface sits at the bevel, about 7 texels out -- measured directly, the
+   field at every distance from 2 texels outward is BYTE-IDENTICAL with the refinement on and off.
+   Supersampling the binarisation is what moves it, and it scales as 1/S, measured on a half-plane
+   cut at the same angle as the test triangle's edge, as RMS error along the edge at 7 texels out:
+       S=1  0.1018 texels   p2p 0.313
+       S=2  0.0474          p2p 0.140     <- here, and 4x the build cost
+       S=3  0.0289          p2p 0.083
+       S=4  0.0194          p2p 0.057
+   S=2 rather than 3 or 4 because the EDT is O(n) over S^2 cells and its scratch buffers are
+   Float64: at S=2 and res 1024 the transform runs over 4.2M cells, at S=4 over 17M, which is a
+   second of main thread and ~300MB of transient allocation for another 0.03 of a texel. */
+const SVG_SS = 2;                          // supersample factor for the binarise+EDT stage
+window.SVGSS = undefined;                  // override for A/B: window.SVGSS=1 rebuilds the old way
 const SVG_RES = 1024;                      // field resolution: one texel = 0.00195 object units,
                                            // about one calcN epsilon (0.0018), so the normal is
                                            // read across roughly a texel rather than inside one.
@@ -7669,6 +7693,8 @@ function edt2d(mask, w, h, inside) {
 
 /** Rasterise an SVG string and return a Float32Array signed distance field in OBJECT units. */
 async function svgToSDF(svgText, res = SVG_RES) {
+  const SS = Math.max(1, Math.round(window.SVGSS || SVG_SS));
+  const fine = res * SS;                   // binarise and transform here, average down to `res`
   // Force a viewBox-independent render size. Without width/height an SVG with only a viewBox
   // has no intrinsic size and Chrome draws it at 0x0 or 300x150 depending on the markup.
   const blob = new Blob([svgText], { type: 'image/svg+xml' });
@@ -7677,19 +7703,19 @@ async function svgToSDF(svgText, res = SVG_RES) {
   try {
     await new Promise((ok, err) => { img.onload = ok; img.onerror = () => err(new Error('SVG failed to render')); img.src = url; });
     const cv = document.createElement('canvas');
-    cv.width = cv.height = res;
+    cv.width = cv.height = fine;
     const g = cv.getContext('2d', { willReadFrequently: true });
-    g.clearRect(0, 0, res, res);
+    g.clearRect(0, 0, fine, fine);
     // fit with margin, preserving aspect
-    const iw = img.naturalWidth || img.width || res, ih = img.naturalHeight || img.height || res;
-    const inner = res * (1 - SVG_PAD * 2);
+    const iw = img.naturalWidth || img.width || fine, ih = img.naturalHeight || img.height || fine;
+    const inner = fine * (1 - SVG_PAD * 2);
     const sc = inner / Math.max(iw, ih);
     const dw = iw * sc, dh = ih * sc;
-    g.drawImage(img, (res - dw) / 2, (res - dh) / 2, dw, dh);
-    const px = g.getImageData(0, 0, res, res).data;
+    g.drawImage(img, (fine - dw) / 2, (fine - dh) / 2, dw, dh);
+    const px = g.getImageData(0, 0, fine, fine).data;
 
-    const mask = new Uint8Array(res * res);
-    const cov = new Float32Array(res * res);   // fractional coverage, kept for the sub-texel edge
+    const mask = new Uint8Array(fine * fine);
+    const cov = new Float32Array(fine * fine);   // fractional coverage, kept for the sub-texel edge
     let covered = 0;
     for (let i = 0, j = 3; i < mask.length; i++, j += 4) {
       // alpha, not luminance: a black logo on transparent is the normal case and would read as
@@ -7701,11 +7727,11 @@ async function svgToSDF(svgText, res = SVG_RES) {
     if (covered === 0) throw new Error('SVG rendered empty — needs a filled shape');
     if (covered === mask.length) throw new Error('SVG covers the whole frame — no edge to extrude');
 
-    const dOut = edt2d(mask, res, res, 1);   // distance from inside cells to the outside
-    const dIn  = edt2d(mask, res, res, 0);   // distance from outside cells to the inside
-    const sdf = new Float32Array(res * res);
+    const dOut = edt2d(mask, fine, fine, 1);   // distance from inside cells to the outside
+    const dIn  = edt2d(mask, fine, fine, 0);   // distance from outside cells to the inside
+    const sdf = new Float32Array(fine * fine);
     // object space spans [-1,1] across the texture, so one texel is 2/res units
-    const k = 2 / res;
+    const k = 2 / fine;
     for (let i = 0; i < sdf.length; i++) {
       sdf[i] = (mask[i] ? -Math.sqrt(dOut[i]) : Math.sqrt(dIn[i])) * k;
     }
@@ -7734,25 +7760,47 @@ async function svgToSDF(svgText, res = SVG_RES) {
     // Coverage is what does the work; the blur is worth a further 1.4x on top of it. A cubic
     // B-spline reconstruction in the shader was tried as well and reached 2.05 rms — 7% better
     // for four texture fetches per sample in the march's innermost loop, so it was dropped.
+    // Run at `fine`, before the average-down, so the blur smooths the field the refinement
+    // corrected rather than one that has already been box-filtered by the downsample.
     const tmp = new Float32Array(sdf.length);
-    for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
-      const i = y * res + x, a = x > 0 ? sdf[i - 1] : sdf[i], b = x < res - 1 ? sdf[i + 1] : sdf[i];
+    for (let y = 0; y < fine; y++) for (let x = 0; x < fine; x++) {
+      const i = y * fine + x, a = x > 0 ? sdf[i - 1] : sdf[i], b = x < fine - 1 ? sdf[i + 1] : sdf[i];
       tmp[i] = (a + 2 * sdf[i] + b) * 0.25;
     }
-    for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
-      const i = y * res + x, a = y > 0 ? tmp[i - res] : tmp[i], b = y < res - 1 ? tmp[i + res] : tmp[i];
+    for (let y = 0; y < fine; y++) for (let x = 0; x < fine; x++) {
+      const i = y * fine + x, a = y > 0 ? tmp[i - fine] : tmp[i], b = y < fine - 1 ? tmp[i + fine] : tmp[i];
       sdf[i] = (a + 2 * tmp[i] + b) * 0.25;
+    }
+    /* AVERAGE DOWN TO `res`. A distance field averages cleanly -- it is a smooth scalar, not a
+       colour with a gamma curve on it -- and the mean of an S x S block is the distance at that
+       block's centre to first order. This is the step that converts the finer binarisation into
+       a smaller error at the SAME texel size; without it, building at `fine` would just be the
+       resolution change that was already measured to do nothing. */
+    let out = sdf;
+    if (SS > 1) {
+      out = new Float32Array(res * res);
+      const inv = 1 / (SS * SS);
+      for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
+        let acc = 0;
+        for (let sy = 0; sy < SS; sy++) {
+          const row = (y * SS + sy) * fine + x * SS;
+          for (let sx = 0; sx < SS; sx++) acc += sdf[row + sx];
+        }
+        out[y * res + x] = acc * inv;
+      }
     }
     // Silhouette extent, straight off the mask: the furthest covered texel from centre in each
     // axis. Used for framing, so an uploaded shape is fitted rather than guessed at.
+    // Measured on the FINE mask and normalised by it, so the numbers are in the same object
+    // units either way and do not change with SVG_SS.
     let rx = 0, ry = 0, rr = 0;
-    for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
-      if (!mask[y * res + x]) continue;
-      const ox = (x + 0.5) / res * 2 - 1, oy = (y + 0.5) / res * 2 - 1;
+    for (let y = 0; y < fine; y++) for (let x = 0; x < fine; x++) {
+      if (!mask[y * fine + x]) continue;
+      const ox = (x + 0.5) / fine * 2 - 1, oy = (y + 0.5) / fine * 2 - 1;
       rx = Math.max(rx, Math.abs(ox)); ry = Math.max(ry, Math.abs(oy));
       rr = Math.max(rr, Math.hypot(ox, oy));
     }
-    return { sdf, res, covered: covered / mask.length, reach: rr, reachY: ry };
+    return { sdf: out, res, covered: covered / mask.length, reach: rr, reachY: ry };
   } finally {
     URL.revokeObjectURL(url);
   }
