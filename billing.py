@@ -1,5 +1,5 @@
 """
-ATONAL — credits, keys and Stripe.
+ATONAL — credits, keys and Paddle.
 
 WHAT A CREDIT BUYS, AND WHY IT IS THE ANALYSIS.
 The export runs entirely in the browser: viewer.html encodes through WebCodecs
@@ -17,7 +17,7 @@ CACHE HITS ARE FREE. The analysis cache is keyed on audio content, so the same
 file uploaded again does no work; charging for it would be charging for a
 dictionary lookup. See the gate in server.py.
 
-NO ACCOUNTS. Stripe Checkout already collects an email and already proves
+NO ACCOUNTS. Paddle checkout already collects an email and already proves
 payment, so a second identity system on top of it would be pure liability. A
 purchase issues one long random RENDER KEY; the viewer stores it and sends it
 with each analysis. There is no password to reset and no session to steal.
@@ -37,9 +37,11 @@ DB_PATH = os.environ.get("ATONAL_DB", os.path.join(HERE, "out", "billing.db"))
 # unbounded-cost-with-zero-revenue case closed.
 FREE_PER_DAY = int(os.environ.get("ATONAL_FREE_PER_DAY", "2"))
 
-# The packs. Amounts are in cents and are PLACEHOLDERS until real Stripe Prices
-# exist; ATONAL_PRICE_<PACK> overrides each with a Stripe price id, which is what
-# should be used in production so the amount lives in Stripe rather than here.
+# The packs. `amount` is in cents and is for DISPLAY ONLY -- the pricing page
+# reads it so the numbers can be rendered without a round trip. Paddle will not
+# accept an inline amount, so the charged price always comes from the Paddle
+# price id in ATONAL_PRICE_<PACK>. If the two ever disagree, Paddle is right and
+# this is a stale label; see checkout_url.
 PACKS = {
     "single": {"credits": 1,  "amount": 600,   "label": "Single track"},
     "ten":    {"credits": 10, "amount": 4500,  "label": "Pack of 10"},
@@ -234,76 +236,143 @@ def free_left(ip: str) -> int:
     return max(0, FREE_PER_DAY - (int(row[0]) if row else 0))
 
 
-# ---------------------------------------------------------------- stripe
+# ---------------------------------------------------------------- paddle
+#
+# PADDLE, NOT STRIPE, AND THE REASON IS GEOGRAPHY. Stripe does not open merchant
+# accounts in Armenia, so the previous implementation could never have taken a
+# payment however correct it was. Paddle is a MERCHANT OF RECORD: it sells to the
+# customer and we sell to Paddle, which means no local merchant account is needed
+# and, just as importantly, Paddle files the EU VAT. Prices here are in EUR and
+# most buyers will be in the EU, so that second point is not a detail -- it is a
+# liability we would otherwise own.
+#
+# It costs more than raw card processing. That is what the VAT handling and the
+# country coverage are being bought with.
+#
+# NO SDK. Paddle's REST API is plain JSON over HTTPS and its webhook signature is
+# an HMAC we can compute with hashlib, so this needs `requests` (already a
+# dependency for the tagger) and nothing else. The stripe package is gone from
+# requirements.txt with this change.
 
+PADDLE_ENV = os.environ.get("PADDLE_ENV", "sandbox").strip().lower()
+PADDLE_API = ("https://api.paddle.com" if PADDLE_ENV == "production"
+              else "https://sandbox-api.paddle.com")
+# How long a webhook timestamp may lag before it is refused, in seconds. A replay
+# of a genuine, correctly signed request is still a replay.
+PADDLE_MAX_SKEW = 300
+
+
+def billing_ready():
+    """True when a payment can actually be taken. Everything else on the server
+    runs without it: the site serves, tracks analyse, and the free tier works."""
+    return bool(os.environ.get("PADDLE_API_KEY"))
+
+
+# Kept so an older page or bookmark does not break on the rename.
 def stripe_ready():
-    return bool(os.environ.get("STRIPE_SECRET_KEY"))
+    return billing_ready()
 
 
-def _stripe():
-    """Imported lazily and by name, so the server starts, serves the site and
-    analyses tracks with the library absent and no keys configured. Billing is
-    the only thing that degrades."""
-    import stripe
-    stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
-    return stripe
+def _paddle(method: str, path: str, body=None, timeout=20):
+    """One place that talks to Paddle, so the auth header and the error shape are
+    not repeated five times. Raises on anything that is not 2xx -- a silent
+    failure here would look like a customer who paid and got nothing."""
+    import requests
+    key = os.environ.get("PADDLE_API_KEY")
+    if not key:
+        raise RuntimeError("PADDLE_API_KEY is not set")
+    r = requests.request(
+        method, PADDLE_API + path,
+        headers={"Authorization": "Bearer " + key,
+                 "Content-Type": "application/json",
+                 # Pinning the API version stops a Paddle-side change from
+                 # altering the response shape under a running server.
+                 "Paddle-Version": "1"},
+        json=body, timeout=timeout)
+    if r.status_code // 100 != 2:
+        raise RuntimeError("paddle %s %s -> %s %s" % (method, path, r.status_code, r.text[:300]))
+    return r.json().get("data") or {}
 
 
 def checkout_url(pack: str, origin: str) -> str:
+    """Create a transaction and hand back its hosted checkout URL.
+
+    PADDLE NEEDS A PRICE ID AND WILL NOT TAKE AN INLINE AMOUNT. Stripe let us
+    send price_data with a number in it, which is why PACKS carried amounts at
+    all. Paddle prices live in Paddle, attached to a product, so each pack needs
+    ATONAL_PRICE_<PACK> set to a `pri_...` id. That is the better arrangement --
+    an amount defined in two places is an amount that will eventually disagree
+    with itself -- but it does mean this raises rather than inventing a price.
+    """
     if pack not in PACKS:
         raise ValueError("unknown pack")
-    s = _stripe()
+    price_id = (os.environ.get("ATONAL_PRICE_" + pack.upper()) or "").strip()
+    if not price_id:
+        raise RuntimeError(
+            "ATONAL_PRICE_%s is not set. Paddle prices are created in Paddle and "
+            "referenced by id; there is no inline amount to fall back to." % pack.upper())
     p = PACKS[pack]
-    price_id = os.environ.get("ATONAL_PRICE_" + pack.upper())
-    if price_id:
-        line = {"price": price_id, "quantity": 1}
-    else:
-        # Inline price. Fine for test mode; in production define real Stripe
-        # Prices so the amount is not duplicated in two places that can disagree.
-        line = {"quantity": 1, "price_data": {
-            "currency": CURRENCY,
-            "unit_amount": p["amount"],
-            "product_data": {"name": "ATONAL — " + p["label"],
-                             "description": f'{p["credits"]} track analysis credit'
-                                            f'{"s" if p["credits"] != 1 else ""}'},
-        }}
-    sess = s.checkout.Session.create(
-        mode="payment",
-        line_items=[line],
-        # Stripe substitutes the real id. The success page hands it to /claim.
-        success_url=origin + "/site/success.html?session_id={CHECKOUT_SESSION_ID}",
-        cancel_url=origin + "/site/pricing.html?cancelled=1",
-        # Credits are attached to whoever paid, so we need the address on file.
-        customer_creation="always",
-        metadata={"pack": pack, "credits": str(p["credits"])},
-    )
-    return sess.url
+    txn = _paddle("POST", "/transactions", {
+        "items": [{"price_id": price_id, "quantity": 1}],
+        # Read back in _grant_for_session. Paddle returns custom_data verbatim on
+        # the transaction and on every webhook about it.
+        "custom_data": {"pack": pack, "credits": str(p["credits"])},
+        # Paddle appends ?_ptxn=<transaction id> to this, which the success page
+        # reads and passes to /claim.
+        "checkout": {"url": origin + "/site/success.html"},
+    })
+    url = ((txn.get("checkout") or {}).get("url") or "").strip()
+    if not url:
+        # Happens when the Paddle account has no default payment link configured,
+        # and the message says so because the API error alone does not.
+        raise RuntimeError(
+            "Paddle returned no checkout URL. Set a default payment link under "
+            "Checkout > Settings in the Paddle dashboard.")
+    return url
 
 
-def _grant_for_session(sess) -> dict:
-    """Turn a paid Checkout Session into credits. Idempotent on the session id,
-    so the webhook and the success page can both call it and only one wins.
+def _customer_email(customer_id):
+    """Paddle puts the customer id on the transaction but not always the address.
+    Email is what ties a repeat purchase to an existing key, so it is worth the
+    extra call -- and worth not failing the grant if that call does not work."""
+    if not customer_id:
+        return None
+    try:
+        return (_paddle("GET", "/customers/" + str(customer_id)) or {}).get("email")
+    except Exception:
+        return None
+
+
+def _grant_for_session(txn) -> dict:
+    """Turn a completed Paddle transaction into credits. Idempotent on the
+    transaction id, so the webhook and the success page can both call it and only
+    one wins.
 
     A REPEAT PURCHASE TOPS UP THE EXISTING KEY rather than issuing a second one.
     Handing someone a new key per purchase means juggling several, and the
     balance they can see is never the balance they have.
     """
     init()
-    sid = sess["id"]
+    sid = txn.get("id")
+    if not sid:
+        raise ValueError("transaction has no id")
     with _conn() as c:
         row = c.execute("SELECT key_plain, credits FROM claims WHERE session_id=?", (sid,)).fetchone()
     if row:
         return {"key": row[0], "credits": int(row[1]), "fresh": False}
 
-    credits = int((sess.get("metadata") or {}).get("credits") or 0)
+    custom = txn.get("custom_data") or {}
+    try:
+        credits = int(custom.get("credits") or 0)
+    except (TypeError, ValueError):
+        credits = 0
     if credits <= 0:
-        pack = (sess.get("metadata") or {}).get("pack")
-        credits = PACKS.get(pack, {}).get("credits", 0)
+        credits = PACKS.get(custom.get("pack"), {}).get("credits", 0)
     if credits <= 0:
-        raise ValueError("session carries no credit count")
+        raise ValueError("transaction carries no credit count")
 
-    details = sess.get("customer_details") or {}
-    email = details.get("email")
+    email = ((txn.get("customer") or {}).get("email")
+             or _customer_email(txn.get("customer_id")))
 
     key_plain, key_hash = None, None
     if email:
@@ -323,7 +392,7 @@ def _grant_for_session(sess) -> dict:
         key_plain = new_key()
         key_hash = _hash(key_plain)
 
-    grant(key_hash, credits, "purchase:" + sid, "stripe:" + sid, email=email)
+    grant(key_hash, credits, "purchase:" + sid, "paddle:" + sid, email=email)
     with _conn() as c:
         c.execute("INSERT OR REPLACE INTO claims(session_id,key_plain,key_hash,credits,created)"
                   " VALUES(?,?,?,?,?)", (sid, key_plain, key_hash, credits, time.time()))
@@ -331,24 +400,25 @@ def _grant_for_session(sess) -> dict:
 
 
 def claim(session_id: str) -> dict:
-    """Called by the success page.
+    """Called by the success page with the _ptxn Paddle put in the return URL.
 
-    It retrieves the session from Stripe rather than trusting the query string,
-    because success_url is just a redirect the browser can be pointed at with any
-    session id in it. Payment status comes from Stripe or not at all.
+    It re-reads the transaction FROM PADDLE rather than trusting the query
+    string, because the return URL is just a redirect the browser can be pointed
+    at with any id in it. Paid status comes from Paddle or not at all.
 
     It also GRANTS if the webhook has not arrived yet. Webhooks are asynchronous
     and occasionally slow; the customer is already looking at the success page.
-    Both paths are idempotent on the session id, so whichever runs first wins and
-    the other becomes a no-op.
+    Both paths are idempotent on the transaction id, so whichever runs first wins
+    and the other becomes a no-op.
     """
     init()
     expire_claims()
-    s = _stripe()
-    sess = s.checkout.Session.retrieve(session_id, expand=["customer_details"])
-    if sess.get("payment_status") != "paid":
+    txn = _paddle("GET", "/transactions/" + str(session_id))
+    # `completed` is the terminal paid state. `paid` can appear first on some
+    # payment methods, and both mean the money is ours.
+    if txn.get("status") not in ("completed", "paid"):
         return {"error": "not paid"}
-    out = _grant_for_session(sess)
+    out = _grant_for_session(txn)
     if not out.get("key"):
         return {"error": "key no longer retrievable", "credits": out.get("credits", 0)}
     return out
@@ -356,17 +426,43 @@ def claim(session_id: str) -> dict:
 
 def webhook(payload: bytes, sig_header: str) -> dict:
     """Signature verification is not optional: without it this endpoint is an
-    unauthenticated 'give me credits' API, and the URL is public."""
-    secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
+    unauthenticated 'give me credits' API, and the URL is public.
+
+    Paddle signs as `ts=<unix>;h1=<hex>` where the HMAC-SHA256 covers the exact
+    bytes `<ts>:<raw body>`. The raw body matters -- re-serialising the JSON
+    changes the bytes and the signature will not match.
+    """
+    secret = os.environ.get("PADDLE_WEBHOOK_SECRET")
     if not secret:
-        raise RuntimeError("STRIPE_WEBHOOK_SECRET is not set")
-    s = _stripe()
-    event = s.Webhook.construct_event(payload, sig_header, secret)
-    if event["type"] == "checkout.session.completed":
-        sess = event["data"]["object"]
-        if sess.get("payment_status") == "paid":
-            _grant_for_session(sess)
-    return {"ok": True, "type": event["type"]}
+        raise RuntimeError("PADDLE_WEBHOOK_SECRET is not set")
+    parts = dict(kv.split("=", 1) for kv in (sig_header or "").split(";") if "=" in kv)
+    ts, h1 = parts.get("ts"), parts.get("h1")
+    if not ts or not h1:
+        raise ValueError("malformed Paddle-Signature")
+    # A correctly signed request replayed a day later is still a replay. The
+    # parse and the window are separate checks on purpose: folded together, the
+    # except swallowed the window's own ValueError and reported every stale
+    # replay as a malformed timestamp, which is a different fault entirely.
+    try:
+        ts_i = int(ts)
+    except (TypeError, ValueError) as e:
+        raise ValueError("bad signature timestamp") from e
+    if abs(time.time() - ts_i) > PADDLE_MAX_SKEW:
+        raise ValueError("signature timestamp outside the accepted window")
+    import hmac
+    mac = hmac.new(secret.encode(), (ts + ":").encode() + payload, hashlib.sha256).hexdigest()
+    # compare_digest, not ==, so the comparison does not leak the digest by timing
+    if not hmac.compare_digest(mac, h1):
+        raise ValueError("signature mismatch")
+
+    import json as _json
+    event = _json.loads(payload.decode("utf-8"))
+    etype = event.get("event_type", "")
+    if etype in ("transaction.completed", "transaction.paid"):
+        txn = event.get("data") or {}
+        if txn.get("status") in ("completed", "paid"):
+            _grant_for_session(txn)
+    return {"ok": True, "type": etype}
 
 
 def expire_claims():

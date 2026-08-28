@@ -117,7 +117,7 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
 
 <script>
 /* ============================================================================
-   The key is fetched from /claim, which re-reads the session FROM STRIPE rather
+   The key is fetched from /claim, which re-reads the transaction FROM PADDLE rather
    than believing this page's query string -- a success_url is just a redirect
    anyone can point a browser at.
    The key is blurred until clicked. Someone finishing a purchase on a shared or
@@ -126,7 +126,11 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
 (function(){
   'use strict';
   var API = location.origin;
-  var sid = new URLSearchParams(location.search).get('session_id');
+  /* Paddle appends _ptxn to the return URL. session_id is read as a fallback so
+     a link produced before the move off Stripe still resolves rather than
+     showing someone who has paid an error page. */
+  var _qs = new URLSearchParams(location.search);
+  var sid = (_qs.get('_ptxn') || _qs.get('session_id') || '').trim();
   var $ = function(id){ return document.getElementById(id); };
 
   function fail(msg){
@@ -136,7 +140,7 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
     $('failMsg').innerHTML = '<strong>' + String(msg).replace(/[<>]/g,'') + '</strong>';
   }
 
-  if(!sid){ fail('This page needs a checkout session to look up, and the link has none.'); return; }
+  if(!sid){ fail('This page needs a checkout transaction to look up, and the link has none.'); return; }
 
   fetch(API + '/claim?session_id=' + encodeURIComponent(sid))
     .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })

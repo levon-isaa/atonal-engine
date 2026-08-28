@@ -135,7 +135,7 @@ class H(BaseHTTPRequestHandler):
             key = (q.get("key") or [""])[0].strip()
             out = {"free_left": billing.free_left(self._ip()),
                    "free_per_day": billing.FREE_PER_DAY,
-                   "stripe": billing.stripe_ready()}
+                   "ready": billing.billing_ready(), "provider": "paddle"}
             if key:
                 out["known"] = billing.key_exists(key)
                 out["balance"] = billing.balance(key) if out["known"] else 0
@@ -143,7 +143,7 @@ class H(BaseHTTPRequestHandler):
             return True
         if path.startswith("/packs"):
             self._json(200, {"currency": billing.CURRENCY,
-                             "stripe": billing.stripe_ready(),
+                             "ready": billing.billing_ready(), "provider": "paddle",
                              "free_per_day": billing.FREE_PER_DAY,
                              "packs": billing.PACKS})
             return True
@@ -151,7 +151,7 @@ class H(BaseHTTPRequestHandler):
             sid = (q.get("session_id") or [""])[0].strip()
             if not sid:
                 self._json(400, {"error": "missing session_id"}); return True
-            if not billing.stripe_ready():
+            if not billing.billing_ready():
                 self._json(503, {"error": "billing is not configured"}); return True
             try:
                 self._json(200, billing.claim(sid))
@@ -174,7 +174,7 @@ class H(BaseHTTPRequestHandler):
         """Creates a Stripe Checkout Session and hands back its URL. No card
         details ever reach this server or the site -- the browser goes to Stripe's
         own hosted page, which is the entire point of using it."""
-        if not billing.stripe_ready():
+        if not billing.billing_ready():
             return self._json(503, {"error": "billing is not configured yet"})
         raw = self._body()
         if raw is None:
@@ -196,17 +196,17 @@ class H(BaseHTTPRequestHandler):
             return self._json(502, {"error": "could not start checkout"})
 
     def _webhook(self):
-        """Stripe calls this. The signature check is what makes it safe to expose:
+        """Paddle calls this. The signature check is what makes it safe to expose:
         without it, this is an unauthenticated endpoint that mints credits."""
         raw = self._body()
         if raw is None:
             return self._json(400, {"error": "bad body"})
-        sig = self.headers.get("Stripe-Signature", "")
+        sig = self.headers.get("Paddle-Signature", "")
         try:
             out = billing.webhook(raw, sig)
             return self._json(200, out)
         except Exception as e:
-            # 400 so Stripe retries a genuine transient failure, and so a forged
+            # 400 so Paddle retries a genuine transient failure, and so a forged
             # call gets nothing. The reason stays in our log, not the response.
             traceback.print_exc()
             return self._json(400, {"error": "webhook rejected"})
@@ -303,7 +303,7 @@ class H(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/checkout":
             return self._checkout()
-        if path == "/stripe/webhook":
+        if path == "/paddle/webhook":
             return self._webhook()
         if not path.startswith("/analyze"):
             return self._json(404, {"error": "not found"})

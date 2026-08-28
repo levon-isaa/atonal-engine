@@ -221,9 +221,9 @@ details .prose{padding:0 0 20px;font-size:14.5px}
                                          : w.charAt(0).toUpperCase()+w.slice(1) + ' tracks a day, free, no account');
       var fn = document.getElementById('freeN'); if(fn) fn.textContent = w;
     }
-    if(!d.stripe){
+    if(!d.ready){
       say('warn','<strong>Checkout is not live yet.</strong> The buttons below are wired and the ' +
-        'ledger is running &mdash; they need Stripe keys in the server environment before they can ' +
+        'ledger is running &mdash; they need Paddle keys in the server environment before they can ' +
         'take a payment. Until then, everyone gets the free daily tracks.');
       document.querySelectorAll('[data-buy]').forEach(function(b){ b.disabled = true; });
     }
@@ -237,7 +237,7 @@ details .prose{padding:0 0 20px;font-size:14.5px}
     btn.addEventListener('click', function(){
       var pack = btn.getAttribute('data-buy');
       var was = btn.innerHTML;
-      btn.disabled = true; btn.textContent = 'Opening Stripe…';
+      btn.disabled = true; btn.textContent = 'Opening checkout…';
       fetch(API + '/checkout', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({pack: pack})
