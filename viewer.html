@@ -6104,6 +6104,26 @@ function frame(){
       secERef=s.energy;
       // held for the same downbeat the shape change lands on; see commitReform
       periodWant=motionPeriodsFor(s);
+      /* THE BOUNDARY'S OWN DOWNBEAT, NOT THE NEXT ONE. A section change was pending here and had
+         to wait for a downbeat to land -- but the beat loop above runs FIRST and had already
+         consumed the downbeat this boundary sits on, so the wait was never for "the next
+         downbeat", it was for the one after. Every section change arrived a full bar late.
+         THE ANALYSER PUTS EVERY BOUNDARY ON A DOWNBEAT. Checked on the bench track: all 15
+         boundaries at offset 0.000 from an analysed downbeat, so this is the normal case rather
+         than an edge one. MEASURED across the whole track before the fix -- ten commits, lag
+         0.97 / 0.98 / 0.97 / 0.98 / 0.97 / 0.98 / 1.00 / 0.97 / 0.98 / 0.99 bars, mean 1.897s at
+         124bpm. Not one of them landed on its own boundary.
+         REFORM_MAX_WAIT already existed to stop a request "sitting through most of a bar", and
+         it does -- at exactly 4 beats, which at 4/4 is the same bar it was trying to save. The
+         escape could not help because the delay is structural, not a scheduling accident.
+         Only when the boundary really is on a downbeat: a quarter of a beat of tolerance, so a
+         boundary that lands mid-bar still waits for a real downbeat rather than committing
+         off-grid, which is the contract this whole path exists to keep. commitReform applies the
+         period AND the pending shape change together, and still refuses to restart a morph
+         already in flight, so both halves arrive as one event exactly as before -- one bar
+         earlier. */
+      const beatSec=60/((director&&director.tempo&&director.tempo.bpm)||120);
+      if(lastBeatDown && lastBeatT>=s.t0-beatSec*0.25 && lastBeatT<=t+1e-6) commitReform(beatsAtTime(t));
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
       sectRand=Math.random();                       // the matrix's 'Section step' source
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
