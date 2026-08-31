@@ -3860,9 +3860,32 @@ const MOT={spin:1, tumble:1, swirl:1, orbit:1}; window.MOT=MOT;
    deg/s becomes 52 -> 158 and the spread falls from 4.24x to 3.0x -- that second pair is
    arithmetic on the first, not a second measurement. That is the trade this feature IS;
    SELFSPIN.beats is the dial for it, and a larger number means a slower baseline and less
-   compression. Set SELFSPIN.on=false to get the pure Director behaviour back. */
-// beats:72 -- doubled with SPIN_SECS so the halving is exact; see the note there.
-const SELFSPIN={on:true, beats:72}; window.SELFSPIN=SELFSPIN;
+   compression. Set SELFSPIN.on=false to get the pure Director behaviour back.
+
+   OFF NOW, AND THE COST ABOVE WAS UNDERSTATED. The note says the spread falls to 3.0x; measured
+   on the bench track it was 2.38x, and the reason it is worse than the arithmetic predicted is
+   that the ladder had meanwhile been slowed, which leaves the constant a larger share of every
+   rung. Per rung, what the ladder ASKED for against what arrived:
+
+       design  9.0s  11.6s  15.0s  21.0s  30.0s     the band SPIN_SECS declares
+       actual  6.3s   8.7s  10.7s  13.9s  16.4s     what the constant turned it into
+       ratio  1.22x  1.33x  1.44x  1.67x  1.89x
+
+   The distortion is the point: it is not a gain, it is a bend, and it bends hardest exactly where
+   the music is quietest. At the slowest rung 47% of the turn was a constant that does not know
+   whether anything is playing -- which is the same fault as the bar LFO removed from swirl and
+   the beat pulse that fired on silence, and it was the last one left in this file.
+
+   THE FEAR THIS EXISTED FOR IS REAL BUT MIS-AIMED. A quiet section should not read as frozen --
+   true. But the answer to "the ladder's slow end is too slow" is to choose a slow end that is not
+   too slow, which is a decision the ladder can express, rather than to add a constant on top of
+   one that is and distort every other rung to do it. SPIN_SECS says 30s at its calmest and that
+   is now what arrives.
+
+   Kept as a dial rather than deleted, because it is one flag and the note above is the argument
+   for switching it back on. */
+// on:false -- the ladder delivers its own band; see above. beats:72 stays paired with SPIN_SECS.
+const SELFSPIN={on:false, beats:72}; window.SELFSPIN=SELFSPIN;
 const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, off:0, org:[0,0], ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
 let filtBands=8, filtFolds=6, thermOff=0;   // held counts; see the drive block for why
 /* ======================= ROUTING MATRIX =======================
