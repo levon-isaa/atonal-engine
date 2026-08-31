@@ -86,9 +86,10 @@ def init():
               key_hash TEXT NOT NULL,
               delta    INTEGER NOT NULL,
               reason   TEXT,
-              -- UNIQUE, and this is the whole idempotency story: Stripe retries
-              -- webhooks, sometimes for days. The event id goes here, so a repeat
-              -- delivery hits the constraint and grants nothing.
+              -- UNIQUE, and this is the whole idempotency story: the payment
+              -- provider retries webhooks, sometimes for days. The transaction id
+              -- goes here, so a repeat delivery hits the constraint and grants
+              -- nothing.
               ref      TEXT UNIQUE,
               created  REAL NOT NULL
             );
@@ -147,7 +148,7 @@ def key_exists(key: str) -> bool:
 
 def grant(key_hash: str, credits: int, reason: str, ref: str, email=None) -> bool:
     """Add credits. Returns False if `ref` was already applied — which is the
-    normal, expected outcome of a Stripe webhook retry, not an error."""
+    normal, expected outcome of a provider webhook retry, not an error."""
     init()
     now = time.time()
     with _conn() as c:

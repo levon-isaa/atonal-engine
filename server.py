@@ -171,9 +171,9 @@ class H(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def _checkout(self):
-        """Creates a Stripe Checkout Session and hands back its URL. No card
-        details ever reach this server or the site -- the browser goes to Stripe's
-        own hosted page, which is the entire point of using it."""
+        """Creates a Paddle transaction and hands back its hosted checkout URL.
+        No card details ever reach this server or the site -- the browser goes to
+        Paddle's own hosted page, which is the entire point of using it."""
         if not billing.billing_ready():
             return self._json(503, {"error": "billing is not configured yet"})
         raw = self._body()
