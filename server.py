@@ -254,7 +254,7 @@ class H(BaseHTTPRequestHandler):
     # their trailing slash and stay a prefix test; file entries are now matched exactly.
     # BOTH TUPLES KEEP THEIR TRAILING COMMA. Without it these are plain strings, and then
     # `rel_posix not in _STATIC_FILES` becomes a SUBSTRING test -- "ew.htm" would pass it.
-    _STATIC_FILES = ("viewer.html", "library.js")
+    _STATIC_FILES = ("viewer.html",)
     _STATIC_DIRS = ("assets/", "site/")
     _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
              ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",

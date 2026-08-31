@@ -474,34 +474,6 @@ The individual switches are still reachable from the console for measuring — `
 `STEP.shaN`, `STEP.near` — they simply no longer have buttons. (`surfTarget` was one of them and
 is gone entirely; surface detail no longer exists to switch.)
 
-## Library (Controls > Library)
-
-**Choose music folder**, and every track in it becomes a row. Click one to
-render it. Dropping a folder anywhere on the window does the same. No account,
-no keys, no setup — the folder is read in the browser, and nothing is uploaded
-until you pick a track.
-
-Titles and artists come from the files' own tags (ID3v2 for mp3, the MP4 ilst
-atoms for m4a), falling back to the filename and its parent folder. "Unknown
-Artist" and "Unknown Album" are what Music.app writes when it has nothing, and a
-real media folder is full of them, so any "Unknown ..." is treated as absent
-rather than printed on every row. Durations are read from the container header
-rather than by decoding, which would otherwise pull the whole library into
-memory just to draw a list. There is a filter box for large folders.
-
-### Why the audio always comes from a file
-
-There is no version of this that streams from Spotify or Apple Music instead.
-Both deliver audio through a protected pipeline specifically so that nothing can
-tap the samples, which is exactly what `analyze.py` needs. Spotify additionally
-closed `/audio-features`, `/audio-analysis` and `preview_url` to new
-applications on 27 Nov 2024, so their pre-computed analysis is not available
-either. A "connect your account" button could only ever have listed titles — the
-audio would still have had to come from disk, so the folder does the whole job
-with none of the apparatus.
-
-**Load** still takes a single file directly, and so does dropping one.
-
 ## Export (bottom bar)
 **Frame** saves a PNG at full canvas resolution; **Record** captures the canvas to WebM via
 `MediaRecorder` (VP9 where available, falling back to VP8 or mp4 for Safari). The frame grab is
