@@ -4227,6 +4227,63 @@ function kalCalibrate(){
   } else { kalOpen=kalRef*0.66; kalFull=kalRef*0.92; }
   kalHeld=false; kalSince=-1e9;
 }
+/* ---- A BEAT WITHOUT A SOUND IS NOT A BEAT ----
+   MEASURED, and it is the clearest thing the director gets wrong. The beat grid
+   the tracker returns spans the WHOLE track, correctly -- tempo is continuous
+   even where nothing is playing -- and the pulse fired on that grid without ever
+   asking whether anything was audible. On the bench track:
+
+       section      analysed beats   onsets   energy   pulse mean   pulse peak
+       intro             27             0      0.012      0.137        0.538
+       drop              59           821      0.709      0.136        0.544
+       breakdown         29             0      0.027      0.142        0.543
+
+   Identical. The whole light rig throbbed through fifteen seconds of near
+   silence exactly as hard as it did through a drop with 821 hits in it, which
+   is the precise opposite of the claim this engine is built on.
+
+   THE GATE IS THE PERCUSSIVE CURVE, with energy behind it. analyze.py already
+   ships both at 30fps and percussion discriminates cleanly -- 0.000 through the
+   intro, breakdown and outro, 0.478 through both drops. Energy is the fallback
+   so a piece with a pulse and no drum kit still beats; taking the max means the
+   gate opens for whichever of the two the music actually has.
+
+   NORMALISED TO THE TRACK'S OWN TOP, exactly as kalRef is and for the same
+   reason: an absolute threshold leaves a quiet record pulsing at nothing and a
+   loud one saturated. A gentle passage inside a loud track then beats gently,
+   and true silence beats not at all -- which is the behaviour that was missing.
+
+   Precomputed per track rather than sampled per frame: one pass over the curve
+   at load against a lookup on every beat for the life of the take. */
+let BEATW=null;                 // per-beat weight, parallel to events.beats
+function beatCalibrate(){
+  BEATW=null;
+  const C=director&&director.curves;
+  const beats=(director&&director.events&&director.events.beats)||[];
+  // An analysis cached before the curves existed simply keeps the old behaviour.
+  if(!C||!C.t||!C.t.length||!beats.length) return;
+  const T=C.t, P=C.percussive||null, E=C.energy||null;
+  if(!P&&!E) return;
+  const n=T.length;
+  const drive=new Float64Array(n);
+  for(let i=0;i<n;i++) drive[i]=Math.max(P?P[i]:0, (E?E[i]:0)*0.85);
+  const sorted=Array.prototype.slice.call(drive).sort((a,b)=>a-b);
+  // 0.92 rather than the maximum: one transient should not define the top.
+  const ref=Math.max(0.08, sorted[Math.floor((n-1)*0.92)]);
+  const dt=n>1?(T[n-1]-T[0])/(n-1):1/30;
+  BEATW=new Float32Array(beats.length);
+  for(let b=0;b<beats.length;b++){
+    /* A WINDOW, NOT A SAMPLE. The curve is 30fps and a kick is shorter than one
+       of its frames, so reading the single nearest value misses hits that land
+       between samples. Slightly before the beat as well as after, because the
+       tracker's grid and the actual hit are not the same instant. */
+    let i0=Math.floor((beats[b]-0.04-T[0])/dt), i1=Math.ceil((beats[b]+0.10-T[0])/dt);
+    i0=Math.max(0,Math.min(n-1,i0)); i1=Math.max(0,Math.min(n-1,i1));
+    let mx=0; for(let i=i0;i<=i1;i++) if(drive[i]>mx) mx=drive[i];
+    let w=Math.max(0,Math.min(1,mx/ref));
+    BEATW[b]=w*w*(3-2*w);        // smoothstep: no hard step at the quiet end
+  }
+}
 // A deterministic per-section angle: same track, same sequence, every play.
 function kalPhaseFor(t0){
   const h=Math.abs(Math.sin(t0*12.9898)*43758.5453)%1;
@@ -5519,6 +5576,7 @@ async function loadFile(file){
   if(poll) clearInterval(poll);
   setProg(1,'Analysed'); setProg(null);
   kalCalibrate();                 // the kaleidoscope's threshold is relative to THIS track
+  beatCalibrate();                // ...and so is how hard each beat is allowed to land
   segCalibrate();                 // ...and so is the segment count's span
   autoMap(false);                 // and the routing matrix is wired from THIS track
   $('hGenre').textContent=director.genre.primary+'  ('+(director.genre.confidence)+')';
@@ -5646,7 +5704,18 @@ function frame(){
                                      point in the frame where it holds this frame's pixels;
                                      result lands in window.__TAPOUT. Every readPixels written
                                      outside that point read a bound FBO or a cleared buffer.
-       window.DX{} / window.DXS{}    per-effect ablation switches, post and surface respectively.  */
+       window.DX{} / window.DXS{}    per-effect ablation switches, post and surface respectively.
+       window.__DIR  = []            records one row per frame of everything the DIRECTOR decided
+                                     -- the emotion curves, the fold, the mode pair and morph
+                                     phase, the beat pulse, the five band envelopes, all four
+                                     rotation angles. Read it back and compare against
+                                     director.curves / director.events to ask whether the film is
+                                     actually following the track. This is what found the beat
+                                     pulse firing through silence; see beatCalibrate.
+                                     SET THE PANEL BACK TO AUTO FIRST. Every control is live
+                                     state, and a capture taken with Kaleido pinned to "always
+                                     on" reports a fold that the Director never asked for -- that
+                                     has already produced one wrong finding here.  */
   // TFREEZE pins the clock so the camera stops, which is the only way to A/B two builds on the
   // same frame. Companion to QLOCK; both exist because reasoning about render defects instead of
   // measuring them has cost several wrong fixes here.
@@ -5954,7 +6023,11 @@ function frame(){
         const isDown = dbSet ? dbSet.has(beats[bi]) : ((beatCount&3)===0);
         const inBar = isDown ? 0 : 1;
         // PULSE_GAIN normalises the peak against the old 16/s attack -- see ATK_GAIN.
-        pulse = (isDown ? 1.0 : 0.62)*PULSE_GAIN;    // downbeat lands harder than the rest
+        // Scaled by how much of the track is actually sounding at this beat --
+        // see beatCalibrate. 1.0 when there is no weighting available, so an
+        // analysis without curves behaves exactly as before.
+        const bw = (BEATW && bi < BEATW.length) ? BEATW[bi] : 1;
+        pulse = (isDown ? 1.0 : 0.62)*PULSE_GAIN*bw;  // downbeat lands harder than the rest
         lastBeatT=beats[bi]; lastBeatDown=isDown;   // for the SYNC readout
         // Where the bar starts, for the matrix's bar LFO -- see modUpdate. Only from a real
         // analysed downbeat: the &3 fallback counts from the tracker's first beat, which is the
@@ -6669,6 +6742,21 @@ function frame(){
   gl.uniform3f(US('u_mood'),MK[0],MK[1],MK[2]);
   gl.uniform1f(US('u_energy'),energy); gl.uniform1f(US('u_tension'),tension); gl.uniform1f(US('u_arousal'),arousal);
   gl.uniform1f(US('u_pulse'),pulseS);
+  /* ---- DIRECTOR SAMPLER, same contract as the render hooks above: console-only,
+         and nothing at all when unset. Everything the Director decides is final
+         by this line, so one row here is one frame of the film's direction.
+         window.__DIR = [] to arm, then read it back. Capped so a long take
+         cannot grow it without bound. */
+  if(window.__DIR && window.__DIR.length < 200000){
+    window.__DIR.push({
+      t: pos(), energy, tension, arousal, flux,
+      kal: kalAmt, mode, mode2, mix, phase,
+      pulse: pulseS,
+      sub: HITS.sub, low: HITS.low, mid: HITS.mid, high: HITS.high, air: HITS.air,
+      cam: camAng, spin: formSpin, tumble: formTumble, swirl: formSwirl,
+      seg: segNow
+    });
+  }
   // PACE from the beat envelope and the kick; EMOTION sets how hard each beat lands. A calm
   // section barely breathes, a high-arousal one throws the key a third brighter on every hit.
   // pulseS is already tempo-locked (it is driven by the beat list), so the rate follows the
