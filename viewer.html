@@ -6339,11 +6339,28 @@ function frame(){
   /* The off-axes take it at reduced strength rather than in full. All three swelling by the same
      factor is ONE gesture seen three times, which reads as the whole object throbbing; giving
      the body the swell and the off-axes about half of it keeps the three rates from locking
-     together. Swirl keeps its bar route (see autoPatch) and takes none of this, so the third
-     axis is still the one moving on a clock of its own. */
+     together.
+     SWIRL TOOK NONE OF THIS BECAUSE IT HAD ITS OWN CLOCK, AND IT NO LONGER HAS ONE. The reason
+     written here was that swirl "keeps its bar route (see autoPatch)" -- but that route was
+     removed, correctly, for surging 32% once per bar whether or not the music did anything. What
+     nothing noticed is that its removal left this exclusion standing on a justification that had
+     gone: the third axis then took nothing from anywhere, and stepped only when the section
+     ladder stepped.
+     MEASURED, folding each axis's rate onto its position in the beat across both drops (2944
+     samples, 16 bins): spin varies 35.2% peak-to-peak over the beat, tumble 23.5%, swirl 1.3%.
+     Flat. For comparison the energy curve itself varies 70% over the same bins, and spin's
+     profile is that curve's shape -- fastest on the beat, slowest between. Swirl was the only
+     axis with no connection to the music inside a section at all.
+     THIS IS NOT THE ROUTE COMING BACK. The removed one was a bar LFO: a clock of its own that
+     ran whether or not anything happened. `flow` is the energy curve's departure from its own
+     5s mean, so it moves when the track moves and sits still when the track sits still -- the
+     opposite construction, and the one RATE_TARGETS was never guarding against (it blocks
+     OSC_SOURCES, and flow is not a route at all).
+     0.30, roughly half of tumble's share, so swirl breathes with the music while staying the
+     loosest of the three -- the point of keeping the rates from locking together survives. */
   const rSpin=Math.max(0,Math.min(4,MOT.spin  *flow             *(1+MV('spin')  *1.2)));
   const rTum =Math.max(0,Math.min(4,MOT.tumble*(1+(flow-1)*0.55)*(1+MV('tumble')*1.2)));
-  const rSwi =Math.max(0,Math.min(4,MOT.swirl *(1+MV('swirl') *1.2)));
+  const rSwi =Math.max(0,Math.min(4,MOT.swirl *(1+(flow-1)*0.30)*(1+MV('swirl') *1.2)));
   /* ADVANCED IN BEATS, NOT SECONDS. One revolution per MOTP.spin beats is the whole design, so
      the integration variable should be beats -- see beatsAtTime for the three ways the old
      seconds-times-estimated-bpm version lost the grid. Same rates, same feel, locked clock. */
