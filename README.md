@@ -476,63 +476,68 @@ is gone entirely; surface detail no longer exists to switch.)
 
 ## Library (Controls > Library)
 
-Picks a track from your music library and renders it. The library is used as an
-**index** — the audio always comes from a file on your own machine.
+**Choose music folder**, and every track in it becomes a row. Click one to
+render it. No account, no keys, no setup — the folder is read in the browser and
+nothing is uploaded until you pick a track. Dropping a folder onto the window
+does the same thing. Titles and artists come from the files' own tags, falling
+back to the path; there is a filter box for large libraries.
 
-That split is forced, not a shortcut. Neither Spotify nor Apple will hand a web
-page decoded audio: playback runs through a protected pipeline specifically so
-nothing can tap the samples, which is exactly what `analyze.py` needs. What the
-APIs do allow is reading your library, so that is what they are used for.
+This is the default path on purpose. Connecting Spotify means registering a
+developer app, and a new app is capped at **25 users added by hand** until
+Spotify grants a quota extension — so an OAuth-first feature could not be shipped
+to the public at all, quite apart from being fiddly to set up.
 
-Two ways in, and the second needs no developer account:
+### Match a streaming library (optional, behind the fold)
 
-**Paste a list.** One `Artist - Title` per line, or an exported playlist. In
-Music.app that is `File > Library > Export Playlist` — tab-separated with Name,
-Artist and Time columns, so an Apple library arrives with its durations and the
-length check below runs in full.
+Lists what you saved on a service and finds each one in your folder. The audio
+still comes from your file: neither Spotify nor Apple will hand a web page
+decoded audio, because playback runs through a protected pipeline specifically
+so nothing can tap the samples — which is exactly what `analyze.py` needs.
+Spotify also closed `/audio-features`, `/audio-analysis` and `preview_url` to new
+apps on 27 Nov 2024.
 
-**Connect Spotify.** Needs a client id from developer.spotify.com. Register the
-redirect URI as exactly:
+**Paste a list** — `Artist - Title` per line, or an exported playlist. Music.app
+writes one with `File > Library > Export Playlist`: tab-separated with Name,
+Artist and Time, so an Apple library arrives with its durations and the length
+check runs in full. Needs no developer account.
 
-    http://127.0.0.1:8770/callback
-
-A loopback IP literal is the only `http` redirect Spotify still accepts —
-`localhost` is rejected, and the failure happens at the consent screen without
-saying why. The flow is authorization-code + PKCE, so there is no client secret
-to keep; the id and token live in your browser's localStorage and nowhere else.
-
-Then **Music folder** to point at your files. Nothing is uploaded until you pick
-a track; the folder is read in the browser.
+**Connect Spotify** — needs a client id from developer.spotify.com, with the
+redirect URI registered as exactly `http://127.0.0.1:8770/callback`. A loopback
+IP literal is the only `http` redirect Spotify still accepts; `localhost` is
+rejected at the consent screen without saying why. PKCE, so there is no client
+secret; the id and token live in your browser and nowhere else.
 
 ### How a track is matched to a file
 
 Text shortlists, length decides.
 
-The text score is asymmetric on purpose. Jaccard was the obvious choice and it
-is wrong here, because it penalises both sides equally for tokens the other
-lacks — and the file side is *supposed* to have more. A library on disk is
-normally `Artist/Album/NN Title`, so "Radiohead Karma Police" gets compared
-against "radiohead ok computer 03 karma police": every query token is present
-and Jaccard still scored it 0.500, below any threshold that also rejects a wrong
-track. Scoring `matched / (query + 0.35 x extra)` puts that at 0.741 while the
-nearest wrong answer sits at 0.597, and the bar is 0.65.
+The text score is asymmetric on purpose. Jaccard penalises both sides equally
+for tokens the other lacks — and the file side is *supposed* to have more. A
+library on disk is normally `Artist/Album/NN Title`, so "Radiohead Karma Police"
+gets compared against "radiohead ok computer 03 karma police": every query token
+present, Jaccard 0.500, below any threshold that also rejects a wrong track.
+Scoring `matched / (query + 0.35 x extra)` puts that at 0.741 with the nearest
+wrong answer at 0.597; the bar is 0.65.
 
-Text alone cannot finish the job, and it is worth being precise about why. A
-query that is a strict *subset* of a wrong filename scores at the top under any
-metric: "The Beatles Yesterday" against "The Beatles - Yesterday and Today"
-covers every query token. No threshold separates those, because in the text
-there is nothing to separate.
+Path words carrying no identity are dropped rather than kept as context, because
+the score charges for every token the query lacks. A real Apple media folder is
+`Music/Unknown Artist/Unknown Album/Margarita.mp3`, and feeding that whole path
+in scored the correct file 0.417 — four junk tokens were enough to sink an exact
+title match.
 
-Length does separate them. Spotify returns `duration_ms`, exported playlists
-carry a Time column, and the local file's duration is read from its container
-header — so every match is confirmed against it, in the background for the whole
-list and again on the click that spends a credit. Tolerance is 2.5s: wide enough
-for a trimmed fade or a gapless boundary, far narrower than two different songs.
-A file that disagrees is dropped with the reason shown, rather than rendered.
+Text alone cannot finish, and it is worth being precise about why: a query that
+is a strict *subset* of a wrong filename tops any metric. "The Beatles Yesterday"
+against "The Beatles - Yesterday and Today" covers every query token. Nothing in
+the text separates those.
 
-Anything unmatched stays listed and greyed; the Load button still takes a file
-directly.
+Length does. Spotify returns `duration_ms`, exports carry a Time column, and the
+local file's duration is read from its container header, so every match is
+confirmed against it — in the background for the list, and again on the click
+that spends a credit. Tolerance 2.5s: wider than a trimmed fade or a gapless
+boundary, far narrower than two different songs. A file that disagrees is dropped
+with the reason shown rather than rendered.
 
+Anything unmatched stays listed and greyed; **Load** still takes a file directly.
 
 ## Export (bottom bar)
 **Frame** saves a PNG at full canvas resolution; **Record** captures the canvas to WebM via
