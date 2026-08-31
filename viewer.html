@@ -4459,8 +4459,18 @@ const SWIRL_BEATS=SPIN_BEATS*1.5;                    // 24 beats, about Z
    turns per shape change against the off-axes' 0.5. At 124bpm the rungs still snap to whole bars,
    16/24/32/48/64, so nothing about the grid lock changes.
    The camera is deliberately not in this: it orbits once per 96s, 1.5 times in the whole track,
-   and is not what a viewer reads as the form's speed. */
-const SPIN_SECS=[9.0,11.6,15.0,21.0,30.0];           // seconds per revolution, fast -> slow
+   and is not what a viewer reads as the form's speed.
+
+   THE TOP RUNG CAME BACK DOWN once SELFSPIN was switched off. That change made every rung deliver
+   what it says, which was the point, but the top one had been arriving at 6.5s with the constant
+   on top and started arriving at 8.1s without it -- and 8.1s is too slow for a drop. Only the
+   fastest entry moves; the rest of the band is what the dynamic-range work bought and is left
+   alone, so this widens the ladder rather than shifting it.
+   5.8s AND NOT 7 OR 6.5, because the rung is snapped to a whole number of bars and at 124bpm
+   there is nothing between 12 beats (5.81s) and 16 (7.74s) -- see SPIN_BEAT_STEPS, where whole
+   bars are the invariant that keeps the three axes commensurate. 12 beats is the one that is
+   faster. */
+const SPIN_SECS=[5.8,11.6,15.0,21.0,30.0];           // seconds per revolution, fast -> slow
 /* Whole numbers of bars only, so every period stays commensurate with every other and the pair of
    off-axes still returns the form to a pose the eye can recognise -- see TUMBLE_BEATS. All of
    these are multiples of 4, which the old ladder's 6, 11 and 22 were not, so the recurrence that
