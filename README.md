@@ -477,67 +477,30 @@ is gone entirely; surface detail no longer exists to switch.)
 ## Library (Controls > Library)
 
 **Choose music folder**, and every track in it becomes a row. Click one to
-render it. No account, no keys, no setup — the folder is read in the browser and
-nothing is uploaded until you pick a track. Dropping a folder onto the window
-does the same thing. Titles and artists come from the files' own tags, falling
-back to the path; there is a filter box for large libraries.
+render it. Dropping a folder anywhere on the window does the same. No account,
+no keys, no setup — the folder is read in the browser, and nothing is uploaded
+until you pick a track.
 
-This is the default path on purpose. Connecting Spotify means registering a
-developer app, and a new app is capped at **25 users added by hand** until
-Spotify grants a quota extension — so an OAuth-first feature could not be shipped
-to the public at all, quite apart from being fiddly to set up.
+Titles and artists come from the files' own tags (ID3v2 for mp3, the MP4 ilst
+atoms for m4a), falling back to the filename and its parent folder. "Unknown
+Artist" and "Unknown Album" are what Music.app writes when it has nothing, and a
+real media folder is full of them, so any "Unknown ..." is treated as absent
+rather than printed on every row. Durations are read from the container header
+rather than by decoding, which would otherwise pull the whole library into
+memory just to draw a list. There is a filter box for large folders.
 
-### Match a streaming library (optional, behind the fold)
+### Why the audio always comes from a file
 
-Lists what you saved on a service and finds each one in your folder. The audio
-still comes from your file: neither Spotify nor Apple will hand a web page
-decoded audio, because playback runs through a protected pipeline specifically
-so nothing can tap the samples — which is exactly what `analyze.py` needs.
-Spotify also closed `/audio-features`, `/audio-analysis` and `preview_url` to new
-apps on 27 Nov 2024.
+There is no version of this that streams from Spotify or Apple Music instead.
+Both deliver audio through a protected pipeline specifically so that nothing can
+tap the samples, which is exactly what `analyze.py` needs. Spotify additionally
+closed `/audio-features`, `/audio-analysis` and `preview_url` to new
+applications on 27 Nov 2024, so their pre-computed analysis is not available
+either. A "connect your account" button could only ever have listed titles — the
+audio would still have had to come from disk, so the folder does the whole job
+with none of the apparatus.
 
-**Paste a list** — `Artist - Title` per line, or an exported playlist. Music.app
-writes one with `File > Library > Export Playlist`: tab-separated with Name,
-Artist and Time, so an Apple library arrives with its durations and the length
-check runs in full. Needs no developer account.
-
-**Connect Spotify** — needs a client id from developer.spotify.com, with the
-redirect URI registered as exactly `http://127.0.0.1:8770/callback`. A loopback
-IP literal is the only `http` redirect Spotify still accepts; `localhost` is
-rejected at the consent screen without saying why. PKCE, so there is no client
-secret; the id and token live in your browser and nowhere else.
-
-### How a track is matched to a file
-
-Text shortlists, length decides.
-
-The text score is asymmetric on purpose. Jaccard penalises both sides equally
-for tokens the other lacks — and the file side is *supposed* to have more. A
-library on disk is normally `Artist/Album/NN Title`, so "Radiohead Karma Police"
-gets compared against "radiohead ok computer 03 karma police": every query token
-present, Jaccard 0.500, below any threshold that also rejects a wrong track.
-Scoring `matched / (query + 0.35 x extra)` puts that at 0.741 with the nearest
-wrong answer at 0.597; the bar is 0.65.
-
-Path words carrying no identity are dropped rather than kept as context, because
-the score charges for every token the query lacks. A real Apple media folder is
-`Music/Unknown Artist/Unknown Album/Margarita.mp3`, and feeding that whole path
-in scored the correct file 0.417 — four junk tokens were enough to sink an exact
-title match.
-
-Text alone cannot finish, and it is worth being precise about why: a query that
-is a strict *subset* of a wrong filename tops any metric. "The Beatles Yesterday"
-against "The Beatles - Yesterday and Today" covers every query token. Nothing in
-the text separates those.
-
-Length does. Spotify returns `duration_ms`, exports carry a Time column, and the
-local file's duration is read from its container header, so every match is
-confirmed against it — in the background for the list, and again on the click
-that spends a credit. Tolerance 2.5s: wider than a trimmed fade or a gapless
-boundary, far narrower than two different songs. A file that disagrees is dropped
-with the reason shown rather than rendered.
-
-Anything unmatched stays listed and greyed; **Load** still takes a file directly.
+**Load** still takes a single file directly, and so does dropping one.
 
 ## Export (bottom bar)
 **Frame** saves a PNG at full canvas resolution; **Record** captures the canvas to WebM via

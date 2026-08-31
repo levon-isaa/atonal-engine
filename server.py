@@ -227,12 +227,7 @@ class H(BaseHTTPRequestHandler):
             return
         # Static serving, same-origin so the viewer can call /analyze without a preflight.
         path = unquote(self.path.split("?")[0])
-        # /callback is the OAuth redirect target registered with Spotify. It has to
-        # serve the viewer, because the page itself completes the PKCE exchange from
-        # the ?code= still in the address bar -- see library.js. It is a redirect
-        # LANDING, not an endpoint: nothing is read here, and the query string is
-        # deliberately not touched by the server.
-        if path in ("/", "/viewer.html", "/callback"):
+        if path in ("/", "/viewer.html"):
             rel = "viewer.html"
         else:
             rel = path.lstrip("/")
