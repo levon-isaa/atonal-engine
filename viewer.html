@@ -4255,6 +4255,7 @@ function kalCalibrate(){
 
    Precomputed per track rather than sampled per frame: one pass over the curve
    at load against a lookup on every beat for the life of the take. */
+let __dirRef=null;              // what __DIR was armed against; see the sampler
 let BEATW=null;                 // per-beat weight, parallel to events.beats
 function beatCalibrate(){
   BEATW=null;
@@ -5712,10 +5713,14 @@ function frame(){
                                      director.curves / director.events to ask whether the film is
                                      actually following the track. This is what found the beat
                                      pulse firing through silence; see beatCalibrate.
-                                     SET THE PANEL BACK TO AUTO FIRST. Every control is live
-                                     state, and a capture taken with Kaleido pinned to "always
-                                     on" reports a fold that the Director never asked for -- that
-                                     has already produced one wrong finding here.  */
+                                     window.__DIRMETA is written when the array is armed and
+                                     carries the track, the tempo and the Shape/Kaleido/Material
+                                     the panel was actually on, plus `swapped` if the Director
+                                     was replaced mid-take and `seeks` if the playhead jumped.
+                                     CHECK IT BEFORE BELIEVING A ROW. Every control is live
+                                     state and a capture inherits all of it; both of those flags
+                                     exist because a finding was filed off a contaminated take
+                                     before they did.  */
   // TFREEZE pins the clock so the camera stops, which is the only way to A/B two builds on the
   // same frame. Companion to QLOCK; both exist because reasoning about render defects instead of
   // measuring them has cost several wrong fixes here.
@@ -6748,6 +6753,34 @@ function frame(){
          window.__DIR = [] to arm, then read it back. Capped so a long take
          cannot grow it without bound. */
   if(window.__DIR && window.__DIR.length < 200000){
+    /* THE CAPTURE SAYS WHAT IT IS A CAPTURE OF. A run inherits whatever the page
+       already had -- a different track loaded while it was running, a Shape
+       control still pinned from earlier testing -- and nothing in the rows
+       themselves shows it. That has now produced two wrong findings in one
+       sitting: a fold reported as sitting open over silence, which was Kaleido
+       left on "always on"; and a whole motion analysis bucketed by the section
+       list of an entirely different track, because one was loaded into the same
+       viewer halfway through the take.
+       So the arm stamps what is being recorded, and every frame checks the
+       Director object is still the same one. Contamination becomes a flag in the
+       data instead of a plausible-looking table. */
+    if(window.__DIR.length===0){
+      __dirRef=director;
+      window.__DIRMETA={
+        source:(director&&director.meta&&director.meta.source)||null,
+        duration:(director&&director.meta&&director.meta.duration)||null,
+        bpm:(director&&director.tempo&&director.tempo.bpm)||null,
+        shape:(document.getElementById('selShape')||{}).value,
+        kal:(document.getElementById('selKal')||{}).value,
+        mat:(document.getElementById('selMat')||{}).value,
+        startedAt:pos(), swapped:false, seeks:0
+      };
+    } else if(window.__DIRMETA){
+      if(director!==__dirRef) window.__DIRMETA.swapped=true;
+      // a seek breaks envelope continuity, so a capture across one is not one take
+      const prev=window.__DIR[window.__DIR.length-1];
+      if(prev && (pos()-prev.t < -0.25 || pos()-prev.t > 1.0)) window.__DIRMETA.seeks++;
+    }
     window.__DIR.push({
       t: pos(), energy, tension, arousal, flux,
       kal: kalAmt, mode, mode2, mix, phase,
