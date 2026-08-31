@@ -106,12 +106,55 @@ def _bucket(labels, clip, rules):
                     out[bucket] = v
     return {k: round(v, 3) for k, v in sorted(out.items(), key=lambda kv: -kv[1]) if v >= 0.02}
 
+# 30 seconds at 32kHz. Cnn14 takes whatever length it is given as ONE tensor and pools globally
+# at the end, so the activations through the conv stack scale with the track — a whole upload went
+# in as a single array and the memory went with it.
+#
+# MEASURED, each variant in its own process so the peak is clean, on a 6:39 track:
+#
+#     whole clip    8584 MB   2.31 s
+#     60s windows   2920 MB   1.67 s
+#     30s windows   1843 MB   1.72 s      <- 4.7x less memory, 25% faster
+#     15s windows   1389 MB   1.89 s
+#
+# and a 9-minute track reached 11276 MB, because this scales with length: the failure mode is an
+# OOM on somebody's long upload rather than a slow response.
+#
+# WINDOWED IS NOT BIT-IDENTICAL AND IT IS WORTH SAYING SO. The clipwise output is a sigmoid over
+# pooled embeddings, so a mean of window scores is not the same as scoring the whole thing —
+# mean-of-sigmoids is not sigmoid-of-mean. In practice it differs where the model was diluting a
+# real event across a long track: on the 6:39 recording the whole-clip pass found only male
+# speech, and the windowed pass found both male (0.284) and female (0.341), which is correct.
+# Checked on what this module actually EMITS rather than on raw tag order — primary genre,
+# instrument buckets and the vocal flag agreed on every track where the model had any confidence
+# at all, and differed only where confidence was 0.001, i.e. where the answer was noise anyway.
+#
+# Weighted by window length so a short tail cannot count as much as a full window, and a tail
+# under a second is dropped: there is nothing to judge in it and Cnn14 wants a reasonable input.
+_WIN = 30 * 32000
+
+def _clipwise(model, y):
+    """The 527-way clipwise vector, in bounded memory whatever the track length."""
+    n = len(y)
+    if n <= _WIN:
+        cw, _ = model.inference(y[None, :])            # (1, 527)
+        return cw[0]
+    acc, wsum = None, 0.0
+    for start in range(0, n, _WIN):
+        seg = y[start:start + _WIN]
+        if len(seg) < 32000:
+            break
+        cw, _ = model.inference(seg[None, :])
+        w = float(len(seg))
+        acc = cw[0] * w if acc is None else acc + cw[0] * w
+        wsum += w
+    return acc / wsum
+
 def tag(mono, sr):
     import librosa
     model, labels = _load()
     y = librosa.resample(mono, orig_sr=sr, target_sr=32000) if sr != 32000 else mono
-    clipwise, _ = model.inference(y[None, :])          # (1, 527)
-    clip = clipwise[0]
+    clip = _clipwise(model, y)
     idx = np.argsort(clip)[::-1][:15]
     top = [{"tag": labels[i], "p": round(float(clip[i]), 3)} for i in idx]
     gscore, mscore = {}, {}

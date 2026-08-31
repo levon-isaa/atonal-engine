@@ -683,6 +683,9 @@ def f_std(a):
     return nrm(np.abs(a - m))
 
 # ============================================================ LAYER 4: GENRE
+# The confidence below which PANNs has not actually found a genre — see the note at the call site.
+PANNS_MIN_CONF = 0.02
+
 def layer4_genre(f, cur):
     """Heuristic estimator with a clean interface. Swap in a tagging model (PANNs/musicnn/CLAP)
     behind this function later; the Director never depends on how genre was produced."""
@@ -837,7 +840,22 @@ def build_director(path, progress=None):
     print(f"[layer2c] tonality…")
     tonality = layer2c_tonality(f)
     print(f"[layer4] genre…")
-    genre = panns or layer4_genre(f, cur)
+    # A TRUTHINESS TEST WAS DECIDING THIS, and it meant the fallback never ran. `panns or
+    # layer4_genre(...)` reads as "use the model, else the heuristic" — but tag() always returns a
+    # dict, so with the model installed the heuristic was unreachable and PANNs won at ANY
+    # confidence, including none.
+    # It matters because the genre is not just printed: viewer.html's genreModes() filters which
+    # shapes the Director may use for the whole track by it, so a guess narrows the visual
+    # vocabulary.
+    # MEASURED across twelve tracks. Real music: 0.215, 0.262, 0.295. A click-track fixture:
+    # 0.0030. Eight speech recordings: 0.0005 to 0.0012, every one of them labelled "classical".
+    # A 72x gap with nothing in it, so the bar sits an order of magnitude either side.
+    # Below the bar the signal heuristic answers instead — it has bpm, percussiveness and
+    # harmonicity, which is a great deal more than the model had to say. Instruments and vocals
+    # are taken from `panns` separately below and are kept either way; they are per-tag scores
+    # that stay meaningful even when no genre tag fired.
+    genre = panns if (panns and panns.get("confidence", 0.0) >= PANNS_MIN_CONF) \
+            else layer4_genre(f, cur)
     print(f"[layer1b] per-band sounds: " +
           ", ".join(f"{k}={len(v)}" for k, v in f["band_onsets"].items()))
     print(f"[layer6] director / sections…")
