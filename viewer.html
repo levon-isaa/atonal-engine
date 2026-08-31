@@ -6236,9 +6236,28 @@ function frame(){
   const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
   /* THE PERIODS EASE, they do not cut. Changing a period changes an angular RATE, not an angle,
      so a hard switch cannot jump the form's position -- but it can visibly kick its speed, and a
-     section boundary is exactly where the eye is already looking. 0.7/s puts the change across
-     about two seconds, under the section it belongs to. */
-  for(const k in MOTP) MOTP[k]=sm(MOTP[k],MOTPT[k],0.7,dt);
+     section boundary is exactly where the eye is already looking.
+     EASED IN RATE, NOT IN PERIOD, and that was a real fault rather than a tuning choice. The
+     eased quantity used to be MOTP itself -- but nothing looks at a period. What the eye reads
+     is the turn rate, and rate is 1/period, so a symmetric exponential in period is a badly
+     asymmetric one in rate, biased in exactly the wrong direction: slow to arrive at energy,
+     quick to leave it.
+     MEASURED, by sampling MOTP and MOTPT every frame across both boundaries of the first drop on
+     the 124bpm bench track. Entering the drop (period 24 -> 8 beats) the RATE needed 4.75s to
+     cover 90% of its travel; leaving it (8 -> 32) it needed 1.80s. Same constant, same track,
+     2.6x apart. The period itself was symmetric to within 2% over the same two boundaries
+     (3.35s and 3.41s), which is why easing the wrong variable hid instead of announcing itself.
+     Easing 1/MOTP makes the two equal at ln(10)/0.7 = 3.29s: a drop arrives 1.5s sooner, and a
+     breakdown is left slightly less abruptly, which is the right way round for both. It is still
+     an exponential ease, so the reason for easing at all is untouched -- and 0.7/s now genuinely
+     puts the change across about two seconds IN THE VARIABLE THAT IS SEEN, which is what this
+     comment claimed all along.
+     The periods are bars-snapped and never approach zero (SPIN_SECS bottoms out near 9 beats);
+     the clamps are there so a future ladder entry cannot turn a reciprocal into an infinity. */
+  for(const k in MOTP){
+    const inv=sm(1/Math.max(0.5,MOTP[k]), 1/Math.max(0.5,MOTPT[k]), 0.7, dt);
+    MOTP[k]=1/Math.max(1e-4,inv);
+  }
   /* ROUTED. Each rate takes its own route as a multiplier, floored at zero -- a route pushed deep
      negative would run the form BACKWARDS, and a reversing rotation is the exact fault the
      bar-locked camera sway was removed for. Ceiling at 3x so one route cannot make it a blur. */
@@ -6773,6 +6792,12 @@ function frame(){
         shape:(document.getElementById('selShape')||{}).value,
         kal:(document.getElementById('selKal')||{}).value,
         mat:(document.getElementById('selMat')||{}).value,
+        /* THE ROUTES, because they change the answer and nothing else recorded them. A capture
+           was taken with a rolled patch still live from an earlier session and read 59% faster on
+           the off-axes than the same build carrying the Director's own patch -- MV('tumble')
+           multiplies that rate directly, so one stray route outweighs most code changes. shape,
+           kal and mat were already stamped; this was the page state still invisible. */
+        routes:(typeof MODB!=='undefined'&&MODB)?MODB.map(r=>r.t+'<'+r.s+'*'+r.a):null,
         startedAt:pos(), swapped:false, seeks:0
       };
     } else if(window.__DIRMETA){
