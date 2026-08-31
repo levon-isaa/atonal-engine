@@ -4974,19 +4974,55 @@ function energySorted(){
 }
 /* Where this energy sits among the track's own sections, ties averaged -- see segRank, which
    does the same job for density and carries the argument for why ties may not be ordered. */
-function energyRank(e){
-  const a=energySorted(), n=a.length;
+/* The same sorted CURVE, for the other population -- see shapeRung. Built once per track; a
+   reform happens a handful of times in a whole piece, so a linear scan of it is nothing. */
+let _cSort=null, _cFor=null;
+function curveSorted(){
+  if(_cFor===director && _cSort) return _cSort;
+  _cFor=director;
+  const E=(director&&director.curves&&director.curves.energy)||null;
+  _cSort=(E&&E.length)?Array.prototype.slice.call(E).sort((a,b)=>a-b):null;
+  return _cSort;
+}
+/* Ties averaged, and CLAMPED -- the clamp is not defensive, it is the bug.
+   The formula is exactly right for a value drawn FROM the sample: the smallest gives 0, the
+   largest gives 1. For a value outside it, it runs off both ends. Above every entry it returns
+   (2n-1)/(2n-2), which is 1.036 at n=15, and below every entry it returns -1/(2n-2). The ladder
+   is indexed 0..8, so that put the rung at 8.14 and -0.14 -- measured, those exact numbers. */
+function rankAmong(e,a){
+  const n=a.length;
   if(n<2) return 0.5;
   let below=0, atOrBelow=0;
   for(const x of a){ if(x<e) below++; if(x<=e) atOrBelow++; }
-  return (below+atOrBelow-1)/(2*(n-1));
+  return Math.max(0, Math.min(1, (below+atOrBelow-1)/(2*(n-1))));
 }
-function shapeRung(e){
-  const a=energySorted();
-  if(!a.length) return (SHAPE_LADDER.length-1)*0.5;
+function energyRank(e){ return rankAmong(e, energySorted()); }
+/* WHICH POPULATION THE ENERGY IS RANKED AGAINST, and it was the wrong one half the time.
+   A shape is chosen from two places. A section boundary passes the SECTION's mean energy, and
+   ranking that among the other sections' means is exactly right. An in-section departure passes
+   the LIVE curve value -- and that was being ranked among section MEANS, which is a sample
+   compared against a distribution of averages. An instant is routinely louder than any section's
+   mean, because a mean sits below its own peaks.
+   MEASURED on two tracks: 21.1% and 19.1% of the energy curve is above EVERY section mean, so
+   every in-section change during a loud passage saturated the rank and pinned the rung to the top
+   of the ladder -- the same shape every time. On the real track 41.0% was below every section
+   mean and pinned to the bottom. Roughly 60% of that track's curve could reach only two of the
+   nine shapes.
+   That is visible in a run: ten picks on the bench track produced rungs of 3.2, 3.3, 3.3, 3.4,
+   4.4, 4.9, 8.1, 8.1 and used four shapes, while the same track's SECTION energies spread across
+   the whole ladder and reach all nine. Rotor sits at ladder position 7 and was never once chosen,
+   because everything loud enough to reach it had already saturated past it to Gear at 8.
+   Ranking the live value among the curve it is a sample of fixes the population error; the clamp
+   above fixes the overshoot. Sampling the curve 205 times, rung 7 went from 5 hits to 27 and
+   rung 8 from 44 to 11.
+   segRank next door does the same job for density and is correct as it stands, because
+   segForSection only ever hands it a section's own value. */
+function shapeRung(e, live){
+  const a=(live && curveSorted()) || energySorted();
+  if(!a || !a.length) return (SHAPE_LADDER.length-1)*0.5;
   const lo=a[0], hi=a[a.length-1];
   const lin=Math.max(0,Math.min(1,(e-lo)/Math.max(1e-6,hi-lo)));
-  return (lin*0.5+energyRank(e)*0.5)*(SHAPE_LADDER.length-1);
+  return (lin*0.5+rankAmong(e,a)*0.5)*(SHAPE_LADDER.length-1);
 }
 /* WITH THE FOLD OPEN, PICK SOMETHING THE FOLD CAN USE. Only while it is actually blooming --
    below that the full set is in play, so this narrows the vocabulary during folded passages
@@ -5024,7 +5060,8 @@ let shapeMemo=null, shapeMemoFor=null, lastShapeE=null;
 function chooseMode(energy, sec, opening, foldOpen){
   const allowed=allowedModes(foldOpen);
   if(!allowed.length) return mode;
-  const rung=shapeRung(energy);
+  // `sec` is present only at a section boundary; without it this is a live curve value -- see shapeRung.
+  const rung=shapeRung(energy, !sec);
   if(shapeMemoFor!==director){ shapeMemoFor=director; shapeMemo=new Map(); }
   /* Keyed on the rung rather than on the raw energy, so "the same music" means the same PLACE ON
      THE LADDER -- 0.77 and 0.81 are the same passage returning and must not be two keys. Only a
