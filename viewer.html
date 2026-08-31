@@ -3861,7 +3861,8 @@ const MOT={spin:1, tumble:1, swirl:1, orbit:1}; window.MOT=MOT;
    arithmetic on the first, not a second measurement. That is the trade this feature IS;
    SELFSPIN.beats is the dial for it, and a larger number means a slower baseline and less
    compression. Set SELFSPIN.on=false to get the pure Director behaviour back. */
-const SELFSPIN={on:true, beats:36}; window.SELFSPIN=SELFSPIN;
+// beats:72 -- doubled with SPIN_SECS so the halving is exact; see the note there.
+const SELFSPIN={on:true, beats:72}; window.SELFSPIN=SELFSPIN;
 const FILT={mode:0, amt:1.0, cell:14, ang:0, gain:1.0, off:0, org:[0,0], ink:[0.06,0.06,0.09], paper:[0.95,0.95,0.97]};
 let filtBands=8, filtFolds=6, thermOff=0;   // held counts; see the drive block for why
 /* ======================= ROUTING MATRIX =======================
@@ -4315,7 +4316,7 @@ let userAz=0, userEl=0, userZoom=1, userAzV=0, userElV=0;
    oscillated here -- spinKick's onset offsets, the bar-locked orbit sway -- was removed for
    reading as wobble; a monotonic turn cannot, however fast it goes.
    Raise it for a slower spin: 32 = 8 bars, 64 = 16. */
-const SPIN_BEATS=16;
+const SPIN_BEATS=32;   // halved rate; see SPIN_SECS. Only the idle default -- a loaded track uses the ladder.
 /* ROTATION IN ALL DIRECTIONS. The form turns about its own Y axis (u_spin) and that axis was
    FIXED, leaned over by u_tilt and held there -- a turntable, so half the form never came round
    to face the camera at all. A second rotation in the yz plane makes the orientation a genuine
@@ -4412,14 +4413,43 @@ const SWIRL_BEATS=SPIN_BEATS*1.5;                    // 24 beats, about Z
    phase-locked to the grid, which is the entire point of counting it in beats; what no longer
    happens is the wall-clock rate scaling with 60/bpm behind the choice.
 
-   The band is built around the 7s the note above chose: 7.5s in the middle, out to 4.5s where the
-   music is at its most driven and 15s where it is at its calmest. */
-const SPIN_SECS=[4.5,5.8,7.5,10.5,15.0];             // seconds per revolution, fast -> slow
+   The band was built around the 7s the note above chose: 7.5s in the middle, out to 4.5s where
+   the music is at its most driven and 15s where it is at its calmest.
+
+   HALVED, AND THE BAND WAS NEVER WHAT ARRIVED. Two things are true at once here. The first is a
+   request: the form turned faster than the Director changed its shape, so the shape change --
+   the most visible decision the thing makes -- was reading as punctuation inside a rotation
+   rather than as an event. MEASURED on the bench track, spin turned 3.83 times between one shape
+   change and the next (median gap 15.5s); the two off-axes were already at about one turn each,
+   0.98 and 1.20, so the spin was the axis out of step, not the pace as a whole.
+   The second is that the ladder was never delivering the band written above. SELFSPIN adds a
+   constant rate on top of every rung (see it below), so what arrives is always faster than what
+   is chosen here, and by proportionally more at the quiet end where the rung is small. Measured
+   per section: 8.26s in the intro, 3.27 and 3.37 in the two drops, 4.53 track mean. Against a
+   band of 4.5..15 -- the drops ran faster than the FASTEST rung, and the calmest section at
+   little more than half the slowest. The comment above records exactly this bug being fixed once
+   before, when the ladder was in beats and 176bpm dragged it to 2.73s against a stated 7; the
+   conversion to seconds fixed the tempo scaling and left the constant untouched.
+   Doubling both this ladder and SELFSPIN.beats halves the rate EXACTLY -- both terms scale, so
+   the ratio between any two sections is untouched and the compression is neither better nor
+   worse than it was. Delivered band becomes 6.3..16.4s, mean 9.1, and spin lands at about 1.9
+   turns per shape change against the off-axes' 0.5. At 124bpm the rungs still snap to whole bars,
+   16/24/32/48/64, so nothing about the grid lock changes.
+   The camera is deliberately not in this: it orbits once per 96s, 1.5 times in the whole track,
+   and is not what a viewer reads as the form's speed. */
+const SPIN_SECS=[9.0,11.6,15.0,21.0,30.0];           // seconds per revolution, fast -> slow
 /* Whole numbers of bars only, so every period stays commensurate with every other and the pair of
    off-axes still returns the form to a pose the eye can recognise -- see TUMBLE_BEATS. All of
    these are multiples of 4, which the old ladder's 6, 11 and 22 were not, so the recurrence that
    note describes is actually guaranteed now rather than merely intended. */
-const SPIN_BEAT_STEPS=[4,8,12,16,24,32,48,64];
+/* 96 AND 128 ADDED WITH THE HALVING. The list used to stop at 64, which was the ceiling the
+   OFF-AXES landed on: tumble and swirl are the spin period times a ratio pair of 2..3.5, so a
+   slow section asked for 128 or more and got 64 whatever it asked for. That clipping was already
+   flattening the quiet end before the halving; doubling the ladder then pulled SPIN up to 64 as
+   well and the intro came out 64/64/64 -- three axes at one rate, which is the single thing the
+   ratio pairs exist to prevent. Both are multiples of 4, so every period is still a whole number
+   of bars and the recurrence TUMBLE_BEATS describes still holds. */
+const SPIN_BEAT_STEPS=[4,8,12,16,24,32,48,64,96,128];
 function beatsForSecs(secs){
   const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
   let best=SPIN_BEAT_STEPS[0], err=1e9;
