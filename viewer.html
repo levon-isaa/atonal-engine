@@ -8646,3 +8646,9 @@ setInterval(()=>{
 loadEnvMap('studio');
 frame();
 </script>
+
+<!-- LIBRARY PICKER. Kept out of this file deliberately: it is a self-contained
+     feature with its own OAuth flow and its own DOM, it touches the engine at
+     exactly one point (loadFile), and this file is large enough that anything
+     which can live beside it should. It injects its own panel next to Credits. -->
+<script src="library.js"></script>

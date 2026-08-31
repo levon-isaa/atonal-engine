@@ -227,7 +227,12 @@ class H(BaseHTTPRequestHandler):
             return
         # Static serving, same-origin so the viewer can call /analyze without a preflight.
         path = unquote(self.path.split("?")[0])
-        if path in ("/", "/viewer.html"):
+        # /callback is the OAuth redirect target registered with Spotify. It has to
+        # serve the viewer, because the page itself completes the PKCE exchange from
+        # the ?code= still in the address bar -- see library.js. It is a redirect
+        # LANDING, not an endpoint: nothing is read here, and the query string is
+        # deliberately not touched by the server.
+        if path in ("/", "/viewer.html", "/callback"):
             rel = "viewer.html"
         else:
             rel = path.lstrip("/")
@@ -254,7 +259,7 @@ class H(BaseHTTPRequestHandler):
     # their trailing slash and stay a prefix test; file entries are now matched exactly.
     # BOTH TUPLES KEEP THEIR TRAILING COMMA. Without it these are plain strings, and then
     # `rel_posix not in _STATIC_FILES` becomes a SUBSTRING test -- "ew.htm" would pass it.
-    _STATIC_FILES = ("viewer.html",)
+    _STATIC_FILES = ("viewer.html", "library.js")
     _STATIC_DIRS = ("assets/", "site/")
     _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
              ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
