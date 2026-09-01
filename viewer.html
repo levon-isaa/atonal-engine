@@ -1157,43 +1157,83 @@ vec3 formRot(vec3 p){
    between two quite different fields, and mix() averages their creases into flat facets -- see
    the note above. min(a+c,b+c)=min(a,b)+c exactly, so the erosion constant cancels and the
    midpoint is smin(a,b): both forms at full size joined by a fillet. */
-/* AND IT MELTS THROUGH A BALL, rather than showing both forms at once.
-   The smooth union fixed the faceting the old mix() produced, but it is a UNION: at the middle
-   of a transition both shapes are present at full size, so the incoming one arrives as separate
-   material sitting inside or behind the outgoing one -- visible pieces of the next shape, which
-   is not what a change of form should look like. Eroding harder fuses them but re-exposes the
-   creases the union was introduced to remove, so there is no setting of the pair that is both.
-   Passing the blend through a SPHERE at the midpoint solves both at once. A ball has no creases
-   to average and no features to recognise, so the middle of the transition is smooth and reads
-   as one object rather than two overlaid ones: the form softens into a blob and the new one
-   grows back out of it. sin(m*PI) is zero at both ends, so m=0 and m=1 are still exactly a and
-   b -- the endpoints stay untouched, which is the property the whole blend is built around.
-   Still Lipschitz-1: mix() of 1-Lipschitz fields, and a sphere is one. */
 float blendField(vec3 p,float a,float b,float m){
   if(u_morphU<0.5) return mix(a,b,m);            // legacy average, for A/B
   const float K=1.0;
   float comp=K*0.5*(1.0-abs(2.0*m-1.0))*u_morphC;
-  float d=smin3(a+K*m, b+K*(1.0-m), u_morphK)-comp;
-  /* Raised to a power so the ball is confined to the MIDDLE. Plain sin(m*PI) is already 0.81 at
-     m=0.3, which rounds the outgoing shape away before it has visibly begun to change; the eye
-     reads that as the form being replaced rather than transformed. At 2.5 the same point is
-     0.42, so each end holds its own identity through the first and last third and the melt
-     happens where nothing is recognisable anyway. */
-  float w=pow(sin(m*3.14159265), 2.5)*u_morphBlob;
-  if(w>0.001){
-    // radius tracks the form's own reach, so the melt neither swells nor collapses the frame
-    float sph=length(p)-u_morphR;
-    d=mix(d,sph,w);
-  }
-  return d;
+  return smin3(a+K*m, b+K*(1.0-m), u_morphK)-comp;
 }
+/* THE MELT IS A DILATION, NOT A MIX WITH A BALL -- and the ball was the reported fault.
+   The smooth union fixed the faceting the old mix() produced, but it is a UNION: at the middle
+   of a transition both shapes are present at full size, so the incoming one arrives as separate
+   material sitting inside or behind the outgoing one. The answer was mix(d, sphere, w): pass the
+   blend through a ball, which has no features to recognise.
+
+   Mixing a field with a sphere is the SAME operation the union replaced, and it fails the same
+   way. The zero set of mix(d,sph,w) is where (1-w)d + w*sph = 0, which is not on d's surface --
+   it sits out in d's far field, and the far field of any min-built profile is full of medial
+   ridges where the nearest feature changes. Those ridges are creases, and the mix drags the
+   visible surface onto them.
+
+   ISOLATED at MORPHPIN={from:2,to:3,mix:0.55} -- Rings->Truss, fold shut at kalAmt 0 so nothing
+   else is in the frame -- which comes back a LOW-POLY BLOB, flat polygon facets over the whole
+   surface. Ablated on that one pinned frame:
+     - step cut to a third (1.25/1.55 -> 0.42/0.52) and the budget raised to 400: IDENTICAL.
+       Not a march artefact -- the same test the union change itself was made on.
+     - u_morphBlob to 0: the facets vanish completely, and the two shapes come back as separate
+       overlapping pieces -- which is the double exposure the ball was added to hide. So both
+       problems are real and the ball was trading one for the other.
+   And the ball costs more than the facets. At {from:7,to:5,mix:0.55} it renders a near-featureless
+   ovoid with one hard seam down its side: nothing about which two shapes are involved survives
+   the middle of the transition.
+
+   DILATION does what the ball was reaching for and is exact. Offsetting an SDF outward by r
+   fills every gap narrower than 2r and rounds convex detail to radius r -- the two forms fuse
+   into one mass and fine features dissolve, which is the melt. Pre-shrinking the domain by
+   s = R/(R+r) puts the silhouette back exactly where it was, so the frame neither swells nor
+   collapses. (p/s)*s cancels in the gradient, so this is still a true distance field, not an
+   estimate: no facets are reachable from it at any r.
+   r=0 at both ends, so m=0 and m=1 are still exactly a and b -- the property the whole blend is
+   built around is untouched, and verified: pinned at mix 0 the frame is a pure Rings, at mix 1 a
+   pure Truss. Same two evalMode calls as before; the melt costs a divide.
+
+   MEASURED against the old ball on the same frames, same window, same pose, same track, with the
+   old code stashed in and back out between takes:
+       {2,3,0.55}   low-poly faceted blob   ->  smooth chevron-ring, both profiles legible
+       {7,5,0.55}   featureless ovoid+seam  ->  rounded body with the four bores still reading
+   Frame rate is vsync-capped at 60 either way, in flight and idle. */
+/* EXACTLY TWO evalMode CALL SITES, AND THAT IS A HARD CONSTRAINT, NOT A STYLE POINT.
+   evalMode is the nine-way profile dispatch -- every one of the nine SDFs, each an extruded 2D
+   profile built from a stack of smin3 -- and it is the largest block in this shader. The driver
+   inlines it. A first cut of this function used a guard clause per case and reached SIX call
+   sites instead of two; the shader compiled, ran, and then took the GPU PROCESS DOWN, at idle,
+   inside five seconds, at 2400x1906. Not the melt: u_mix is 0 at idle, so none of the new
+   arithmetic executes. It was the size of the inlined body alone.
+     db36eea (2 sites): 30s at 2400x1906, 35.5fps, context never lost.
+     6 sites:           context lost within 5s of load, before a track was even opened.
+   Both on a clean Chrome profile, fresh browser per take. So: fold every case into the
+   arithmetic and keep the count at two. Anything that needs a third is not worth having.
+
+   AN IMPORTED MESH OR AN UPLOADED SHAPE HAS NOTHING TO MORPH INTO -- evalMode returns the same
+   field for both modes there -- so mx is forced to 0 for them rather than branched on, which
+   both skips the pointless second evaluation and stops an uploaded logo softening into a ball
+   at every section change while its shape never altered.
+
+   q IS p WHENEVER r IS 0, so the one shared evalMode call serves the plain path and the melted
+   path alike, and the early return below is exact rather than approximate. */
 float evalForm(vec3 p){
-  float d=evalMode(p,u_mode);
-  if(u_mix>0.001){ float m=clamp(u_mix,0.,1.); m=m*m*m*(m*(m*6.0-15.0)+10.0);
-    float b=evalMode(p,u_mode2);
-    d=blendField(p,d,b,m);
-  }
-  return d;
+  float mx=(u_volOn>0.5 || u_svgOn>0.5) ? 0.0 : clamp(u_mix,0.,1.);
+  float m=mx*mx*mx*(mx*(mx*6.0-15.0)+10.0);
+  /* Raised to a power so the melt is confined to the MIDDLE. Plain sin(m*PI) is already 0.81 at
+     m=0.3, which softens the outgoing shape away before it has visibly begun to change; the eye
+     reads that as the form being replaced rather than transformed. At 2.5 the same point is
+     0.42, so each end holds its own identity through the first and last third. */
+  float r=pow(sin(m*3.14159265), 2.5)*u_morphBlob*u_morphR;
+  float s=u_morphR/(u_morphR+r);
+  vec3 q=p/s;                                  // exactly p while r is 0
+  float a=evalMode(q,u_mode);
+  if(mx<=0.001) return a;                      // r is 0 here, so this is evalMode(p,u_mode)
+  return (blendField(q, a, evalMode(q,u_mode2), m) - r)*s;
 }
 /* ---- KALEIDOSCOPE ----
    THE FORM IS UNIONED WITH ITS OWN MIRROR IMAGE. That is the whole design, and it is the second
@@ -3799,11 +3839,15 @@ const shaTaps=()=>Math.round(SHA_FLOOR+(STEP.shaN-SHA_FLOOR)*Math.max(0,Math.min
 // gone by mid-morph and the transition is just the Arc; at 0.94 they survive intact.
 // k=0.10, not 0.25: the wider fillet left a scalloped rim wherever the two fields ran close and
 // nearly parallel, which is the same low-poly read the blend change was made to remove.
-/* blob 0.62, not 0.78. At 0.78 the middle of a transition is a featureless ball -- clean, and a
-   moment of nothing. At 0.62 the outgoing form still shows as low relief across the surface, so
-   the melt keeps a trace of where it came from without any of it standing proud enough to read
-   as a separate piece. r matches the reach so the melt neither swells nor collapses the frame. */
-const MORPH={k:0.10, comp:0.94, blob:0.62, r:0.92};  window.MORPH=MORPH;
+/* blob is now the MELT RADIUS as a fraction of r, and r is the reach the pre-shrink normalises
+   against -- EXR, the radius every profile is normalised to in the shader. See evalForm for why
+   the melt is a dilation and no longer a mix with a ball.
+   0.20, swept on the pinned Rings->Truss midpoint: at 0.10 the ring and the chevron are still
+   two strokes with daylight between them, which is the double exposure; at 0.32 they are one
+   soft mass with the chevron only just readable. 0.20 fuses them into a single body while the
+   chevron ridges stay in relief. Nothing facets at any of the three -- the dilation cannot
+   produce facets, so the setting is a question of how much identity to keep, not of artefacts. */
+const MORPH={k:0.10, comp:0.94, blob:0.20, r:1.15};  window.MORPH=MORPH;
 /* Kaleidoscope order and ring offset. off is the fraction of the reach the copies are pushed off
    the fold axis; kalEval derives their scale from it so the silhouette radius never changes.
    0.30 rather than something larger, chosen against the two profile extremes: a solid form (Wave)
