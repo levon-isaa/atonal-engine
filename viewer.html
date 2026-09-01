@@ -537,8 +537,36 @@ const glc=$('gl');
 // failing, which is the worst way for a measurement to be wrong.
 const gl=glc.getContext('webgl2',{antialias:false,alpha:false,
   preserveDrawingBuffer:location.search.indexOf('readback')>=0});
+/* NO CONTEXT IS NOT A FAULT IN THIS PAGE, AND IT HAS TO SAY SO ITSELF.
+   getContext returns null when the browser cannot give the page a GPU context at all -- almost
+   always because the GPU PROCESS has gone down. That process is per APPLICATION, not per tab, so
+   reloading, opening a new tab and restarting the page all fail identically; only restarting the
+   browser respawns it.
+   This was anticipated one line up, for the extensions, and then dropped: gl was used
+   unconditionally from prog() onward, so the symptom was `Cannot read properties of null
+   (reading 'createProgram')` and a black screen. That is indistinguishable from a shader this
+   file broke, and it cost most of a day -- the same failure was blamed on the browser, then on
+   a shader, then on the browser again. A null context and a bad shader are different faults and
+   must not look alike: a bad shader compiles and reports a log, and never lands here.
+   The message replaces the page because nothing on it can work, and the throw stops the script
+   rather than letting it fall through into a cascade of null dereferences that bury the cause. */
+if(!gl){
+  document.body.innerHTML =
+    '<div style="font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;max-width:46em;'+
+    'margin:14vh auto;padding:0 2em;color:#ddd;background:transparent">'+
+    '<div style="font-size:15px;letter-spacing:.08em;margin-bottom:1.2em">NO WEBGL CONTEXT</div>'+
+    '<p>This browser did not give the page a WebGL2 context, so nothing can be drawn. '+
+    'It is not a fault in ATONAL: no shader has run at this point.</p>'+
+    '<p>Almost always the browser\u2019s GPU process has crashed. That process is shared by the '+
+    'whole application, so reloading this page or opening a new tab will not bring it back \u2014 '+
+    '<b>quit the browser completely and reopen it</b>.</p>'+
+    '<p style="opacity:.65">To confirm, run <code>document.createElement(\'canvas\')'+
+    '.getContext(\'webgl2\')</code> in the console on any page. If that is null too, the browser '+
+    'is the cause.</p></div>';
+  throw new Error('ATONAL: WebGL2 unavailable — the browser GPU process is likely down.');
+}
 let floatOK=false;
-if(gl){ floatOK=!!gl.getExtension('EXT_color_buffer_float'); gl.getExtension('OES_texture_float_linear'); }
+floatOK=!!gl.getExtension('EXT_color_buffer_float'); gl.getExtension('OES_texture_float_linear');
 
 const VERT=`#version 300 es
 in vec2 p; void main(){ gl_Position=vec4(p,0.,1.); }`;
