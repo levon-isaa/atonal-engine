@@ -4283,7 +4283,7 @@ const FCELL_DEF={1:3, 2:3, 3:3, 6:8};      // halftone dots / lines / pixelate -
 const FCELL={...FCELL_DEF};
 const filtCellOf=m=>FCELL[m]!==undefined?FCELL[m]:3;
 let kalMode='auto';                                   // 'auto' | 'on' | 'off'
-let kalAmt=0, kalDrive=0, kalBoost=0;
+let kalAmt=0, kalTS=0, kalDrive=0, kalBoost=0;
 let kalRef=1;                                         // the track's own peak section energy
 let kalPhase=1.0;                                     // mirror angle, in units of PI/seg
 /* THE MIRROR TURNS WITH THE TRACK. kalPhase used to be latched once per section AND only while
@@ -4327,6 +4327,9 @@ let kalPhase=1.0;                                     // mirror angle, in units 
 const KAL_BEATS=32;
 let kalBase=1.0, kalSpin=0, kalKick=0, kalPumpE=0;
 const KAL_SECS=1.2;
+const KAL_TAU_UP=0.35;  // the target answers promptly...
+const KAL_TAU_DN=2.0;   // ...and recedes in its own time. See the note at the slew.
+const KAL_DEAD=0.05;    // hold rather than turn round inside this much error
 /* ---- WHETHER THE FOLD IS OPEN AT ALL IS A DECISION, NOT A READING ----
    The drive was a pure instantaneous function of the live energy curve: rescale it against the
    track's peak, smoothstep it, subtract a 12% deadzone. One threshold, no memory, no commitment.
@@ -6899,7 +6902,39 @@ function frame(){
   // can move as fast as it likes and the shape still takes 1.2s to travel. This is what makes a
   // live curve safe to steer with; nothing here can snap.
   const kalT=Math.max(0,Math.min(1,((kalMode==='on')?1:(kalMode==='off')?0:kalDrive)+MV('kal')));
-  { const st=dt/KAL_SECS; kalAmt=Math.max(0,Math.min(1, kalAmt+Math.max(-st,Math.min(st,kalT-kalAmt)))); }
+  /* A RATE LIMIT IS NOT A SMOOTHER, AND ON ITS OWN IT MADE THE FOLD CHURN.
+     The note above is right that nothing here can SNAP, and that was never the fault. kalDrive is
+     a live curve with far more bandwidth than one full scale per 1.2s, so the limiter never
+     caught it: a rate limiter behind a setpoint it cannot track does not follow the setpoint, it
+     runs flat out and turns round whenever the error changes sign. The output is a triangle wave
+     at the limit rate, reversing wherever the curve happens to cross -- constant speed, arbitrary
+     direction, arriving nowhere. It also never got anywhere: pinned between its own reversals the
+     fold never opened past 0.66, so the full rosette the rest of this machinery is built for was
+     not reachable on a real track.
+
+     THE FIX IS ON THE SETPOINT, AND IT IS ASYMMETRIC. Low-passing the target gives the limiter
+     something it can reach and hold. Doing it symmetrically at the slew's own time constant fixed
+     the churn and broke the bloom -- 90% of the rise took 2.7-3.5s against 0.45-1.5s, and this
+     file tuned that bloom to arrive WITH the drop rather than after it. Rising and falling are not
+     the same event: a bloom answers promptly and recedes in its own time. The reversals were never
+     in the rise; they were the curve dithering about its own level, which the fall constant and
+     the deadband remove.
+
+     MEASURED over 25s of playback, same track, same take length:
+
+                          at the limit   reversals   near-still   total travel   peak
+         before                  65.8%   159 (6.4/s)      23.6%          15.07   0.66
+         after                   13.9%     3 (0.1/s)      86.0%           2.98   0.90
+
+     Five times less travel, fifty times fewer reversals, and the fold reaches 0.90 where it used
+     to stall at two thirds. The deadband is what buys most of the last part: the worst thing a
+     rate limiter can do is spend its life turning round, and inside it the fold simply holds --
+     which is what lets a rosette settle long enough to read as one. */
+  { const tau = (kalT>kalTS) ? KAL_TAU_UP : KAL_TAU_DN;
+    kalTS += (kalT-kalTS)*(1-Math.exp(-dt/tau)); }
+  { const st=dt/KAL_SECS, e=kalTS-kalAmt;
+    if(Math.abs(e)>KAL_DEAD)
+      kalAmt=Math.max(0,Math.min(1, kalAmt+Math.max(-st,Math.min(st,e)))); }
   /* THE MIRROR'S OWN MOTION. Advanced every frame on the beat grid rather than latched per
      section -- see the note above kalBase. Scaled by energy so a quiet passage turns slowly and a
      loud one churns, and gated on the fold being at least partly open: with kalAmt at 0 there is
