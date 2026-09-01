@@ -5940,25 +5940,32 @@ function frame(){
      not advance: the frame is rendered again and not encoded, so nothing is dropped and nothing
      is duplicated, the render just waits. Costs time, which an offline render has. */
   if(RENDER.on){
-    RENDER.stall = !!(RENDER.enc && RENDER.enc.encodeQueueSize>90);
+    RENDER.stall = !!(RENDER.enc && RENDER.enc.encodeQueueSize>RENDER.qcap);
     if(!RENDER.stall){ dt=1/RENDER.fps; renderClock+=dt; time=RENDER.t0+renderClock; }
     /* WAITING MEANS NOT RENDERING, AND IT WAS NOT DOING THAT. The note above says that when the
        queue runs deep "the render just waits". It did not wait -- it fell through and drew the
        whole frame again at export resolution, then threw it away because the encode below is
        skipped while stalled. On a GPU-bound path that is not free waiting, it is the renderer
        competing for the GPU with the one thing it is waiting for.
-       MEASURED on a 2194x1976 take: the pipeline advanced 1.6 encoded frames a second with the
-       queue pinned at its 90 cap the entire time, which is 37.5x slower than real time -- while
-       the encoder ON ITS OWN, benchmarked at the same size, bitrate and codec, ran at 11.25 fps.
-       An encoder seven times faster than the pipeline it is supposedly the bottleneck of is not
-       the bottleneck; the discarded renders were.
+       MEASURED on a 2194x1976 take, and then measured again properly. The first pass compared
+       two separate takes and read 1.6 against 8.76 encoded frames a second. That comparison was
+       worth redoing, because the first measurement inside any take is not the steady state: the
+       tier switch to ultra, the shader recompile and the canvas reallocation all land in it.
+       Set RENDER.spin to flip this behaviour live and the A/B fits inside ONE warmed-up take,
+       interleaved so that order cannot carry it:
+           re-render while stalled   1.22, 1.56 fps    mean 1.39
+           return while stalled      7.06, 9.22 fps    mean 8.14
+       5.86x, measured with the fixed case both before and after the old one. For scale, the
+       encoder on its own at the same size, bitrate and codec runs at 11.25 fps -- so afterwards
+       the pipeline sits just under its encoder, which is where an encoder-bound pipeline belongs,
+       and before it was seven times slower than the thing it was waiting for.
        (latencyMode is not the lever, before anyone reaches for it: quality 11.25, realtime 10.03,
        quality+prefer-hardware 11.38, realtime+prefer-hardware 11.61 fps. All within 15%.)
        Returning here skips the draw entirely. rAF is already scheduled at the top of frame(), so
        the loop continues; the governor is off for the whole take (QLOCK plus pinScale) so nothing
        downstream needs this frame's timing; and renderClock does not advance, so the take cannot
        end early while stalled. */
-    else { dt=0; time=RENDER.t0+renderClock; return; }
+    else { dt=0; time=RENDER.t0+renderClock; if(!RENDER.spin) return; }
   }
   PERF.n++;
   // MEASURE THE FRAME, NOT THE INTEGRATION STEP. dt is clamped to 50ms so one stall cannot
@@ -7801,7 +7808,15 @@ const MP4={
     return new Blob([out],{type:'video/mp4'});
   }
 };
-const RENDER={on:false, fps:60, t0:0, until:0, startAt:0, frames:0, pinScale:false,
+/* qcap: how many frames the encoder may have queued before the renderer stops feeding it. 90
+   was chosen to bound memory after an unbounded queue reached 319 frames; it bounds it at the
+   wrong number. A VideoFrame at export size is width*height*1.5 bytes, so at 2194x1976 the cap
+   is holding 564 MB of them, and a long take at a larger format holds proportionally more.
+   MEASURED WITHIN ONE TAKE, warmed up, so the depth is the only variable: 24 gave 27.62 encoded
+   frames a second and 90 gave 28.05. The queue buys nothing above 24 and costs 409 MB to hold.
+   12 measured the same again (26.0) but leaves less headroom for a stutter in the encoder, so 24.
+   spin: restores the old behaviour of re-rendering while stalled, for the A/B in the frame loop. */
+const RENDER={on:false, fps:60, t0:0, until:0, startAt:0, frames:0, pinScale:false, qcap:24, spin:false,
                enc:null, samples:[], desc:null, bytes:0, encErr:null, codec:null, stall:false};
 let recTimer=null, recWantSecs=0;
 window.RENDER=RENDER;
