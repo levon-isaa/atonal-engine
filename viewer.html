@@ -8031,10 +8031,27 @@ $('rec').addEventListener('click',async()=>{
   /* SAY WHAT IT WILL COST BEFORE IT COSTS IT. An offline render is slower than real time by
      roughly 60/liveFps, so a 40s track at 14fps live is about seven minutes of wall clock. That is
      a reasonable trade for a file that never drops a frame at Ultra, and an unreasonable surprise
-     if it is not said out loud. */
+     if it is not said out loud.
+     IT WAS COSTING THE WHOLE TRACK'S ESTIMATE FOR A FIFTEEN SECOND TAKE. `dur` here is
+     director.meta.duration -- the length of the loaded track -- and the take is recWantSecs, or
+     whatever is left from the playhead when the length is "to the end". Those are not the same
+     number and the estimate used the wrong one: on a 143s track a 15s export announced "about
+     10 min" and finished in about one. Told that, a paying user reasonably decides not to bother.
+     RENDER.until and RENDER.startAt are both already set above and bracket exactly the music this
+     take will render, so the span is theirs. That also fixes "to the end" started from halfway,
+     which used to quote the whole track rather than the half that is left.
+     WHAT IS LEFT IS APPROXIMATE AND SAYING SO IS THE HONEST PART. liveFps is measured at
+     whatever tier and resolution the viewer is running, and the take then pins Ultra with rscale
+     at 1.0, which costs more per frame -- so this is a lower bound, not a promise. Two takes of
+     the same 15s at the same settings, back to back on this machine, ran 62s and 143s: the
+     variance between runs is larger than the error in the estimate, so tuning a correction factor
+     onto it would be fitting noise. The number is there to tell someone whether this is a coffee
+     or a weekend, and at the take's own length it now does that; the progress bar below carries
+     the real answer once the take is under way. */
   if(recLive){ showStat('Recording '+where+' live at '+liveFps.toFixed(0)+'fps — Stop to save'); }
   else{
-    const mins=dur>0 ? (dur*60/Math.max(1,liveFps))/60 : 0;
+    const span=(RENDER.until>RENDER.startAt) ? (RENDER.until-RENDER.startAt) : 0;
+    const mins=span>0 ? (span*60/Math.max(1,liveFps))/60 : 0;
     showStat('Rendering '+where+' offline at a true 60fps — no dropped frames'
       +(mins>0?', about '+(mins<1?'under a minute':mins.toFixed(0)+' min'):'')+'. Stop to save');
   }
