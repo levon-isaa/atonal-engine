@@ -3474,6 +3474,28 @@ const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;
    luminance levels, which is a Michelson contrast of 0.04, and on one profile it was zero.
    window.FIG overrides it live for A/B. */
 const FIG_GROUND=0.26;
+/* IT IS ONE CONSTANT AND THE CONTRAST IT BUYS IS NOT CONSTANT. Measured on the Lattice in pearl,
+   luminance either side of the silhouette, swept across the six mood palettes analyze.py emits:
+
+       violet 54.0   rose 39.1   ice 28.6   pearl 27.7   amber 17.3   mono 17.3   levels
+       0.204         0.136       0.086      0.084        0.051        0.049       Michelson
+
+   A 3.1x spread on the same shape and the same material, decided entirely by which mood the
+   section happened to carry. The note above describes the bug this term was added for as 13
+   levels, 0.04 -- so on a warm or a neutral section the form has drifted most of the way back
+   into the ground it is supposed to stand out from.
+
+   THE OBVIOUS FIX MAKES IT WORSE, and here are the numbers so it is not tried twice. Scaling the
+   darkening by the ground's own luminance -- clamp(u_fig*(1.0+2.2*(bl-0.55)), u_fig*0.55, 0.62)
+   in bg() -- moved amber 17.3 -> 25.1 and everything else the wrong way: mono 17.3 -> 10.1,
+   pearl 27.7 -> 19.5, rose 39.1 -> 31.4, violet 54.0 -> 50.6. Spread went 3.1x to 5.0x.
+
+   The reason it cannot work in that form is that the backdrop is not only behind the form, it is
+   LIGHTING it. Darkening the halo darkens what the rim picks up, and on a pale dielectric the
+   edge loses about as much as the ground does, so the difference barely moves and on mono it
+   inverts. Any fix has to raise the form or change its hue against the ground rather than push
+   the ground down underneath it -- or it has to know the subject's luminance, which bg() does
+   not. Reverted; the flat 0.26 is what ships. */
 // Film grain, global across every look and filter. amt is a multiplier on the look's own
 // character; 0 is off. See the u_grain upload for why the look can no longer zero it.
 const GRAIN={amt:1.0};  window.GRAIN=GRAIN;
