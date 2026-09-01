@@ -1,0 +1,11 @@
+<!doctype html><meta charset=utf-8><title>WebGL check</title>
+<body style="font:14px ui-monospace,monospace;padding:24px;background:#111;color:#eee">
+<h3>WebGL availability — nothing from ATONAL on this page</h3>
+<pre id=o>running…</pre>
+<script>
+const c=document.createElement('canvas'); c.width=64; c.height=64;
+const g2=c.getContext('webgl2'), g1=c.getContext('webgl'), d2=c.getContext('2d');
+let s='webgl2 : '+(!!g2)+'\nwebgl1 : '+(!!g1)+'\ncanvas2d: '+(!!d2)+'\n';
+if(g2){ s+='version : '+g2.getParameter(g2.VERSION)+'\nrenderer: '+g2.getParameter(g2.RENDERER)+'\n'; }
+document.getElementById('o').textContent=s;
+</script>

@@ -1223,7 +1223,30 @@ float blendField(vec3 p,float a,float b,float m){
    path alike, and the early return below is exact rather than approximate. */
 float evalForm(vec3 p){
   float mx=(u_volOn>0.5 || u_svgOn>0.5) ? 0.0 : clamp(u_mix,0.,1.);
-  float m=mx*mx*mx*(mx*(mx*6.0-15.0)+10.0);
+  /* SLOW THROUGH THE MIDDLE, NOT THROUGH THE ENDS -- the opposite of the smootherstep that was
+     here, and the reason transitions read as a jolt rather than a movement.
+     u_mix is linear in beats, so this curve is the whole time-shaping of a morph. Smootherstep
+     is flat at BOTH ends, and the erode-union underneath is already S-shaped in effect: almost
+     nothing is visible until the two eroded fields cross near m=0.5, and then everything happens
+     at once. Two S-curves compose into a step.
+     MEASURED as the per-step change in the rendered frame, 40 steps across a transition, pose
+     frozen and the audio PAUSED so the Director cannot drift between samples (a null control of
+     six grabs at one mix reads exactly 0). Steps where the frame barely moves at all, and the
+     ratio of the largest step to the mean:
+
+                                    dead steps      peak/mean        p90/p10
+         smootherstep, k=0.10        7-16 / 40      5.5 - 6.4       19 - 31
+         linear m,     k=0.10         1-2 / 40      3.8 - 4.1      6.3 - 7.5
+         this,         k=0.35         0-1 / 40      1.7 - 2.2      3.3 - 5.4
+
+     So over a third of the old transition was time in which nothing visibly changed, and one
+     step in the middle carried six times the mean. The exponent moves m FAST at the ends, where
+     an eroded field barely changes what you can see, and SLOWLY through the crossover, where it
+     changes everything -- it is a pre-compensation for the union's own curve, not a taste
+     preference. Non-zero slope at the ends is not a snap: the first and last measured steps come
+     out at 0.2-0.6 against a mean of 0.8. */
+  float uu=2.0*mx-1.0;
+  float m=0.5+0.5*sign(uu)*pow(max(abs(uu),1e-5), 1.4);
   /* Raised to a power so the melt is confined to the MIDDLE. Plain sin(m*PI) is already 0.81 at
      m=0.3, which softens the outgoing shape away before it has visibly begun to change; the eye
      reads that as the form being replaced rather than transformed. At 2.5 the same point is
@@ -3837,8 +3860,12 @@ const shaTaps=()=>Math.round(SHA_FLOOR+(STEP.shaN-SHA_FLOOR)*Math.max(0,Math.min
 // enough to pinch the form slightly as it crosses and not enough to eat thin features. Measured
 // on Lattice->Arc, whose bars are 0.048 half-width: at comp 0.85 (erosion 0.075) the bars are
 // gone by mid-morph and the transition is just the Arc; at 0.94 they survive intact.
-// k=0.10, not 0.25: the wider fillet left a scalloped rim wherever the two fields ran close and
-// nearly parallel, which is the same low-poly read the blend change was made to remove.
+// k=0.35. It was 0.10 -- "0.25 left a scalloped rim wherever the two fields ran close and nearly
+// parallel" -- but that was measured with the old mix-through-a-ball melt in place, and the ball
+// was itself producing rim artefacts (see evalForm). Re-tested without it: at 0.35 the pinned
+// Rings->Truss and Knot->Shell midpoints are clean, no scalloping at any rim. And the wider
+// fillet is what lets the incoming shape GROW IN rather than appear: with the timing curve above
+// it takes peak/mean from 3.8-4.1 down to 1.7-2.2.
 /* blob is now the MELT RADIUS as a fraction of r, and r is the reach the pre-shrink normalises
    against -- EXR, the radius every profile is normalised to in the shader. See evalForm for why
    the melt is a dilation and no longer a mix with a ball.
@@ -3847,7 +3874,7 @@ const shaTaps=()=>Math.round(SHA_FLOOR+(STEP.shaN-SHA_FLOOR)*Math.max(0,Math.min
    soft mass with the chevron only just readable. 0.20 fuses them into a single body while the
    chevron ridges stay in relief. Nothing facets at any of the three -- the dilation cannot
    produce facets, so the setting is a question of how much identity to keep, not of artefacts. */
-const MORPH={k:0.10, comp:0.94, blob:0.20, r:1.15};  window.MORPH=MORPH;
+const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15};  window.MORPH=MORPH;
 /* Kaleidoscope order and ring offset. off is the fraction of the reach the copies are pushed off
    the fold axis; kalEval derives their scale from it so the silhouette radius never changes.
    0.30 rather than something larger, chosen against the two profile extremes: a solid form (Wave)
