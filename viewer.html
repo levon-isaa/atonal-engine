@@ -3490,10 +3490,21 @@ const FIG_GROUND=0.26;
    AMBER IS FINE. It has the second-lowest luminance separation of the six and the HIGHEST chroma
    separation of the six; the form is told apart by hue, and by deltaE it is level with violet at
    the top. A luminance-only metric called it a defect and it is not one.
-   MONO IS THE REAL CASE, at deltaE 4.5 against a just-noticeable difference of about 2.3 -- two
-   JNDs between the form and the ground it stands on. Pearl is second at 8.2. Both are the same
-   situation: a near-neutral palette behind a near-neutral material, where there is no hue axis
-   left to separate on and the luminance axis is only four levels wide.
+   MONO IS THE WORST OF THEM AT DELTAE 4.5 -- AND MONO NEVER SHIPS. analyze.py picks the mood
+   from an expression with five outcomes, violet, amber, ice, rose and pearl, and mono is not one
+   of them; it sits in the palette table unreachable. Confirmed on two real analyses, 37 sections,
+   where all five reachable moods appear and mono does not. So the deltaE 4.5 measurement is real
+   and describes a case no track can reach.
+   THE WORST CASE THAT DOES SHIP is a matte dielectric on the pearl palette, which is common --
+   eight of twenty-two sections on the real track. Lattice, pearl palette, by material:
+
+       gold 45.5   chrome 28.1   holo 22.6   frosted 13.5   pearl 13.0
+       plastic 11.6   matte 8.2   glass 6.6   clay 6.3
+
+   The metals are the SAFE end, and for a reason worth keeping: their dL is negative, -31 on gold
+   and -25 on chrome, because a polished surface reflects a dark environment and comes out darker
+   than the ground rather than paler. It is the diffuse pale materials that have nothing to give,
+   and clay at 6.3 with a dL of -2.7 is very nearly luminance-matched to its own backdrop.
 
    WHICH MAKES THE PREMISE ABOVE HALF RIGHT. That note says the separation is a luminance dip
    "rather than more colour", because "adding chroma behind a near-white form does not give the

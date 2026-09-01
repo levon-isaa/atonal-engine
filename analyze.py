@@ -751,6 +751,16 @@ def label_and_direct(bounds, f, cur, genre):
         # tints the form with this directly and slams the saturation for the background ink,
         # so a near-grey palette here would give a washed-out backdrop. "mono" stays neutral
         # on purpose — it becomes the stark black & white press look.
+        #
+        # "mono" IS UNREACHABLE. The expression above has five outcomes — violet, amber, ice,
+        # rose, pearl — and none of them is mono, so this entry has never been selected for any
+        # track. Confirmed on two real analyses, 37 sections between them: violet, ice, rose,
+        # pearl and amber all appear and mono does not.
+        # It is left in rather than deleted because the renderer was measured against it and the
+        # result is worth keeping: on a near-neutral palette a near-neutral material has almost
+        # nothing to separate against — deltaE 4.5 between the form and the ground it stands on,
+        # against a just-noticeable difference of about 2.3. Whoever makes mono reachable has to
+        # solve that first. See the note on FIG_GROUND in viewer.html.
         palette = {"violet":[0.58,0.42,0.92],"amber":[0.95,0.62,0.30],"ice":[0.45,0.80,0.98],
                    "rose":[0.95,0.48,0.62],"pearl":[0.62,0.68,0.92],"mono":[0.80,0.80,0.85]}[mood]
         intent = semantic_intent(role, sten, sval, sdark, rise)
