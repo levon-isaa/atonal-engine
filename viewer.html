@@ -6406,15 +6406,42 @@ function frame(){
      source and the reason the matrix has no idea where its inputs come from. */
   SIG.energy=energy; SIG.tension=tension; SIG.arousal=arousal; SIG.epic=epic;
   SIG.valence=valence; SIG.darkness=darkness; SIG.flux=flux;
-  /* THE TRANSIENT SOURCES ARE SCALED INTO 0..1. HITS.* are smoothed attack envelopes and they
-     peak around 0.15 on a loud track (measured: low 0.158, sub 0.176, high 0.153, air 0.472,
-     pulse 0.546) -- so a route at a full 100% on the kick was moving its target by three percent
-     and every amount in the matrix read as broken. The emotion curves already use their whole
-     range and are passed straight through. */
+  /* THE TRANSIENT SOURCES ARE SCALED INTO 0..1, AND THE CEILING IS THE SAME FOR ALL FIVE BANDS.
+     What one band's envelope can reach is not a matter of opinion, it is closed form. pick_onsets
+     normalises each band's strengths against that band's own maximum, so every band delivers a
+     1.0 onset somewhere in every track; ATK_GAIN is defined as the ratio that makes the new fast
+     attack peak exactly where the old slow one did. So a full-strength onset peaks at
+     envPeak(ATK_OLD[b], DECAY[b]), which is:
+
+         sub 0.543   low 0.543   mid 0.536   high 0.533   air 0.525
+
+     -- a 3.5% spread across the five, not the 2x this and the light rig were both calibrated
+     against. MEASURED LIVE over 30s of playback at 101fps, the observed maxima land just under
+     each analytic ceiling and in the same order: sub 0.539, low 0.539, mid 0.526, high 0.514,
+     air 0.504. mid is 2.4% below low, not half of it.
+
+     A gain of 5.0 therefore saturates at HITS 0.20, which is around the 78th percentile. Clipped
+     fraction, both gains scored on the SAME live frames so there is no order effect in it:
+
+                 kick    sub   snare    hat    air
+         5.0    77.6%  86.5%   53.7%  39.6%   9.7%     (air on its own 2.4)
+         2.0    10.6%  11.1%    2.7%   0.2%   0.1%
+
+     Simulated across all nine cached analyses -- ordinary music rather than this dense test
+     pattern -- the same figures are 29.6 / 28.5 / 31.8 / 21.0%, falling to about 1%. Either way a
+     source pinned at its ceiling for a third to three quarters of a track has stopped being a
+     source: whatever it drives holds still through exactly the loud passages it was added for.
+
+     2.0 puts p99 at 1.0 for every band, and clipping at about 1%. PEAKS ARE UNCHANGED, which is
+     the whole point: a real hit still reaches full, and the frames between hits now carry the
+     difference instead of all reading as full. Route amounts scale linearly, so nothing needs
+     retuning at the top -- the median displacement halves and the peak does not move.
+     SIG.pulse was already right at 1.8 (p99 0.902, never clips) and is left alone. It is also the
+     evidence: the one source tuned against its real range landed on this same number. */
   SIG.pulse=Math.min(1,pulseS*1.8);
-  SIG.kick =Math.min(1,HITS.low*5.0);  SIG.snare=Math.min(1,HITS.mid*5.0);
-  SIG.hat  =Math.min(1,HITS.high*5.0); SIG.air  =Math.min(1,HITS.air*2.4);
-  SIG.sub  =Math.min(1,HITS.sub*5.0);
+  SIG.kick =Math.min(1,HITS.low*2.0);  SIG.snare=Math.min(1,HITS.mid*2.0);
+  SIG.hat  =Math.min(1,HITS.high*2.0); SIG.air  =Math.min(1,HITS.air*2.0);
+  SIG.sub  =Math.min(1,HITS.sub*2.0);
   modUpdate(dt,(director&&director.tempo&&director.tempo.bpm)||120);
   /* ---- THE DIRECTOR DRIVES THE FILTER ---- see the note above FILT for the reasoning. */
   if(FILT.mode>0.5){
@@ -7132,7 +7159,7 @@ function frame(){
   const HIT_BUDGET=1.0;
   const lKey =(pulseS*0.16+HITS.low*0.85)*(0.55+arousal*0.85);
   const lRim =(pulseS*0.14+HITS.air*0.90)*(0.50+epic*1.10);
-  const lFill= HITS.mid*4.10*(0.55+arousal*0.75);
+  const lFill= HITS.mid*0.90*(0.55+arousal*0.75);
   const lAmb = HITS.sub*0.85*(0.50+energy*0.60);
   const lSum = lKey+lRim+lFill+lAmb;
   const kBud = lSum>HIT_BUDGET ? HIT_BUDGET/lSum : 1;
@@ -7154,12 +7181,35 @@ function frame(){
      that already reach the tonemapper's knee.
      Weighted so a hit is unmistakable but the resting frame is unchanged: at HITS 0 both are
      exactly 1.0, which is what the rig was tuned against. */
-  /* CALIBRATED AGAINST WHAT THE ENVELOPES ACTUALLY REACH, not against 1.0. Measured peaks over
-     the test track: sub 0.47, low 0.47, mid 0.23, high 0.24, air 0.24 -- so the three upper
-     bands only ever deliver about half of what the low pair does, and a coefficient tuned as if
-     they all reached 1.0 leaves a snare at a third of a kick and a hat at nothing. The weights
-     below are scaled by each band's own ceiling so the five land with comparable force, with the
-     kick still first among them because it should be. */
+  /* THE FILL'S 4.10 WAS CORRECTING A DIFFERENCE THAT DOES NOT EXIST, AND IT COST THE KICK.
+     It was set against "mid only reaches 0.23, half of what the low pair does". Every band's
+     ceiling is envPeak(ATK_OLD[b], DECAY[b]) -- 0.525 to 0.543, a 3.5% spread; see the note at
+     SIG for why that is closed form rather than a measurement. mid reaches what low reaches.
+
+     So 4.10 against the other three legs' 0.85-0.90 was not compensation, it was a 4.6x thumb on
+     the scale, and the budget above preserves ratios -- which meant it rationed the other three
+     to pay for it. Share of the transient budget, and how often the budget binds at all,
+     simulated across the nine cached analyses:
+
+                        key     rim    fill     amb    binds
+         4.10         16.3%   10.6%   62.4%   10.7%    42.4%
+         0.90         35.2%   15.5%   27.8%   20.4%    17.0%
+
+     and MEASURED LIVE over 3173 frames of playback, both coefficients scored on the same frames:
+
+         4.10         17.4%   14.2%   53.0%   15.4%    89.0%
+         0.90         30.1%   22.6%   20.6%   26.6%    41.3%
+
+     The comment above says the kick should be first among them. It was third of four, on 4.6x
+     the coefficient of the lamp that flattens the form -- and the rig spent 42% of ordinary music
+     and 89% of a dense one inside the budget clamp, where every leg is being scaled down to pay
+     the fill.
+
+     0.90 joins the cluster the other three already sit in, and the ORDER then comes from the mood
+     multipliers and from the beat: key is first because it is the only leg the pulse feeds. The
+     two lamps trade places rather than the rig getting quieter -- live, keyPulse p50 1.167 ->
+     1.254 and p99 1.330 -> 1.402, fillPulse p50 1.540 -> 1.173 and p99 1.692 -> 1.330. What
+     changes is which hit the rig answers, and that it is out of compression most of the time. */
   const fillPulse=Math.min(2.40, 1 + lFill*kBud);
   const ambPulse =Math.min(1.65, 1 + lAmb*kBud);
   gl.uniform1f(US('u_keyPulse'),keyPulse); gl.uniform1f(US('u_rimPulse'),rimPulse);
