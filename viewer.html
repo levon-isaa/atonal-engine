@@ -5942,7 +5942,23 @@ function frame(){
   if(RENDER.on){
     RENDER.stall = !!(RENDER.enc && RENDER.enc.encodeQueueSize>90);
     if(!RENDER.stall){ dt=1/RENDER.fps; renderClock+=dt; time=RENDER.t0+renderClock; }
-    else { dt=0; time=RENDER.t0+renderClock; }
+    /* WAITING MEANS NOT RENDERING, AND IT WAS NOT DOING THAT. The note above says that when the
+       queue runs deep "the render just waits". It did not wait -- it fell through and drew the
+       whole frame again at export resolution, then threw it away because the encode below is
+       skipped while stalled. On a GPU-bound path that is not free waiting, it is the renderer
+       competing for the GPU with the one thing it is waiting for.
+       MEASURED on a 2194x1976 take: the pipeline advanced 1.6 encoded frames a second with the
+       queue pinned at its 90 cap the entire time, which is 37.5x slower than real time -- while
+       the encoder ON ITS OWN, benchmarked at the same size, bitrate and codec, ran at 11.25 fps.
+       An encoder seven times faster than the pipeline it is supposedly the bottleneck of is not
+       the bottleneck; the discarded renders were.
+       (latencyMode is not the lever, before anyone reaches for it: quality 11.25, realtime 10.03,
+       quality+prefer-hardware 11.38, realtime+prefer-hardware 11.61 fps. All within 15%.)
+       Returning here skips the draw entirely. rAF is already scheduled at the top of frame(), so
+       the loop continues; the governor is off for the whole take (QLOCK plus pinScale) so nothing
+       downstream needs this frame's timing; and renderClock does not advance, so the take cannot
+       end early while stalled. */
+    else { dt=0; time=RENDER.t0+renderClock; return; }
   }
   PERF.n++;
   // MEASURE THE FRAME, NOT THE INTEGRATION STEP. dt is clamped to 50ms so one stall cannot
