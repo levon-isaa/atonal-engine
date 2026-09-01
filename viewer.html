@@ -4954,11 +4954,12 @@ function frameReach(){                                 // blended across a morph
   const r0=REACH[mode]!==undefined?REACH[mode]:1.10, r1=REACH[mode2]!==undefined?REACH[mode2]:1.10;
   return morphBlend(r0,r1);
 }
-let pulse=0, pulseS=0, prevT=-1;                      // beat pulse (raw + smoothed envelope)
+let pulse=0, pulseM=0, pulseS=0, prevT=-1;                      // beat pulse (raw + smoothed envelope)
 let beatCount=-1;                                     // position in the bar, for the downbeat accent
 /* ---- PER-BAND SOUND REACTION: every distinct sound in the mix gets its own envelope ---- */
 const BANDS=['sub','low','mid','high','air'];
 const HIT ={sub:0,low:0,mid:0,high:0,air:0};          // transient, raw (set on each onset)
+const HITM={sub:0,low:0,mid:0,high:0,air:0};          // first pole of the attack -- see ATK2
 const HITS={sub:0,low:0,mid:0,high:0,air:0};          // smoothed attack -> no jitter
 window.HITS=HITS; window.HIT=HIT;   // console-injectable, to check each band lands somewhere different
 const BND ={sub:0,low:0,mid:0,high:0,air:0};          // sustained band level
@@ -4981,15 +4982,73 @@ const DECAY ={sub:3.6,low:4.0,mid:5.4,high:8.0,air:11.0};
    reaches HIGHER -- the old rates only ever got to about 54% of the injected amplitude before
    the decay overtook them, the new ones reach 87% -- so without this the whole light rig would
    have brightened by half and the fix would have arrived as a look change. ATK_GAIN is the ratio
-   of the two peaks, applied to the injection, so the envelope peaks exactly where it used to. */
-const ATTACK={sub:90,low:100,mid:130,high:190,air:250};
+   of the two peaks, applied to the injection, so the envelope peaks exactly where it used to.
+
+   THE PER-BAND RATES THAT NOTE ARGUES FOR ARE GONE -- see ATK2 below. They were 90..250/s, which
+   at 60fps is a rise complete inside ONE FRAME, and that is what "jerky" turned out to be. The
+   reasoning above still holds and is why the replacement keeps the peak normalised and leaves
+   DECAY alone; only the filter's ORDER changed. ATK_OLD, the reference the heights are still
+   measured against, is the pre-sync-fix set and is untouched by any of this. */
 /* peak of an exponentially-smoothed exponential decay, as a fraction of the injected amplitude */
 function envPeak(k,lam){ const t=Math.log(k/lam)/(k-lam);
   return (k/(k-lam))*(Math.exp(-lam*t)-Math.exp(-k*t)); }
 const ATK_OLD={sub:9,low:10,mid:13,high:19,air:25};      // what the gains are measured against
-const ATK_GAIN={}; for(const b in ATTACK)
-  ATK_GAIN[b]=envPeak(ATK_OLD[b],DECAY[b])/envPeak(ATTACK[b],DECAY[b]);
-const PULSE_GAIN=envPeak(16,6.0)/envPeak(160,6.0);   // the beat pulse decays at 6/s
+/* THE ATTACK IS SECOND ORDER NOW, AND THAT IS THE WHOLE OF "SMOOTHER".
+   A one-pole smoother's step response has its MAXIMUM slope at t=0. Sampled at 60fps with the
+   rates above -- 1-exp(-250/60) is 0.985 for air -- the envelope arrives at its peak inside a
+   single frame. MEASURED live over 20s of playback, largest single-frame move as a share of the
+   band's own peak: sub 67%, low 73%, mid 83%, high 94%, air 96%, and air did it 83 times.
+   Nothing between two frames is motion; a value that teleports reads as a jolt however well
+   timed it is. That is what "the reaction to the music is jerky" was.
+
+   Two identical poles in series is critically damped: the step response is 1-(1+kt)e^-kt, which
+   leaves zero at ZERO SLOPE and turns into the rise instead of starting as one. The catch is that
+   the property only survives sampling while k*dt is small, so the rate cannot be per-band --
+   air at 250 could never satisfy it. It does not need to be: the note above already says the
+   softness comes from DECAY, not from the attack, and DECAY is untouched. So one rate for all
+   five bands and for the beat pulse, and the bands keep their character through their decays.
+
+   35/s gives k*dt = 0.58 at 60fps. Modelled at 60fps, largest single-frame move: sub 27.9%,
+   low 28.2%, mid 29.6%, high 31.8%, air 35.3%, pulse 30.2% -- against 86-100% before -- with the
+   10-90% rise spread over 2 to 4 frames. If frames drop to 30fps the worst case is 76%, which is
+   a slow-frame artefact rather than a setting: at 30fps everything is jerkier by definition.
+
+   NEITHER THE TIMING NOR THE HEIGHT MOVES, which is what makes this safe to do to a sync that was
+   carefully tuned. Both are derived, not typed: PEAK[b] is the lead the onset walk already reads
+   ahead by, and ATK_GAIN[b] normalises the height -- so solving the new envelope's peak and
+   feeding both tables keeps the peak on the same instant, at the same value, as the one-pole put
+   it. The solve is numeric because a two-pole on an exponential decay has no tidy closed form,
+   and it is 24k iterations once at load. */
+const ATK2=35;                                          // one attack rate, both poles, all bands
+const ATK_DT=1/60;                                      // the step the solve below is run at
+/* Peak time and height of the two-pole attack chasing an exponential decay of amplitude 1.
+   SOLVED WITH THE RECURRENCE THE FRAME LOOP ACTUALLY RUNS, AT ITS ACTUAL STEP -- not in
+   continuous time, and this is not a detail. At k*dt = 0.58 the sampled response reaches its
+   maximum 16-30ms EARLIER than the continuous one:
+
+       band        continuous     at 1/60      error
+       sub            113.5ms      83.3ms     -30.2ms
+       low            110.5ms      83.3ms     -27.2ms
+       air             82.8ms      66.7ms     -16.1ms
+
+   PEAK[b] is the lead the onset walk reads ahead by, so an over-long PEAK pulls the whole picture
+   forward. Solved continuously first, and MEASURED against the analyser's own onset times, the
+   envelope peaks came back 60-64ms before the beat where the one-pole build sat at 38-41ms --
+   the residual should be -visLead() and nothing else. Roughly 22ms of that was this error.
+   The peak lands on a frame boundary either way, so a machine running at some other rate still
+   shifts by up to a frame; solving at the wrong MODEL is a bias, and that is what this removes. */
+function env2Peak(k,lam){
+  const h=ATK_DT, ka=1-Math.exp(-k*h);
+  let a=0,b=0,best=0,bt=0;
+  for(let i=0;i<Math.round(2/h);i++){ const src=Math.exp(-lam*i*h);
+    a+=(src-a)*ka; b+=(a-b)*ka; if(b>best){ best=b; bt=i*h; } }
+  return {t:bt,h:best};
+}
+const ATK_GAIN={}, _P2={};
+for(const b of BANDS){ _P2[b]=env2Peak(ATK2,DECAY[b]);
+  ATK_GAIN[b]=envPeak(ATK_OLD[b],DECAY[b])/_P2[b].h; }
+const _PP2=env2Peak(ATK2,6.0);
+const PULSE_GAIN=envPeak(16,6.0)/_PP2.h;             // the beat pulse decays at 6/s
 /* ---- READ THE TIMELINE WHERE THE EYE WILL BE, NOT WHERE THE SPEAKER IS ----
    The attack fix took the envelope lag from 111-170ms down to 13-37ms, and 13-37ms is still not
    zero. Nothing before this compensated for it, and two more delays sit downstream of it that
@@ -5026,8 +5085,8 @@ const PULSE_GAIN=envPeak(16,6.0)/envPeak(160,6.0);   // the beat pulse decays at
    Leading is also the safe direction to be wrong in. The same recommendation puts the threshold
    for the picture running EARLY at about 125ms -- nearly three times the tolerance for late --
    so a lead that overshoots by a frame costs far less than one that undershoots. */
-const PEAK={}; for(const b in ATTACK) PEAK[b]=Math.log(ATTACK[b]/DECAY[b])/(ATTACK[b]-DECAY[b]);
-const PEAK_PULSE=Math.log(160/6.0)/(160-6.0);
+const PEAK={}; for(const b of BANDS) PEAK[b]=_P2[b].t;   // two-pole peak time; see ATK2
+const PEAK_PULSE=_PP2.t;
 /* The frame interval, smoothed, and deliberately NOT frameAvg. frameAvg is the quality
    governor's input and is meant to be jerked about by a single stall -- that is what makes it a
    governor. A lead built on it would swing the whole picture forward and back by tens of
@@ -6570,10 +6629,12 @@ function frame(){
   pulse*=Math.exp(-6.0*dt);
   // Same change, same reason, same normalisation as the per-band envelopes above: 16 -> 160 puts
   // the beat pulse's peak 21ms after the beat instead of 98ms, and PULSE_GAIN holds its height.
-  pulseS += (pulse-pulseS)*(1-Math.exp(-160*dt));
+  { const ka=1-Math.exp(-ATK2*dt);                 // two poles in series: see ATK2
+    pulseM+=(pulse-pulseM)*ka; pulseS+=(pulseM-pulseS)*ka; }
   // per-band envelopes: decay the transient, then smooth its attack so hits land soft
-  for(const b of BANDS){ HIT[b]*=Math.exp(-DECAY[b]*dt);
-    HITS[b]+=(HIT[b]-HITS[b])*(1-Math.exp(-ATTACK[b]*dt)); }
+  { const ka=1-Math.exp(-ATK2*dt);
+    for(const b of BANDS){ HIT[b]*=Math.exp(-DECAY[b]*dt);
+      HITM[b]+=(HIT[b]-HITM[b])*ka; HITS[b]+=(HITM[b]-HITS[b])*ka; } }
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
   // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
   // individual sounds nudge the rotation — articulate, but damped so it never jitters
