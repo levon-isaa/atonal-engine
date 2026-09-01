@@ -2204,6 +2204,26 @@ void main(){
     // WORSE, not better — but the metric (frame-to-frame pixel change) cannot separate genuine
     // shimmer from sharp reflections legitimately sweeping across a rotating chrome surface, so
     // it could not justify the change either way. Keeping the value that was tuned by eye.
+    //
+    // THAT QUESTION IS NOW ANSWERED, AND THE ANSWER IS "REAL, NOT ALIASED". The discriminator the
+    // note above was missing is resolution: aliasing is undersampling, so it FALLS when you take
+    // more samples, while real detail does not. Rotating the form by 0.002 rad — about half a
+    // pixel of surface travel — and reducing both renders to a common 360x360 grid so that
+    // sampling rate is the only variable:
+    //
+    //                   chrome   matte   ratio
+    //     1.0x canvas     4.59    0.431   10.6
+    //     1.6x canvas     5.26    0.429   12.3
+    //
+    // Chrome's inter-frame change goes UP with more samples and matte's does not move. If this
+    // were aliasing it would have gone down. It is the reflection genuinely sweeping across the
+    // surface, resolved better rather than sampled worse, so widening roughness to suppress it
+    // would be blurring a real image. The cap stays at 0.030 and now has a measurement behind it
+    // rather than only an eye.
+    // (Both readings were taken with window.QLOCK actually holding the resolution still, which
+    // it did not do until the fix in the quality governor — see the note at `if(QLOCK || ...)`.
+    // Any earlier reading of this kind was taken while the canvas was free to resize underneath
+    // it, which is worth knowing before trusting one.)
     float nturn=0.5*(dot(dnx,dnx)+dot(dny,dny));   // how fast the shading normal turns per pixel
     float kvar=min(u_kvar, nturn);
     rgh=min(1.0, sqrt(rgh*rgh+kvar));
@@ -5953,7 +5973,19 @@ function frame(){
     const KFL=1.0-0.30*(kOn*kOn*(3-2*kOn));
     const SMIN=(TIERS[TIER].scaleMax?(TIERS[TIER].scaleMin||0):0)*KFL, SMAX=TIERS[TIER].scaleMax||0;
     const SFLOOR=(TIERS[TIER].scaleMin||1.00)*KFL;   // banded tiers use SMIN above; the rest use this
-    if(QLOCK){}
+    /* window.QLOCK, NOT JUST QLOCK, AND IT WAS THE SECOND ONE ONLY. The hook block above
+       documents `window.QLOCK = true` as the way to freeze this governor for an A/B, and nothing
+       read it: QLOCK is a module-level let that only the recorder sets (see startRender). Every
+       other hook up there -- POSE, TFREEZE, DIAG, DSCL, DWARP, VARPIN, KVAR -- is read off
+       window. This one silently was not, so setting it did nothing and the governor kept
+       adapting through measurements that had been told to hold still.
+       That is worse than an inert flag, because the thing it fails to freeze is the RESOLUTION.
+       Caught by measuring nine materials on what was supposed to be one pinned frame: the canvas
+       went from 2194x1976 to 1666x1502 partway through the loop, so the later materials were
+       compared against the earlier ones at a different pixel count, and every per-pixel statistic
+       in that comparison was meaningless. Any A/B in this file's history taken with
+       window.QLOCK set has the same hazard. */
+    if(QLOCK || window.QLOCK){}
     // A BANDED tier adapts like any other, but between its own floor and ceiling rather than
     // between 1.0 and SCAP. Same thresholds, so it behaves the way the rest of the governor does;
     // the tier only decides where the band sits. The dpr rule is deliberately not applied here:
