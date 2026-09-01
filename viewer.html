@@ -5303,6 +5303,22 @@ function energyRank(e){ return rankAmong(e, energySorted()); }
    rung 8 from 44 to 11.
    segRank next door does the same job for density and is correct as it stands, because
    segForSection only ever hands it a section's own value. */
+/* VERIFIED ON REAL MATERIAL, which the fix that produced this function was not -- that was
+   measured on one track. Simulated over the nine cached analyses, 87 sections in total, taking
+   each section's own energy and the genre's allowed set:
+
+     rung   0 Rings  1 Truss  2 Lattice  3 Stack  4 Knot  5 Aperture  6 Pods  7 Rotor  8 Gear
+     share    9.2%    12.6%     11.5%     9.2%   10.3%      8.0%     10.3%    17.2%   11.5%
+
+   Near enough uniform, and every track with more than a handful of sections traverses the whole
+   ladder from 0 to 8. So the rung is spreading across the vocabulary rather than parking in the
+   middle, which is the property this function exists for and the thing the earlier
+   one-track measurement could not show.
+
+   The SHAPES chosen are less even -- Aperture lands 2.2% of the time against its rung's 8.0% --
+   and that is the genre filter rather than this: the two longest tracks in the set are trance and
+   classical, whose lists exclude Aperture and Pods outright, and they carry 45 of the 87 sections.
+   All nine remain reachable. Worth re-checking on a set with more genres in it. */
 function shapeRung(e, live){
   const a=(live && curveSorted()) || energySorted();
   if(!a || !a.length) return (SHAPE_LADDER.length-1)*0.5;
