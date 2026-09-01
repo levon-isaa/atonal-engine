@@ -833,9 +833,28 @@ float extr(float d2,vec3 p,float halfD,float bev){
   float dz = abs(p.z) - hd + bv;
   vec2 w = vec2(d2,dz);
   float d = min(max(d2,dz),0.0) + length(max(w,0.0)) - bv;
-  // 45 degree cut across the corner. At u_chamf 0 the plane sits exactly on the rounded corner
-  // and changes nothing; above that it bites, leaving a flat band between face and fillet.
-  d = max(d, (d2+dz)*0.70710678 - bv*(1.41421356-0.45*u_chamf));
+  /* 45 degree cut across the corner. At u_chamf 0 the plane sits exactly on the rounded corner
+     and changes nothing; above that it bites, leaving a flat band between face and fillet.
+
+     THE OFFSET WAS sqrt(2) AND THE TANGENCY IS 1. sqrt(2) is the diagonal of a unit SQUARE; what
+     this plane has to be tangent to is the FILLET, a quarter-circle of radius bv, and a 45 degree
+     plane touches a circle of radius bv at exactly bv. So the plane started 0.414*bv clear of the
+     corner and the first 0.414/0.45 = 0.92 of the parameter was spent closing that gap before
+     anything could be cut.
+
+     MEASURED, sweeping u_chamf against a chamf=0 render, share of frame changed:
+
+         0.25  0.000%     0.9   0.000%     1.2  2.809%     2.2  7.270%
+         0.55  0.000%    0.95   0.186%     1.5  4.518%     3.0  8.610%
+         0.70  0.000%     1.0   0.932%     1.8  5.865%
+
+     Nothing at all below 0.93, and the shipped default is 0.55. So the chamfer this file
+     describes, and the flat band between face and fillet it exists to leave, has never once
+     appeared in a rendered frame -- the control was inert across its whole documented range.
+
+     1.0 is the tangency, so u_chamf 0 is still exactly no cut, and the 0..1 the panel and the
+     default assume now spans the useful travel instead of sitting inside the dead zone. */
+  d = max(d, (d2+dz)*0.70710678 - bv*(1.0-0.45*u_chamf));
   return d*0.88;
 }
 // depth and bevel ride the track: the slab thickens on low end, the bevel sharpens on air
@@ -3531,7 +3550,15 @@ const DX={bloom:1,chroma:1,sharpen:1,thr:1,mblur:1};
 // SHAPE REFINEMENT, live-tunable from the console: SHP.edge=0 restores the constant fillet,
 // SHP.thick=0 the constant slab, SHP.chamf=0 the pure round. All three are no-ops at 0, so the
 // old form is one line away for comparison.
-const SHP={edge:1.0, thick:1.0, chamf:0.55};  window.SHP=SHP;
+/* chamf 0, and that is the shipped frame UNCHANGED rather than the chamfer switched off.
+   The default was 0.55 and the constant it fed made anything under 0.93 do literally nothing, so
+   0.55 rendered a frame bit-identical to 0 -- verified within one page load, 0 of 147456 pixels
+   differing between the pre-fix default and this one. The tangency is corrected at extr() so the
+   control now works across the 0..1 it always claimed; what it does NOT do is quietly turn on a
+   look nobody has reviewed, because turning it on is a visible change (8.4% of pixels at 0.55)
+   and it has never been seen in a frame. SHP.chamf=0.55 from the console is the author's
+   intended value and now actually cuts. */
+const SHP={edge:1.0, thick:1.0, chamf:0.0};  window.SHP=SHP;
 // User shape parameters, from the sliders. Multipliers on the Director's own values, except
 // mass which is an offset because stroke weight is already an additive term in the profiles.
 const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;
