@@ -26,16 +26,26 @@
   :root{
     --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
     color-scheme:dark;
-    --bg:#08080A;
-    --surface:#0C0C0F;         /* the panel */
-    --surface-2:#141419;       /* inputs, wells */
-    --surface-3:#1C1C22;       /* hover */
-    --line:rgba(255,255,255,.075);
-    --line-2:rgba(255,255,255,.13);
-    --ink:#EDEDF1;  --ink-2:#8C8C97;  --ink-3:#585862;
-    --accent:#B9A8FF;
-    --accent-soft:rgba(185,168,255,.14);
-    --accent-line:rgba(185,168,255,.42);
+    /* TOKENS TAKEN FROM site/index.html RATHER THAN INVENTED. The landing page had already
+       committed to this language -- its own header calls it "a committed single-theme dark
+       instrument panel: hairlines, mono labels, no soft glass, all of the saturation coming out
+       of the renderer" -- and it was the VIEWER that was the outlier, wearing liquid glass while
+       the public face of the same product wore hairlines. Same bg/line/ink values to the digit,
+       and the accent is the site's own --mag, so an active control here is the same colour as a
+       live indicator there. One product, one palette, and the brand is the site's to set.
+       The MONO stays a system stack: the site loads JetBrains from Google Fonts, and the viewer
+       has to render on a machine with no network. */
+    --bg:#07070B;
+    --surface:#0A0A10;         /* the panel   -- site --bg-2 */
+    --surface-2:#0E0E15;       /* inputs      -- site --bg-3 */
+    --surface-3:#16161E;       /* hover */
+    --line:rgba(255,255,255,.070);
+    --line-2:rgba(255,255,255,.135);
+    --line-3:rgba(255,255,255,.26);
+    --ink:#F3F3F8;  --ink-2:#9498A8;  --ink-3:#5E6272;
+    --accent:#FF3E8E;
+    --accent-soft:rgba(255,62,142,.15);
+    --accent-line:rgba(255,62,142,.45);
     --danger:#FF5E7A;
     --r-lg:10px; --r-md:8px; --r-sm:6px; --pill:999px;
     --shadow:0 1px 2px rgba(0,0,0,.5), 0 12px 32px -12px rgba(0,0,0,.7);

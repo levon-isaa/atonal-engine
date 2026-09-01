@@ -4,9 +4,15 @@
    lot of motion that only it uses. These two pages want the same VOICE without
    dragging that along: same tokens, same hairline panels, same mono readouts.
    ========================================================================== */
+/* TOKENS MATCH index.html TO THE DIGIT. They had drifted -- --bg-2 was #0B0B11 against the
+   landing page's #0A0A10, and all three hairlines were a few thousandths heavier -- so a panel
+   on the pricing page was a slightly different dark, with a slightly brighter rule, from the
+   identical panel one click away. Small enough to never be reported and exactly the kind of
+   thing that makes a site feel assembled rather than designed. viewer.html now carries the same
+   set, so the tool and all three pages are one palette. */
 :root{
-  --bg:#07070B; --bg-2:#0B0B11; --bg-3:#0E0E15;
-  --line:rgba(255,255,255,.075); --line-2:rgba(255,255,255,.145); --line-3:rgba(255,255,255,.28);
+  --bg:#07070B; --bg-2:#0A0A10; --bg-3:#0E0E15;
+  --line:rgba(255,255,255,.070); --line-2:rgba(255,255,255,.135); --line-3:rgba(255,255,255,.26);
   --ink:#F3F3F8; --ink-2:#9498A8; --ink-3:#5E6272;
   --mag:#FF3E8E; --vio:#8257FF; --amb:#FFB454;
   --ok:#43D9A3;
