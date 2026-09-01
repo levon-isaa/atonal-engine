@@ -3474,28 +3474,46 @@ const PRM={seg:3, edge:1.0, mass:0.0, depth:1.0};  window.PRM=PRM;
    luminance levels, which is a Michelson contrast of 0.04, and on one profile it was zero.
    window.FIG overrides it live for A/B. */
 const FIG_GROUND=0.26;
-/* IT IS ONE CONSTANT AND THE CONTRAST IT BUYS IS NOT CONSTANT. Measured on the Lattice in pearl,
-   luminance either side of the silhouette, swept across the six mood palettes analyze.py emits:
+/* MEASURE THIS IN DELTA-E, NOT IN LUMINANCE, AND THE ANSWER CHANGES. The first pass at this
+   compared luminance either side of the silhouette and concluded the warm and neutral palettes
+   were both near-failures. Half of that was an artefact of the metric. Lattice in pearl, mean
+   colour either side of the edge, converted to CIELAB:
 
-       violet 54.0   rose 39.1   ice 28.6   pearl 27.7   amber 17.3   mono 17.3   levels
-       0.204         0.136       0.086      0.084        0.051        0.049       Michelson
+       palette   dL    chroma   deltaE
+       violet   16.0    33.1     36.8
+       amber     7.7    34.3     35.2
+       rose     10.3    19.0     21.6
+       ice       5.4    17.8     18.6
+       pearl     5.4     6.1      8.2
+       mono      4.1     1.8      4.5
 
-   A 3.1x spread on the same shape and the same material, decided entirely by which mood the
-   section happened to carry. The note above describes the bug this term was added for as 13
-   levels, 0.04 -- so on a warm or a neutral section the form has drifted most of the way back
-   into the ground it is supposed to stand out from.
+   AMBER IS FINE. It has the second-lowest luminance separation of the six and the HIGHEST chroma
+   separation of the six; the form is told apart by hue, and by deltaE it is level with violet at
+   the top. A luminance-only metric called it a defect and it is not one.
+   MONO IS THE REAL CASE, at deltaE 4.5 against a just-noticeable difference of about 2.3 -- two
+   JNDs between the form and the ground it stands on. Pearl is second at 8.2. Both are the same
+   situation: a near-neutral palette behind a near-neutral material, where there is no hue axis
+   left to separate on and the luminance axis is only four levels wide.
 
-   THE OBVIOUS FIX MAKES IT WORSE, and here are the numbers so it is not tried twice. Scaling the
-   darkening by the ground's own luminance -- clamp(u_fig*(1.0+2.2*(bl-0.55)), u_fig*0.55, 0.62)
-   in bg() -- moved amber 17.3 -> 25.1 and everything else the wrong way: mono 17.3 -> 10.1,
-   pearl 27.7 -> 19.5, rose 39.1 -> 31.4, violet 54.0 -> 50.6. Spread went 3.1x to 5.0x.
+   WHICH MAKES THE PREMISE ABOVE HALF RIGHT. That note says the separation is a luminance dip
+   "rather than more colour", because "adding chroma behind a near-white form does not give the
+   eye an edge, only a hue change". Amber is the counter-example: chroma is doing essentially all
+   of the work there and the result is the joint-best separation in the set. Chroma is not a
+   weaker axis, it is the axis that happens to be unavailable on mono.
 
-   The reason it cannot work in that form is that the backdrop is not only behind the form, it is
-   LIGHTING it. Darkening the halo darkens what the rim picks up, and on a pale dielectric the
-   edge loses about as much as the ground does, so the difference barely moves and on mono it
-   inverts. Any fix has to raise the form or change its hue against the ground rather than push
-   the ground down underneath it -- or it has to know the subject's luminance, which bg() does
-   not. Reverted; the flat 0.26 is what ships. */
+   TWO THINGS TRIED, BOTH MEASURED, NEITHER SHIPPED. Scaling the darkening by the ground's own
+   luminance -- clamp(u_fig*(1.0+2.2*(bl-0.55)), u_fig*0.55, 0.62) -- was measured twice, once per
+   metric. In levels it looked bad (mono 17.3 -> 10.1). In deltaE it is a wash everywhere and
+   still wrong where it matters: violet 36.8 -> 36.4, amber 35.2 -> 32.4, ice 18.6 -> 21.7, rose
+   21.6 -> 21.0, pearl 8.2 -> 8.7, mono 4.5 -> 3.7. It cannot work in that form because the
+   backdrop is not only behind the form, it is LIGHTING it: darkening the halo darkens what the
+   rim picks up, and on a pale dielectric the edge loses about as much as the ground does.
+
+   So mono is still unfixed and the flat 0.26 is what ships. What the evidence points at is
+   giving the form a hue axis where the palette denies it one -- mono is deliberately neutral, so
+   the separation has to come from the SUBJECT being pushed off the ground's hue rather than from
+   the ground being pushed down under the subject. That is a change to the surface tint, not to
+   this constant, and it has to be weighed against mono being a deliberate black-and-white look. */
 // Film grain, global across every look and filter. amt is a multiplier on the look's own
 // character; 0 is off. See the u_grain upload for why the look can no longer zero it.
 const GRAIN={amt:1.0};  window.GRAIN=GRAIN;
