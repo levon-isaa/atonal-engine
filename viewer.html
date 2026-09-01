@@ -639,6 +639,7 @@ uniform sampler3D u_vol;            // baked 3D distance field of an imported me
 uniform float u_volOn,u_volPad,u_nEps,u_shaJit;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
 uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR;
+uniform float u_fgAmt,u_fgR,u_fgPh,u_fgW,u_fgLen,u_fgDark,u_fgFoc,u_fgBlur,u_fgN;   // foreground rods
 uniform int u_shaN;
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
@@ -2126,6 +2127,60 @@ vec3 bg(vec3 rd, vec2 sv){
   return col*(0.80+u_bgAmt*0.30);
 }
 
+/* ---- THE FOREGROUND RIG ----
+   A near layer that the camera's own orbit carries past the lens, so the frame gains depth from
+   PARALLAX and occlusion rather than from anything getting brighter. Modelled on a reference
+   the user supplied: a static armature of rods and clamps around a subject, the camera moving
+   slowly, and every bit of visual event in it coming from a foreground rod sweeping across and
+   uncovering the form again. Measured on that reference, its whole-frame brightness varies by 11
+   levels of 255 across sixteen seconds -- the energy is entirely in what moves in front of what.
+
+   ANALYTIC, LIKE THE FLOOR, NOT MARCHED. These are capsules, and a capsule has a closed form, so
+   the whole layer costs a fixed handful of ALU on the primary ray and adds nothing to the march.
+   Marching them would have put three more objects inside a 112-step loop that the bounding sphere
+   exists to keep empty.
+
+   THE PARALLAX IS FREE AND THE RATE IS NOT. The rods sit at their own radius, so a camera orbit
+   moves them across the frame faster than it moves the form -- that is the whole effect, and it
+   needs no motion of their own. But a rod orbiting at exactly the camera's rate would be pinned
+   to the same pixel forever, so u_fgPh drifts slowly and in the same direction, which reads as a
+   rig that is almost still rather than one that is chasing the lens.
+
+   OUT OF FOCUS BY PROXIMITY, without a depth-of-field pass: coverage comes from the ray's
+   distance to the axis, so widening the transition band IS the blur, and it widens as the hit
+   gets nearer the lens. A hard-edged bar across the frame reads as a scratch on the image; a
+   soft one reads as an object between you and the subject.
+
+   AND IT IS THE PALETTE'S OWN DARK. u_mood times a small factor, not black: the point is depth
+   in the style that is already here, not a second look pasted over it. */
+float rodCov(vec3 ro,vec3 rd,vec3 A,vec3 B,float w,float tScene){
+  vec3 v=B-A, w0=ro-A;
+  float b=dot(rd,v), c=dot(v,v), d=dot(rd,w0), e=dot(v,w0);
+  float den=c-b*b;
+  float sN=(den>1e-5)?clamp((e-b*d)/den,0.0,1.0):clamp(e/max(c,1e-5),0.0,1.0);
+  vec3 q=A+v*sN;
+  float tr=max(dot(q-ro,rd),0.0);
+  if(tr>=tScene) return 0.0;                       // the form is in front: it occludes the rod
+  float dist=length(ro+rd*tr-q);
+  float bl=w*mix(2.6,0.20,clamp(tr/max(u_fgFoc,0.01),0.0,1.0))*u_fgBlur+1e-4;
+  return 1.0-smoothstep(w-bl,w+bl,dist);
+}
+vec3 fgRods(vec3 col,vec3 ro,vec3 rd,float tScene){
+  if(u_fgAmt<0.001) return col;
+  float acc=0.0;
+  float step=6.2831853/max(u_fgN,1.0);
+  for(int i=0;i<8;i++){
+    float fi=float(i);
+    if(fi>=u_fgN) break;
+    float a=u_fgPh+fi*step;                        // evenly round the ring
+    float rr=u_fgR*(1.0+0.11*mod(fi,3.0));         // each at its own radius, so each sweeps at its own rate
+    vec3 ctr=vec3(cos(a)*rr, (mod(fi,3.0)-1.0)*0.34, sin(a)*rr);
+    vec3 ax=normalize(vec3(sin(a)*0.42, 1.0, -cos(a)*0.42));
+    float w=u_fgW*(0.72+0.36*mod(fi,2.0));         // not all the same gauge
+    acc=max(acc, rodCov(ro,rd,ctr-ax*u_fgLen,ctr+ax*u_fgLen,w,tScene));
+  }
+  return mix(col, u_mood*u_fgDark, clamp(acc,0.0,1.0)*u_fgAmt);
+}
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*u_res)/u_res.y;
   float f=0.5/tan(u_fov*0.5);        // uv.y spans +/-0.5, so the 0.5 is required or the FOV halves
@@ -2868,6 +2923,7 @@ void main(){
      reading this alpha tests for less than 17 to mean 'hit something' (DBGMASK, the motion-blur
      reprojection, and now the thermal filter), and all three were wrong on exactly those
      pixels. Dormant until now only because the shutter is 0 in every tier. */
+  col=fgRods(col, ro, rd, mid<0.0 ? 1e9 : t);
   o=vec4(max(col,0.), mid<0.0 ? 99.0 : t);
 }`;
 
@@ -3919,6 +3975,23 @@ const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15};  window.MORPH=MORPH;
    into scattered chips -- their copies still overlap by bounding radius, but a hollow ring has no
    material where its neighbour arrives. */
 const KALSET={seg:6, off:0.30, pump:0.055, core:0.075};  window.KALSET=KALSET;
+/* THE FOREGROUND RIG's settings; see fgRods in the scene shader for what each one does.
+   amt is the only one meant to be reached for -- 0 is the old frame exactly, and it is a look
+   control rather than a fix, so it is a single number and not a per-section curve.
+   r 3.05 against a camera at ~5.1 and a form bounded by 1.45: the rods pass between the two, so
+   they cross the lens rather than orbiting behind the subject where nothing would be occluded.
+   rate 0.16, not 1.0. At 1.0 a rod holds the same pixel forever, because it orbits with the
+   camera that is looking at it; the sweep IS the difference between the two rates, and near zero
+   is what makes the rig read as standing still while the camera moves past it. */
+/* n 6 and rate -0.30, and both come off one measurement. The camera orbits at a median 0.0806
+   rad/s with zero reversals -- a full turn in 78s -- and the SWEEP is the difference between that
+   and the rig's own rate, divided among n rods. A nearly-static rig at +0.16 put a rod across the
+   lens once every 31s, which is too rare to read as anything. Six rods drifting gently the other
+   way give 0.105 rad/s relative, so one crosses about every 10s: often enough to be a feature of
+   the piece, rare enough to stay an event rather than a texture. */
+const FG={amt:0.55, n:6, r:3.05, w:0.055, len:2.6, dark:0.16, foc:3.4, blur:1.0, rate:-0.30};
+window.FG=FG;
+let fgPh=0.7;
 /* ---- THE FOLD'S SAMPLE MOVEMENT: A TRANSIENT, NOT AN OSCILLATION ----
    pump and drift were a pair of sines on the sample point -- pump breathing it radially every 4
    beats, drift sweeping it sideways every 14. That is the reported "wobble", and it is the same
@@ -6993,6 +7066,9 @@ function frame(){
      stops when it stops, and that never drifts against the form. Same rate at steady playback,
      so nothing about the look changes except in the cases above. */
   if(autoRotate) camAng += (CM.spin*(0.45+energy*0.45) + 0.008)*mSec*MOT.orbit;
+  // The rig drifts on the SAME musical clock as the orbit and at a fraction of its rate, so the
+  // sweep across the lens is the difference between them. See FG.
+  fgPh += (CM.spin*(0.45+energy*0.45) + 0.008)*mSec*MOT.orbit*FG.rate;
   /* NO CAMERA SWAY. There was a bar-locked oscillation here -- a sine on the orbit angle with a
      period of exactly one bar, plus the same phase at half rate on the roll -- and it was sized
      against nothing at all. MEASURED against the orbit it was added to:
@@ -7528,6 +7604,11 @@ function frame(){
   gl.uniform1f(US('u_morphU'), (window.MORPHU===0)?0:1);
   gl.uniform1f(US('u_morphK'), MORPH.k); gl.uniform1f(US('u_morphC'), MORPH.comp);
   gl.uniform1f(US('u_morphBlob'), MORPH.blob); gl.uniform1f(US('u_morphR'), MORPH.r);
+  gl.uniform1f(US('u_fgAmt'),FG.amt);   gl.uniform1f(US('u_fgR'),FG.r);
+  gl.uniform1f(US('u_fgPh'),fgPh);      gl.uniform1f(US('u_fgW'),FG.w);
+  gl.uniform1f(US('u_fgLen'),FG.len);   gl.uniform1f(US('u_fgDark'),FG.dark);
+  gl.uniform1f(US('u_fgFoc'),FG.foc);   gl.uniform1f(US('u_fgBlur'),FG.blur);
+  gl.uniform1f(US('u_fgN'),Math.max(1,Math.min(8,FG.n)));
 
   gl.uniform1i(US('u_shaN'),shaTaps());   // governor-scaled; see SHA_FLOOR
   gl.uniform1f(US('u_shaJit'), (window.SHAJIT!==undefined)?window.SHAJIT:1.0);
