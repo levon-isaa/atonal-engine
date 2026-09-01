@@ -3,248 +3,220 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ATONAL — AI Director Viewer</title>
 <style>
-  /* ================== LIQUID GLASS ==================
-     The panel used to be a dark card with a blur behind it: a slab that happened to be
-     translucent. Glass is not a colour, it is a set of behaviours, and there are four the old
-     styling had none of.
+  /* ================== QUIET INSTRUMENT ==================
+     The panel used to be liquid glass: a live backdrop-filter over the canvas, so it took its
+     colour from the track. It is opaque now, and the reason is design rather than cost -- the
+     render is the subject, and a translucent instrument sitting on top of it is competing with
+     the thing it exists to control. Solid surfaces also mean the readout is legible against
+     anything the renderer does, which the old scrim was not.
 
-       IT REFRACTS WHAT IS BEHIND IT. The backdrop here is a live colour field that already moves
-       with the music, so a saturated blur of it makes the panel take its colour FROM the track --
-       it goes violet in a drop and cools in a breakdown, for free, because it is looking at the
-       same pixels the viewer is. That is the whole trick and it costs one filter.
+     AND THE COST ARGUMENT NO LONGER HOLDS, so it is not made. This file carried a measurement
+     for it -- 71.1 fps with no glass, 61.8 with the panel, 54.1 with glass buttons too -- and
+     re-measuring the same toggle interleaved on one page, three rounds at ultra, gives
+     solid 11.7 / 12.9 / 20.3 against blurred 13.7 / 12.4 / 24.1. No difference survives the
+     round-to-round spread, and the blurred arm is faster in two rounds of three. The old numbers
+     were real; the bottleneck has since moved into the march, which now costs enough that a
+     compositor blur on three small layers does not register. Removing it is free, not a win.
 
-       IT CATCHES A HIGHLIGHT ON ITS EDGE. Real glass has a bright specular line on the edge
-       facing the light and a dim bounce on the one facing away. One inset hairline top and
-       bottom, at different strengths, is what separates "pane of glass" from "grey rectangle".
+     The language is hairlines, solid near-black surfaces, small tight type and one accent used
+     only where something is ACTIVE. No inner speculars, no big lifts, no capsule buttons. What
+     carries hierarchy here is spacing and a single 1px rule, not decoration.
 
-       IT HAS A THICKNESS. A rim light around the whole boundary plus a large, soft, offset
-       shadow reads as a slab floating above the image rather than a hole cut into it.
-
-       IT IS SOFT AT THE CORNERS. Small radii read as a dialog; large ones read as a physical
-       object. Controls go fully round, because a capsule has no corners to get wrong.
-
-     One deliberate restraint: the tint stays dark and low-alpha. Text over a live, moving,
-     saturated backdrop is the thing that actually fails, so the glass is dark enough to hold
-     contrast against a white form passing behind it. Glass you cannot read is a screensaver. */
+     Everything is on a 4px rhythm and a 3-step ink ramp: value, label, disabled. */
   :root{
-    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
     color-scheme:dark;
-    --accent:#c9baff;
-    --accent-dim:rgba(201,186,255,.22);
-    --ink:#ecebf2;  --ink-2:#a9a9b6;  --ink-3:#75757f;
-    --glass:rgba(18,18,26,.52);
-    --glass-hi:rgba(255,255,255,.34);      /* the lit edge */
-    --glass-lo:rgba(255,255,255,.07);      /* the bounce   */
-    --rim:rgba(255,255,255,.13);
-    --blur:16px;
-    --r-lg:20px; --r-md:12px; --r-sm:9px; --pill:999px;
-    --lift:0 20px 52px -16px rgba(0,0,0,.62), 0 6px 18px -8px rgba(0,0,0,.45);
-    --spring:cubic-bezier(.32,1.2,.4,1);
+    --bg:#08080A;
+    --surface:#0C0C0F;         /* the panel */
+    --surface-2:#141419;       /* inputs, wells */
+    --surface-3:#1C1C22;       /* hover */
+    --line:rgba(255,255,255,.075);
+    --line-2:rgba(255,255,255,.13);
+    --ink:#EDEDF1;  --ink-2:#8C8C97;  --ink-3:#585862;
+    --accent:#B9A8FF;
+    --accent-soft:rgba(185,168,255,.14);
+    --accent-line:rgba(185,168,255,.42);
+    --danger:#FF5E7A;
+    --r-lg:10px; --r-md:8px; --r-sm:6px; --pill:999px;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 12px 32px -12px rgba(0,0,0,.7);
+    --ease:cubic-bezier(.2,.6,.3,1);
   }
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%;background:#050506;overflow:hidden;
-    font-family:var(--mono);color:var(--ink);
-    -webkit-font-smoothing:antialiased}
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
+    font-family:var(--mono);color:var(--ink);-webkit-font-smoothing:antialiased}
   canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  ::selection{background:var(--accent-soft);color:#fff}
 
-  /* The material itself. Everything that is glass wears this. */
-  .glass{
-    background:var(--glass);
-    -webkit-backdrop-filter:blur(var(--blur)) saturate(190%);
-    backdrop-filter:blur(var(--blur)) saturate(190%);
-    box-shadow:
-      inset 0 1px 0 0 var(--glass-hi),
-      inset 0 -1px 0 0 var(--glass-lo),
-      inset 0 0 0 .5px var(--rim),
-      var(--lift);
-  }
-  /* Where transparency is unavailable or unwanted, fall back to an opaque card rather than to
-     an unreadable one. Both the capability check and the user preference, because the second is
-     an accessibility setting and not a bug. */
-  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-    .glass{background:rgba(12,12,17,.94)}
-  }
-  @media (prefers-reduced-transparency:reduce){
-    .glass{background:rgba(12,12,17,.96);-webkit-backdrop-filter:none;backdrop-filter:none}
-  }
+  /* Kept as a class because the markup and the JS both name it. It is a solid card now. */
+  .glass{background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow)}
 
-  /* THE READOUT SITS ON A LIVE BACKDROP, so it cannot be styled against an assumed ground. The
-     colour field behind it is bright violet in a drop and near-black in a breakdown, and the
-     dimmest label here was picked against the dark case -- on a bright one it disappeared.
-     A scrim rather than a heavier text-shadow: a shadow only thickens the glyph and still loses
-     to a pale field, where a soft dark wash under the whole block guarantees the contrast whatever
-     the render does. It is a radial fade with no edge, so it reads as the image getting slightly
-     denser in the corner rather than as a box.
-     Every colour here is lifted a step for the same reason -- see --ink-2 and --ink-3, which are
-     the labels, not the values. */
-  #hud{position:fixed;top:22px;left:24px;z-index:10;font-size:11px;letter-spacing:.04em;line-height:1.75;
-    text-shadow:0 1px 4px rgba(0,0,0,.55);pointer-events:none}
-  #hud::before{content:'';position:absolute;left:-24px;top:-26px;width:340px;height:190px;z-index:-1;
-    background:radial-gradient(120% 100% at 0% 0%, rgba(0,0,0,.60) 0%, rgba(0,0,0,.34) 42%, rgba(0,0,0,0) 78%);
-    pointer-events:none}
-  #hud b{color:#fff;font-weight:500}
-  #hud .k{color:#b6b6c2;text-transform:uppercase;font-size:9px;letter-spacing:.18em}
-  #next{color:#d8ccff}
+  /* ---- HUD ----
+     ON A SURFACE, NOT A SCRIM. It sits over a live render that is bright violet in a drop and
+     near-black in a breakdown, so it cannot be styled against an assumed ground. The old answer
+     was a radial wash under floating text, and it was already losing its dimmest labels on a
+     bright frame -- a wash strong enough for a drop is a black smear over a breakdown. A card
+     with the panel's own surface and hairline is legible against anything the renderer does,
+     costs nothing, and makes the readout part of the instrument rather than a caption on the
+     image. */
+  #hud{position:fixed;top:16px;left:16px;z-index:10;font-size:11px;line-height:1.65;
+    letter-spacing:.01em;pointer-events:none;
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+    box-shadow:var(--shadow);padding:11px 14px;min-width:212px}
+  #hud b{color:#fff;font-weight:500;font-variant-numeric:tabular-nums}
+  #hud .k{display:inline-block;min-width:62px;color:var(--ink-3);text-transform:uppercase;
+    font-size:9px;letter-spacing:.14em}
+  #next{color:var(--accent)}
 
-  #bar{position:fixed;left:24px;right:24px;bottom:22px;z-index:10;display:flex;align-items:center;gap:12px}
-  /* NO BACKDROP-FILTER ON THE CONTROLS, and this is a measurement rather than a taste.
-     Every element carrying one makes the compositor re-blur its region on EVERY frame, because
-     the thing behind it is a canvas that changes every frame. MEASURED on a playing track:
-
-         no glass anywhere                71.1 fps
-         panel glass, plain buttons       61.8
-         panel glass + glass buttons      54.1
-
-     Five small buttons cost ~8 fps between them -- as much as the whole panel -- because the cost
-     is per LAYER, not per pixel. They are 40px tall and the effect on them is nearly invisible.
-     A translucent fill with the same specular edge reads as the same material and is free, so the
-     live refraction is spent only where it is actually seen: the panel. */
+  /* ---- TRANSPORT ---- */
+  /* The transport carries the same surface for the same reason as the HUD: white text on a pale
+     frame is not a readout. */
+  #bar{position:fixed;left:16px;right:16px;bottom:16px;z-index:10;display:flex;align-items:center;gap:12px;
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+    box-shadow:var(--shadow);padding:10px 14px}
   button,label.btn{
-    background:rgba(255,255,255,.10);
-    border:0;border-radius:var(--pill);
-    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.26), inset 0 0 0 .5px var(--rim),
-               0 4px 14px -6px rgba(0,0,0,.5);
-    color:var(--ink);padding:9px 16px;font:inherit;font-size:10px;letter-spacing:.14em;
+    background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);
+    color:var(--ink-2);padding:7px 13px;font:inherit;font-size:10px;letter-spacing:.10em;
     text-transform:uppercase;cursor:pointer;
-    transition:background .18s ease, transform .22s var(--spring), box-shadow .18s ease}
-  button:hover,label.btn:hover{background:rgba(255,255,255,.14)}
-  button:active,label.btn:active{transform:scale(.96)}
-  button:focus-visible,label.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    transition:background .14s var(--ease), color .14s var(--ease), border-color .14s var(--ease)}
+  button:hover,label.btn:hover{background:var(--surface-3);color:var(--ink);border-color:var(--line-2)}
+  button:active,label.btn:active{background:#0A0A0D}
+  button:focus-visible,label.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 
-  #tl{flex:1;height:6px;background:rgba(255,255,255,.09);border-radius:var(--pill);position:relative;
-    cursor:pointer;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.10), inset 0 1px 2px rgba(0,0,0,.4)}
-  #tlF{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#a894ff,var(--accent));
-    border-radius:var(--pill);width:0;box-shadow:0 0 12px -2px var(--accent)}
+  #tl{flex:1;height:3px;background:rgba(255,255,255,.10);border-radius:var(--pill);position:relative;
+    cursor:pointer}
+  #tl:hover{background:rgba(255,255,255,.16)}
+  #tlF{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:var(--pill);width:0}
   #tlS{position:absolute;inset:0}
-  #tlS i{position:absolute;top:0;bottom:0;border-left:1px solid rgba(255,255,255,.22)}
-  #tc{font-size:10px;color:#c4c4ce;min-width:92px;text-align:right;font-variant-numeric:tabular-nums;
-    text-shadow:0 1px 4px rgba(0,0,0,.6)}
+  #tlS i{position:absolute;top:-2px;bottom:-2px;border-left:1px solid rgba(255,255,255,.18)}
+  #tc{font-size:10px;color:var(--ink-2);min-width:88px;text-align:right;font-variant-numeric:tabular-nums}
   #file,#svgfile{display:none}
-  #bar .grp{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#9a9aa6;
-    text-shadow:0 1px 4px rgba(0,0,0,.6)}
-  #bar button.on{background:var(--accent-dim);color:#efe9ff;
-    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.34), inset 0 0 0 .5px rgba(201,186,255,.5),
-               0 4px 18px -6px rgba(201,186,255,.45)}
+  #bar .grp{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+  #bar button.on{background:var(--accent-soft);color:#fff;border-color:var(--accent-line)}
 
   #drop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;
-    gap:12px;z-index:9;pointer-events:none}
-  #drop h2{margin:0;font-size:12px;letter-spacing:.44em;text-transform:uppercase;color:var(--ink-2)}
-  #drop p{margin:0;font-size:10px;letter-spacing:.18em;color:var(--ink-3);text-transform:uppercase}
+    gap:10px;z-index:9;pointer-events:none}
+  #drop h2{margin:0;font-size:11px;letter-spacing:.38em;text-transform:uppercase;color:#fff;
+    text-shadow:0 1px 12px rgba(0,0,0,.8)}
+  #drop p{margin:0;font-size:10px;letter-spacing:.10em;color:var(--ink-2);text-transform:uppercase;
+    text-shadow:0 1px 10px rgba(0,0,0,.8)}
 
-  #perf{position:fixed;left:18px;bottom:76px;z-index:40;display:none;padding:10px 13px;
-    border-radius:var(--r-md);color:#cfd2e6;font:11px/1.55 var(--mono);letter-spacing:.02em;pointer-events:none;white-space:pre}
-  #perf b{color:#fff;font-size:13px}
+  #perf{position:fixed;left:16px;bottom:70px;z-index:40;display:none;padding:9px 12px;
+    border-radius:var(--r-md);color:var(--ink-2);font:11px/1.5 var(--mono);pointer-events:none;white-space:pre}
+  #perf b{color:#fff;font-size:12px}
 
-  #stat{position:fixed;top:22px;left:50%;transform:translateX(-50%);z-index:12;padding:9px 18px;
-    border-radius:var(--pill);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink);display:none;
-    align-items:center;gap:10px}
-  #statBar{display:none;width:190px;height:4px;background:rgba(255,255,255,.15);border-radius:var(--pill);
-    overflow:hidden;margin-left:2px}
+  /* ---- STATUS + RECORDING ---- */
+  /* CENTRED, BUT NOT INTO THE PANEL. The HUD card and the control panel now occupy both top
+     corners, so a chip centred on the viewport runs under one of them on any window narrower than
+     their combined width. Bounded by what is actually free between the two and allowed to
+     truncate rather than overlap. */
+  #stat{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:12;padding:7px 14px;
+    border-radius:var(--r-sm);font-size:10px;letter-spacing:.10em;text-transform:uppercase;
+    color:var(--ink);display:none;align-items:center;gap:9px;
+    max-width:max(200px, calc(100vw - 620px));white-space:nowrap}
+  #statTxt{overflow:hidden;text-overflow:ellipsis}
+  #statBar{display:none;width:170px;height:3px;background:rgba(255,255,255,.14);border-radius:var(--pill);
+    overflow:hidden}
   #statFill{display:block;height:100%;width:0%;background:var(--accent);border-radius:var(--pill);
     transition:width .18s linear}
-  #statPct{display:none;min-width:34px;text-align:right;opacity:.7;font-variant-numeric:tabular-nums}
+  #statPct{display:none;min-width:32px;text-align:right;color:var(--ink-2);font-variant-numeric:tabular-nums}
   #stat.busy #statBar,#stat.busy #statPct{display:block}
-  .err{color:#ffb0b0!important}
-  /* RECORDING IS A MODE, and a mode the user can walk away from, so it says so on the canvas
-     rather than only in a control that may be scrolled out of view or collapsed. */
-  #recDot{position:fixed;top:22px;right:auto;left:50%;transform:translateX(-50%);z-index:13;
-    display:none;align-items:center;gap:9px;padding:8px 16px;border-radius:var(--pill);
-    background:rgba(24,8,12,.62);
-    -webkit-backdrop-filter:blur(var(--blur)) saturate(190%);backdrop-filter:blur(var(--blur)) saturate(190%);
-    box-shadow:inset 0 1px 0 0 var(--glass-hi), inset 0 0 0 .5px rgba(255,90,120,.34), var(--lift);
-    font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#ffd9e0}
+  .err{color:#FF9AA8!important}
+  /* RECORDING IS A MODE the user can walk away from, so it says so on the canvas rather than only
+     in a control that may be collapsed. */
+  #recDot{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:13;
+    display:none;align-items:center;gap:9px;padding:7px 14px;border-radius:var(--r-sm);
+    background:#150A0D;border:1px solid rgba(255,94,122,.34);box-shadow:var(--shadow);
+    font-size:10px;letter-spacing:.10em;text-transform:uppercase;color:#FFC9D2}
   #recDot.on{display:flex}
-  #recDot i{width:8px;height:8px;border-radius:50%;background:#ff4d6a;
-    box-shadow:0 0 10px 1px rgba(255,77,106,.8);animation:recPulse 1.4s ease-in-out infinite}
-  @keyframes recPulse{0%,100%{opacity:1}50%{opacity:.35}}
-  #recBar{width:120px;height:4px;border-radius:var(--pill);background:rgba(255,255,255,.16);overflow:hidden}
-  #recBar i{display:block;height:100%;width:0%;background:#ff4d6a;border-radius:var(--pill);animation:none}
+  #recDot i{width:6px;height:6px;border-radius:50%;background:var(--danger);
+    animation:recPulse 1.4s ease-in-out infinite}
+  @keyframes recPulse{0%,100%{opacity:1}50%{opacity:.3}}
+  #recBar{width:110px;height:3px;border-radius:var(--pill);background:rgba(255,255,255,.14);overflow:hidden}
+  #recBar i{display:block;height:100%;width:0%;background:var(--danger);border-radius:var(--pill);animation:none}
 
   /* ---- CONTROL PANEL ----
-     Native <details> groups keep the length manageable and each remembers whether it was open;
-     the whole panel collapses to its own header rather than vanishing, so there is always
-     something to click and nothing to discover. */
-  #ctrl{position:fixed;top:18px;right:18px;z-index:11;width:272px;max-height:calc(100vh - 108px);
+     Native <details> groups, each remembering whether it was open; the panel collapses to its own
+     header rather than vanishing, so there is always something to click. */
+  #ctrl{position:fixed;top:16px;right:16px;z-index:11;width:288px;max-height:calc(100vh - 100px);
     display:flex;flex-direction:column;border-radius:var(--r-lg);overflow:hidden;
-    transition:width .28s var(--spring), max-height .28s var(--spring)}
+    transition:width .24s var(--ease), max-height .24s var(--ease)}
   #ctrlHead{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:11px 14px;cursor:pointer;
-    border-bottom:1px solid rgba(255,255,255,.07);user-select:none}
-  #ctrlHead span.t{flex:1;font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-2)}
-  #ctrlHead span.c{font-size:9px;color:var(--ink-3);transition:transform .28s var(--spring)}
-  #ctrlBody{overflow-y:auto;overscroll-behavior:contain;padding:0 14px 12px}
-  #ctrlBody::-webkit-scrollbar{width:7px}
-  #ctrlBody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:var(--pill);
-    border:2px solid transparent;background-clip:content-box}
-  #ctrl.min{width:120px;max-height:40px}
+    border-bottom:1px solid var(--line);user-select:none}
+  #ctrlHead span.t{flex:1;font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-2)}
+  #ctrlHead span.c{font-size:9px;color:var(--ink-3);transition:transform .24s var(--ease)}
+  #ctrlHead:hover span.t{color:var(--ink)}
+  #ctrlBody{overflow-y:auto;overscroll-behavior:contain;padding:0 14px 10px;
+    scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.16) transparent}
+  #ctrlBody::-webkit-scrollbar{width:8px}
+  #ctrlBody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:var(--pill);
+    border:3px solid transparent;background-clip:content-box}
+  #ctrlBody::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.24);background-clip:content-box}
+  #ctrl.min{width:132px;max-height:39px}
   #ctrl.min #ctrlBody{display:none}
   #ctrl.min #ctrlHead span.c{transform:rotate(-90deg)}
 
-  #ctrl details{border-bottom:1px solid rgba(255,255,255,.055)}
+  #ctrl details{border-bottom:1px solid var(--line)}
   #ctrl details:last-of-type{border-bottom:0}
-  /* A CLOSED GROUP IS STILL THE ONLY NAVIGATION THE PANEL HAS, so it cannot be the dimmest text
-     in it. These were --ink-3, the same grey as a disabled value, which reads fine over the dark
-     backdrop the palette was picked against and disappears over a bright one -- and the whole
-     point of the glass is that the backdrop is whatever the track is doing. */
-  #ctrl summary{list-style:none;cursor:pointer;padding:10px 0 9px;display:flex;align-items:center;gap:8px;
-    font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:#a5a5b2;user-select:none;
-    transition:color .16s ease}
-  #ctrl summary:hover{color:#fff}
+  /* A CLOSED GROUP IS THE PANEL'S ONLY NAVIGATION, so it cannot be the dimmest text in it. */
+  #ctrl summary{list-style:none;cursor:pointer;padding:11px 0 9px;display:flex;align-items:center;gap:7px;
+    font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-2);user-select:none;
+    transition:color .14s var(--ease)}
+  #ctrl summary:hover{color:var(--ink)}
   #ctrl summary::-webkit-details-marker{display:none}
-  #ctrl summary::before{content:'\25B8';font-size:8px;color:var(--ink-3);transition:transform .24s var(--spring)}
-  #ctrl details[open] summary::before{transform:rotate(90deg)}
-  #ctrl details[open] summary{color:#fff}
-  #ctrl .row{display:flex;align-items:center;gap:8px;padding:4px 0 5px}
-  #ctrl .row>label{flex:0 0 56px;font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-2)}
-  #ctrl select{flex:1;min-width:0;background:rgba(255,255,255,.07);color:var(--ink);
-    border:0;border-radius:var(--r-sm);
-    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.16), inset 0 0 0 .5px var(--rim);
-    padding:6px 8px;font:inherit;font-size:10px;letter-spacing:.04em;cursor:pointer;
-    transition:background .16s ease}
-  #ctrl select:hover{background:rgba(255,255,255,.13)}
+  #ctrl summary::before{content:'';width:5px;height:5px;flex:0 0 5px;border-right:1px solid currentColor;
+    border-bottom:1px solid currentColor;transform:rotate(-45deg);opacity:.55;
+    transition:transform .22s var(--ease)}
+  #ctrl details[open] summary{color:var(--ink)}
+  #ctrl details[open] summary::before{transform:rotate(45deg)}
+  #ctrl .row{display:flex;align-items:center;gap:8px;padding:4px 0 5px;min-height:28px}
+  #ctrl .row>label{flex:0 0 58px;font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+
+  #ctrl select{flex:1;min-width:0;background:var(--surface-2);color:var(--ink);
+    border:1px solid var(--line);border-radius:var(--r-sm);
+    padding:6px 26px 6px 9px;font:inherit;font-size:10px;letter-spacing:.02em;cursor:pointer;
+    -webkit-appearance:none;appearance:none;
+    background-image:linear-gradient(45deg,transparent 50%,var(--ink-3) 50%),
+                     linear-gradient(135deg,var(--ink-3) 50%,transparent 50%);
+    background-position:calc(100% - 14px) 12px, calc(100% - 10px) 12px;
+    background-size:4px 4px, 4px 4px;background-repeat:no-repeat;
+    transition:background-color .14s var(--ease), border-color .14s var(--ease)}
+  #ctrl select:hover{background-color:var(--surface-3);border-color:var(--line-2)}
   #ctrl select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-  #ctrl input[type=color]{width:28px;height:24px;flex:0 0 auto;padding:0;
-    border:0;border-radius:var(--r-sm);background:transparent;cursor:pointer;
-    box-shadow:inset 0 0 0 .5px rgba(255,255,255,.28)}
+  #ctrl input[type=color]{width:30px;height:22px;flex:0 0 auto;padding:0;
+    border:1px solid var(--line);border-radius:var(--r-sm);background:transparent;cursor:pointer}
   #ctrl input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
-  #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}
+  #ctrl input[type=color]::-webkit-color-swatch{border:0;border-radius:3px}
 
-  .row input[type=range]{flex:1;min-width:0;-webkit-appearance:none;appearance:none;height:4px;
-    background:rgba(255,255,255,.14);border-radius:var(--pill);outline:none;margin:0;
-    box-shadow:inset 0 1px 2px rgba(0,0,0,.35)}
-  .row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;
-    border-radius:50%;background:linear-gradient(180deg,#fff,var(--accent));cursor:pointer;border:0;
-    box-shadow:0 1px 4px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.35);
-    transition:transform .2s var(--spring)}
-  .row input[type=range]:active::-webkit-slider-thumb{transform:scale(1.25)}
-  .row input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
-  .row .val{font-size:9px;color:var(--ink-2);flex:0 0 30px;text-align:right;font-variant-numeric:tabular-nums}
+  .row input[type=range]{flex:1;min-width:0;-webkit-appearance:none;appearance:none;height:2px;
+    background:rgba(255,255,255,.14);border-radius:var(--pill);outline:none;margin:0}
+  .row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;
+    border-radius:50%;background:var(--ink);cursor:pointer;border:0;
+    transition:background .14s var(--ease), transform .14s var(--ease)}
+  .row input[type=range]:hover::-webkit-slider-thumb{background:#fff}
+  .row input[type=range]:active::-webkit-slider-thumb{background:var(--accent);transform:scale(1.15)}
+  .row input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:5px}
+  .row .val{font-size:10px;color:var(--ink-2);flex:0 0 32px;text-align:right;
+    font-variant-numeric:tabular-nums}
 
-  /* A SEGMENTED CONTROL: one track, N positions, exactly one lit. The shape carries the meaning
-     -- three capsules with gaps between them say three independent switches, and one grooved
-     track with three seats says pick one. The groove is the same inset the sliders use, so the
-     two read as the same kind of object. */
-  #ctrl .seg{flex:1;display:flex;gap:2px;padding:2px;border-radius:var(--pill);
-    background:rgba(255,255,255,.06);
-    box-shadow:inset 0 1px 2px rgba(0,0,0,.32), inset 0 0 0 .5px rgba(255,255,255,.08)}
+  /* A SEGMENTED CONTROL: one well, N seats, exactly one lit. The shape carries the meaning --
+     separate buttons say independent switches, one grooved track says pick one. */
+  #ctrl .seg{flex:1;display:flex;gap:1px;padding:1px;border-radius:var(--r-sm);
+    background:var(--surface-2);border:1px solid var(--line)}
   #ctrl .seg button.mini{flex:1 1 0;min-width:0;padding:5px 4px;text-align:center;
-    background:transparent;box-shadow:none}
-  #ctrl .seg button.mini:hover{background:rgba(255,255,255,.09)}
-  #ctrl .seg button.mini.on{background:rgba(255,255,255,.16);color:#fff;
-    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.30), 0 1px 3px rgba(0,0,0,.35)}
-  #ctrl button.mini{flex:0 0 auto;padding:6px 11px;font-size:9px;letter-spacing:.11em;
-    background:rgba(255,255,255,.07);border-radius:var(--pill)}
-  #ctrl button.mini:hover{background:rgba(255,255,255,.14)}
-  #ctrl button.mini.on{background:var(--accent-dim);color:#efe9ff;
-    box-shadow:inset 0 1px 0 0 rgba(255,255,255,.34), inset 0 0 0 .5px rgba(201,186,255,.5)}
+    background:transparent;border:0;border-radius:5px;color:var(--ink-3);letter-spacing:.06em}
+  #ctrl .seg button.mini:hover{background:var(--surface-3);color:var(--ink-2)}
+  #ctrl .seg button.mini.on{background:var(--accent-soft);color:#fff}
+  #ctrl button.mini{flex:0 0 auto;padding:6px 11px;font-size:9px;letter-spacing:.08em;
+    background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm)}
+  #ctrl button.mini:hover{background:var(--surface-3)}
+  #ctrl button.mini.on{background:var(--accent-soft);color:#fff;border-color:var(--accent-line)}
 
   /* A control that cannot do anything right now says so, rather than leaving you to drag it and
      wonder. */
-  #ctrl .row.inert{opacity:.36}
+  #ctrl .row.inert{opacity:.34}
   #ctrl .row.inert input,#ctrl .row.inert select{pointer-events:none}
 
-  @media (prefers-reduced-motion:reduce){
-    *{transition-duration:.01ms!important}
-  }
+  @media (prefers-reduced-motion:reduce){ *{transition-duration:.01ms!important;animation-duration:.01ms!important} }
 </style>
 
 <canvas id="gl"></canvas>
