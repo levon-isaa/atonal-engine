@@ -3624,7 +3624,15 @@ const GRAIN={amt:1.0};  window.GRAIN=GRAIN;
 // so it is also the one that can read as spokes. ENV.room=0 leaves a plain gradient.
 // map:0 falls back to the analytic env(), for A/B against the prefiltered HDRI.
 const ENV={room:0.45, map:1};  window.ENV=ENV;   // per-term ablation switches for measuring edge artefacts
-const DXS={ao:1,shadow:1,twoTone:1,furnace:0,fill:1};  // ...and for the scene pass; see u_dxs / u_furnace
+const DXS={ao:1,shadow:1,twoTone:1,furnace:0,fill:1,trans:1};  // ...and for the scene pass; see u_dxs / u_furnace
+/* DXS.trans SCALES EVERY TRANSIENT ENVELOPE AT ONCE -- the five bands and the beat pulse -- so
+   the music's BEAT-RATE drive can be ablated while its SECTION-RATE drive (the emotion curves,
+   which are sampled straight from the analysis) keeps running. There was no way to do that, and
+   without it a whole class of question cannot be answered: measuring the frame's luminance shows
+   99% of its movement is music-driven and ~1% is ambient animation, but every effect DX and DXS
+   already switch -- bloom, threshold, fill, shadow, AO -- ablates to within the run-to-run
+   spread, so none of them owns it. This separates the two halves of the drive rather than the
+   consumers of it. 0 holds the envelopes flat; 1 is normal. */
 window.DX=DX; window.DXS=DXS;
 /* Render scale, chosen rather than negotiated.
    The governor trades quality for frame rate, which is right for playback and wrong when the
@@ -6405,7 +6413,21 @@ function frame(){
     /* THE READ POINT, not the play head. See visLead: everything downstream of this line adds
        delay, so the timeline is sampled slightly ahead and the delay carries it back. The
        envelopes add their own PEAK[b] on top at the point they are fed; curves and section
-       boundaries take the frame lead alone, because nothing smooths them on the way out. */
+       boundaries take the frame lead alone, because nothing smooths them on the way out.
+
+       AND IT IS QUANTISED. pos() comes off AudioContext.currentTime, which advances in render
+       quanta rather than continuously. MEASURED over 383 frames at an 18.0ms median frame, its
+       per-frame increment is p10 16.00ms, p50 21.33ms, p90 32.00ms -- every one a multiple of
+       5.333ms, 256 samples at 48kHz. The read point and the frame being drawn therefore disagree
+       by a median of 1.33ms and a p90 of 3.63ms, and on 0.8% of frames pos() does not advance at
+       all, so the Director returns the previous value and jumps double on the next.
+       Every curve and every section boundary is sampled here, so they all step together, in
+       phase, at the audio quantum rather than at the frame rate.
+       LEFT ALONE, for now, because it could not be shown to matter: slewing the read point with
+       the render clock and pulling it toward the transport (bounded, seek-snapped) moved frame
+       luminance jerk from p50 11146 to 11326 and p90 38743 to 35702 -- inside the spread between
+       repeat takes of one build. Recorded because it is a real defect with a known size, and the
+       next person to have evidence that it matters should not have to find it again. */
     const t=pos()+visLead();
     energy=sampleCurve('energy',t); tension=sampleCurve('tension',t); arousal=sampleCurve('arousal',t);
     darkness=sampleCurve('darkness',t); bright=sampleCurve('brightness',t); valence=sampleCurve('valence',t);
@@ -6686,6 +6708,8 @@ function frame(){
   { const ka=1-Math.exp(-ATK2*dt);
     for(const b of BANDS){ HIT[b]*=Math.exp(-DECAY[b]*dt);
       HITM[b]+=(HIT[b]-HITM[b])*ka; HITS[b]+=(HITM[b]-HITS[b])*ka; } }
+  // Ablation only; 1 in every normal frame. See DXS.trans.
+  if(DXS.trans!==1){ const k=DXS.trans; for(const b of BANDS) HITS[b]*=k; pulseS*=k; }
   // organic + reactive motion: layered drift, arousal drives speed, a soft swell on the beat
   // gentle, ONE-DIRECTION orbit — speed from the section's camera + the music's energy (story pacing, no rocking)
   // individual sounds nudge the rotation — articulate, but damped so it never jitters
