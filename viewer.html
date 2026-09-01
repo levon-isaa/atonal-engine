@@ -2221,7 +2221,7 @@ void main(){
     // would be blurring a real image. The cap stays at 0.030 and now has a measurement behind it
     // rather than only an eye.
     // (Both readings were taken with window.QLOCK actually holding the resolution still, which
-    // it did not do until the fix in the quality governor — see the note at `if(QLOCK || ...)`.
+    // it did not do until the fix in the quality governor -- see the note beside it there.
     // Any earlier reading of this kind was taken while the canvas was free to resize underneath
     // it, which is worth knowing before trusting one.)
     float nturn=0.5*(dot(dnx,dnx)+dot(dny,dny));   // how fast the shading normal turns per pixel
