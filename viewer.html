@@ -379,14 +379,6 @@
        and a slow swirl to the bar. That now runs unconditionally, which is the whole point --
        the engine drives the movement and the panel above is where you tweak it. See autoMap(). -->
 
-  <details id="gCredits"><summary>Credits</summary>
-    <div class="row"><label>Balance</label><span class="val" id="credBal">&mdash;</span></div>
-    <div class="row"><label>Render key</label>
-      <input type="password" id="credKey" placeholder="atk_…" autocomplete="off" spellcheck="false"
-             title="The key from your purchase. Stored in this browser only, and sent with each analysis so the credit comes off the right balance."></div>
-    <div class="row"><label></label>
-      <span class="val"><a id="credBuy" href="./site/pricing.html" target="_blank" rel="noopener">Get credits</a></span></div>
-  </details>
   <details id="gExport" open><summary>Export</summary>
     <div class="row"><label>Format</label>
       <select id="selFmt" title="What the recording is framed and sized for. The canvas is retargeted to this exact pixel size while recording, so the file needs no cropping or scaling afterwards.">
@@ -476,40 +468,23 @@ const SERVER = location.hostname && location.protocol.startsWith('http')
    nobody did. See billing.py.
 
    The key is a bearer token. It lives in localStorage on this machine and goes
-   out as a header with each upload; there is no account behind it, which is why
-   the field below is a password input and why it is never written to the log. */
+   out as a header with each upload; there is no account behind it.
+
+   THE CREDITS PANEL IS GONE and the key is not. The panel showed a balance and
+   took a key by hand; what actually bills is the X-Render-Key header on the
+   upload, and that reads localStorage directly. So get/set stay and everything
+   that existed to paint the balance row -- the /credits poll, the refresh(), the
+   password field and its change listener -- goes with the row it was painting.
+   A key already stored on this machine keeps working untouched. Setting one is
+   now RKEY.set('atk_...') from the console, or whatever UI replaces this. */
 const RKEY = (function(){
   const K='atonal.key';
   const get = ()=>{ try{ return (localStorage.getItem(K)||'').trim(); }catch(e){ return ''; } };
   const set = v=>{ try{ v ? localStorage.setItem(K,v.trim()) : localStorage.removeItem(K); }catch(e){} };
-  let last = 0;
-  async function refresh(){
-    const el = document.getElementById('credBal'); if(!el) return;
-    const k = get();
-    try{
-      const r = await fetch(SERVER+'/credits'+(k?('?key='+encodeURIComponent(k)):''),{cache:'no-store'});
-      const j = await r.json();
-      if(k && j.known===false){ el.textContent='key not recognised'; el.style.color='#ff6b8a'; return; }
-      el.style.color='';
-      /* With no key the honest number is the free allowance, not zero -- the app
-         works without ever buying anything and should say so. */
-      el.textContent = k ? (j.balance + (j.balance===1?' credit':' credits'))
-                         : (j.free_left + ' free today');
-    }catch(e){ el.textContent='—'; }
-  }
-  return {get,set,refresh};
+  return {get,set};
 })();
+window.RKEY=RKEY;
 const $=id=>document.getElementById(id);
-/* The key field. `change` rather than `input`, so a balance lookup is not fired
-   off on every keystroke of a 47-character token. */
-(function(){
-  const f=$('credKey');
-  if(f){
-    f.value=RKEY.get();
-    f.addEventListener('change',()=>{ RKEY.set(f.value); RKEY.refresh(); });
-  }
-  RKEY.refresh();
-})();
 window.__errs=[];
 function __showErr(m){ let d=document.getElementById('__err'); if(!d){ d=document.createElement('div'); d.id='__err';
   d.style.cssText='position:fixed;left:12px;bottom:70px;z-index:999;max-width:64ch;padding:10px 12px;background:rgba(40,8,8,.94);border:1px solid #f66;border-radius:4px;color:#fbb;font:11px/1.5 ui-monospace,monospace;white-space:pre-wrap'; document.body.appendChild(d);} d.textContent=m; }
@@ -6007,11 +5982,12 @@ async function loadFile(file){
             /* 402 means "this needs paying for", which is a different thing from a
                fault: nothing is broken, and the useful response is a route to
                credits rather than an error message. */
+            /* The message has to carry the whole route now that the panel is gone --
+               it was the only place that said what a key is or where one comes from. */
             if(xhr.status===402){
-              m += (j.code==='bad_key') ? '  Check the key in the Credits panel.'
-                                        : '  Open Credits in the panel to top up.';
-              const g=$('gCredits'); if(g) g.open=true;
-              RKEY.refresh();
+              m += (j.code==='bad_key')
+                 ? '  That render key was not recognised.'
+                 : '  Credits are at site/pricing.html; set one with RKEY.set(\'atk_...\').';
             }
           }catch(e){}
           reject(new Error(m));
