@@ -5041,6 +5041,29 @@ const ATK_OLD={sub:9,low:10,mid:13,high:19,air:25};      // what the gains are m
    10-90% rise spread over 2 to 4 frames. If frames drop to 30fps the worst case is 76%, which is
    a slow-frame artefact rather than a setting: at 30fps everything is jerkier by definition.
 
+   35 IS THE KNEE, AND SLOWER IS NOT BETTER. Swept afterwards against what the picture actually
+   does, rather than against the signal: frame mean luminance sampled every frame with the pose
+   pinned and the track playing, reported as |dL/dt| so two builds at different frame rates stay
+   comparable -- a per-FRAME delta is not, and comparing two arms at 42 and 37fps is how this was
+   first got wrong here.
+
+       ATK2   PEAK low        p50      p90      p99
+         35       83ms      235.0    927.7   1759.3
+         25      117ms      230.1    898.6   1482.7
+         18      150ms      251.2    898.6   1680.8
+
+   Non-monotonic, and every gap is inside the run-to-run spread (repeat takes of one build move
+   p50 by 5% and p99 by 8%), while the lead nearly doubles and with it how far the picture
+   anticipates the beat. There is nothing to buy below 35.
+
+   AND BE HONEST ABOUT THE SIZE OF THIS. The signal-level numbers above are a halving; the
+   PICTURE is not halved. Same luminance measure, one-pole against this, two interleaved runs
+   each: p50 305 -> 240 (-21%), max 5993/4813 -> 4900/3935 (-18%), and p90 and p99 unchanged
+   within noise. So the typical frame and the worst frame both settle, and a middle band does
+   not -- nothing found so far owns it. |dL/dt| correlates with the band envelopes only weakly
+   once they are smoothed (HITS.low r=+0.39, everything else below 0.16), and the largest
+   excursions show no single driver. Whatever is left is not the attack.
+
    NEITHER THE TIMING NOR THE HEIGHT MOVES, which is what makes this safe to do to a sync that was
    carefully tuned. Both are derived, not typed: PEAK[b] is the lead the onset walk already reads
    ahead by, and ATK_GAIN[b] normalises the height -- so solving the new envelope's peak and
