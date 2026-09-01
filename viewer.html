@@ -2186,7 +2186,11 @@ void main(){
     // the triplanar detail machinery, which no longer exists.
     if(u_diag>0.5){
       int dm=int(u_diag+0.5);
-      vec3 dc=vec3(0.);
+      // MAGENTA, NOT BLACK, for a mode that does not exist. Six of the modes this file documents
+      // read the triplanar detail machinery that was removed with it, and asking for one of them
+      // rendered vec3(0.) -- a black object, which is what a genuinely broken shader looks like.
+      // Costing someone an hour on a mode that was deleted years ago is the avoidable part.
+      vec3 dc=vec3(1.0,0.0,1.0);
       if(dm==2) dc=gn*0.5+0.5;                         // geometric normal
       if(dm==8) dc=vec3(calcAO(p,gn));                 // ambient occlusion, alone
       if(dm==9) dc=vec3(fract(calcAO(p,gn)*24.0));     // ...contoured, so terracing is unmissable
@@ -5813,14 +5817,21 @@ function frame(){
                                      comparisons in this file before.
        window.TFREEZE= seconds       pins the clock and sets dt to 0 (see below).
        window.QLOCK  = true          freezes the quality governor.
-       window.DIAG   = 1..7          renders the shading intermediates instead of the image:
-                                     1 triplanar weights, 2 geometric normal, 3 detail deviation,
-                                     4 blend RMS, 5 roughness contours, 6 the detail map itself,
-                                     7 the detail map's alpha. 6 and 7 are the only honest way to
-                                     ask whether a structure is IN the map or made by the read.
-       window.DSCL   = k             multiplies the detail tiling. If an artefact scales with it,
-                                     it is the map; if it does not, it is not.
-       window.DWARP  = k             the bake's domain-warp amount, in cells (default 0.95).
+       window.DIAG   = 2, 8, 9       renders a shading intermediate instead of the image:
+                                     2 geometric normal, 8 ambient occlusion, 9 AO contoured so
+                                     that terracing is unmissable. Anything else renders magenta,
+                                     which means "no such mode" rather than "the renderer broke".
+                                     THIS LIST USED TO SAY 1..7 AND NAME SIX MODES THAT DO NOT
+                                     EXIST -- triplanar weights, detail deviation, blend RMS,
+                                     roughness contours, the detail map and its alpha. They read
+                                     the triplanar detail machinery, which was removed; the
+                                     shader has said so beside the dispatch for some time and
+                                     this block never caught up. 8 and 9 were meanwhile live and
+                                     undocumented, so the one range a reader was told to try was
+                                     entirely dead and the two that worked were invisible.
+                                     window.DSCL and window.DWARP went with the same removal and
+                                     are gone from here too: nothing has read either of them for
+                                     as long as they have been written down.
        window.__TAP  = {x,y,w,h}     reads that patch of the DEFAULT framebuffer, once, at the one
                                      point in the frame where it holds this frame's pixels;
                                      result lands in window.__TAPOUT. Every readPixels written
@@ -5976,9 +5987,11 @@ function frame(){
     /* window.QLOCK, NOT JUST QLOCK, AND IT WAS THE SECOND ONE ONLY. The hook block above
        documents `window.QLOCK = true` as the way to freeze this governor for an A/B, and nothing
        read it: QLOCK is a module-level let that only the recorder sets (see startRender). Every
-       other hook up there -- POSE, TFREEZE, DIAG, DSCL, DWARP, VARPIN, KVAR -- is read off
+       hook up there that still exists -- POSE, TFREEZE, DIAG, VARPIN, KVAR -- is read off
        window. This one silently was not, so setting it did nothing and the governor kept
-       adapting through measurements that had been told to hold still.
+       adapting through measurements that had been told to hold still. (DSCL and DWARP were on
+       that list when this note was written, which was wrong in the other direction: they are not
+       read either, because the machinery they belonged to is gone. See the hook block.)
        That is worse than an inert flag, because the thing it fails to freeze is the RESOLUTION.
        Caught by measuring nine materials on what was supposed to be one pinned frame: the canvas
        went from 2194x1976 to 1666x1502 partway through the loop, so the later materials were
