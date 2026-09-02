@@ -6113,9 +6113,62 @@ function gpuEnd(){
       const a=(_gq[e.tag]=_gq[e.tag]||[]); a.push(ms); if(a.length>30) a.shift();
       const srt=[...a].sort((x,y)=>x-y);
       window.GPU[e.tag]=+srt[srt.length>>1].toFixed(3);   // median, not mean: one hitch skews a mean
+      gpuVerdict();
     }
     gl.deleteQuery(e.q); _gqPend.splice(i,1);
   }
+}
+/* THE PER-PASS TIMER DOES NOT WORK ON THIS BACKEND, AND IT USED TO SAY SO ONLY BY BEING WRONG.
+   EXT_disjoint_timer_query_webgl2 is a real extension and ANGLE hands it over, but on the Metal
+   backend it does not time the bracketed draws -- it returns the whole submission. MEASURED, and
+   it is not subtle:
+
+       march Mpx   fps    scene   bright    post
+           3.14   60.0    14.49    14.61   14.70
+           5.94   58.0    30.48    29.65   29.17
+           9.63   40.4    48.37    48.36   48.24
+          14.19   27.2    73.68    73.59   73.58
+
+   Three passes that do completely different amounts of work, agreeing to within 0.3%, each
+   reporting about TWICE the whole frame. And the give-away in the other direction: across a 12x
+   change in march pixels at a pinned 60fps the scene pass moved 6.40 -> 8.47 ms, a third, when
+   the work it brackets went up twelvefold.
+
+   So the numbers were not noisy, they were meaningless, and they were meaningless in the most
+   dangerous shape available -- three plausible figures that add up to something and invite a
+   conclusion about where the time goes. This checks two things that must both be true of a real
+   per-pass timer and marks the readout when either fails: no single pass can cost more than the
+   whole frame, and two passes this different cannot agree to a fraction of a percent.
+
+   WHAT TO USE INSTEAD, because the question is still worth answering: ablate and diff the frame
+   time, above the vsync ceiling, with QLOCK and POSE set and the arms interleaved. Done that way
+   at 2.6x native, every one of DX.bloom, DX.thr, DX.chroma, DX.sharpen, GRAIN.amt, DXS.ao,
+   DXS.shadow, DXS.fill and ENV.room lands inside the baseline's own round-to-round spread of
+   1.10 ms -- so at present NO individual post or shading effect is a hotspot, and the frame is
+   the march. That is a real answer, and this extension could not have produced it. */
+function gpuVerdict(){
+  const g=window.GPU; if(!g) return;
+  const tags=Object.keys(g).filter(k=>k.charAt(0)!=='_');
+  if(tags.length<2){ return; }
+  let lo=Infinity, hi=0, sum=0;
+  for(const k of tags){ const v=g[k]; if(v<lo) lo=v; if(v>hi) hi=v; sum+=v; }
+  /* THREE TESTS, AND THE THIRD IS THE ONE THAT CATCHES THE QUIET CASE. A pass longer than its
+     own frame is impossible, and two passes this different agreeing to a fraction of a percent
+     is impossible -- but both of those only fire once the frame is heavy. Under vsync the
+     numbers come back looking plausible and are still wrong, because every query then contains
+     the idle wait as well as the work: at 0.7x native the three read 6.53 / 6.33 / 4.54 against
+     a 16.7ms frame, which passes both of the other tests and SUMS to 17.4. The passes run one
+     after another inside the frame, so their sum cannot exceed it. */
+  const agree = (hi-lo) <= hi*0.02;            // passes this different cannot be this equal
+  const overFrame = hi > frameAvg*1.05;        // nor can one pass outlast the frame that holds it
+  const overSum = sum > frameAvg;              // nor can they add up to more than it
+  g.__perPass = !(agree || overFrame || overSum);
+  g.__note = g.__perPass ? 'per-pass timings look real'
+           : 'NOT PER-PASS: this backend returns the whole submission for every query, or the '
+            +'frame is vsync-bound and every query holds the idle wait too. '
+            +(agree?'All tags agree to <=2%. ':'')+(overFrame?'A pass reports longer than the frame. ':'')
+            +(overSum?'The passes sum to more than the frame. ':'')
+            +'Ablate and diff frame time instead -- see the note above gpuVerdict.';
 }
 function frame(){
   requestAnimationFrame(frame);
