@@ -3935,14 +3935,32 @@ const KAL_PUMP_DECAY=3.4;
 let frameAvg=16, lastQ=0, QLOCK=false, lastDpr=0;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
-// composition presets -> continuous shape params (eased between sections)
+/* THE COMPOSITION PRESETS, AND WHAT IS LEFT OF THEM. These were the arrangement of the form --
+   how many arms, how far out, how twisted, how thick -- and they were uploaded as u_count,
+   u_twist, u_r0, u_r1, u_thick, u_bulge and u_hub. 9cd547e removed all seven uniforms from the
+   shader when the procedural arrangement was replaced by the profile ladder, and removed the
+   uploads with them. It did NOT remove this table, the per-section choice that indexes it, or
+   the easing that ran every frame; so for three weeks the analyser has been picking a
+   composition per section, and five of these seven numbers have been eased toward a target that
+   nothing reads.
+
+   AUDITED, not assumed: `count` has exactly one consumer and `thick` has exactly one, both in
+   the GRAIN (u_gDense, u_gThick). twist, r0, r1, bulge and hub have none, and none of the seven
+   uniforms exists in the shader any more. Those five are removed here -- SH and COMPS have to
+   carry the same keys or the easing loop writes NaN into whatever is missing.
+
+   SO "COMPOSITION" NOW MEANS GRAIN, and that is worth saying plainly rather than leaving the
+   name to imply otherwise. A section labelled `column` gets density 4 and thickness 0.20; one
+   labelled `spiral` gets 18 and 0.05. That is a real and visible difference -- it is simply not
+   the difference the six names describe. Reconnecting composition to the geometry is a design
+   decision, not a repair, so it is left for someone making that decision on purpose. */
 const COMPS={
-  radial: {count:8, twist:0.05,r0:0.16,r1:1.30,thick:0.10,bulge:0.25,hub:0.28},
-  spiral: {count:18,twist:1.05,r0:0.20,r1:1.55,thick:0.05,bulge:0.05,hub:0.16},
-  cluster:{count:5, twist:0.15,r0:0.06,r1:0.95,thick:0.22,bulge:0.45,hub:0.24},
-  grid:   {count:12,twist:0.30,r0:0.28,r1:1.40,thick:0.07,bulge:0.12,hub:0.12},
-  column: {count:4, twist:0.05,r0:0.05,r1:0.75,thick:0.20,bulge:0.55,hub:0.26},
-  scatter:{count:10,twist:0.55,r0:0.10,r1:1.55,thick:0.06,bulge:0.20,hub:0.12},
+  radial: {count:8, thick:0.10},
+  spiral: {count:18,thick:0.05},
+  cluster:{count:5, thick:0.22},
+  grid:   {count:12,thick:0.07},
+  column: {count:4, thick:0.20},
+  scatter:{count:10,thick:0.06},
 };
 // Orbit rates are rad/s. The old 0.45 put a full revolution at ~13s, which reads as a turntable
 // rather than a camera move; a held cinematic orbit is nearer 30-45s. Halved across the board —
@@ -3957,7 +3975,7 @@ const CAM={
   retreat   :{dist:6.6,height:1.0,spin:0.026,fov:1.66},
 };
 // eased state
-const SH={count:8,twist:0.1,r0:0.16,r1:1.3,thick:0.1,bulge:0.2,hub:0.24};
+const SH={count:8,thick:0.1};        // the two that still reach the frame; see COMPS
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const MOi=[MO[0],MO[1],MO[2]];      // the palette's first pole; see the easing in frame()
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
