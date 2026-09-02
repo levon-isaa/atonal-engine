@@ -108,7 +108,7 @@ details .prose{padding:0 0 20px;font-size:14.5px}
         <div class="price" data-price>&euro;175<small>/ &euro;3.50 each</small></div>
         <ul><li>Fifty tracks analysed</li><li>Unlimited renders and exports</li>
           <li>Every format up to 4K</li><li>No watermark</li><li>Commercial use included</li>
-          <li>Priority queue</li></ul>
+          <li data-prio>Priority queue</li></ul>
         <button class="btn o" data-buy="fifty">Buy 50 credits</button>
       </div>
     </div>
@@ -155,10 +155,15 @@ details .prose{padding:0 0 20px;font-size:14.5px}
     <div class="pad">
       <details open><summary>How do I get my credits back on a new machine?</summary>
         <div class="prose">Checkout gives you a <strong>render key</strong> &mdash; one long string,
-          shown on the confirmation page and sent to the email you paid with. Paste it into the
-          renderer on any machine and your balance follows you. There is no account and no password,
-          which is also why the key is worth keeping somewhere safe: anyone holding it can spend the
-          credits on it.</div></details>
+          shown on the confirmation page. Copy it: it is saved automatically in the browser you
+          bought from, but nowhere else, and we do not email it. Paste it into the renderer on any
+          other machine and your balance follows you.</div>
+        <div class="prose" style="margin-top:12px">There is no account and no password, which is
+          why the key is worth keeping somewhere safe &mdash; anyone holding it can spend the
+          credits on it, and for the same reason we stop being able to show it to you a day after
+          the purchase. If you lose it, reply to the receipt Paddle emailed you and we will issue a
+          replacement against that purchase; the balance is on the key, not on you, so it moves
+          with the replacement.</div></details>
       <details><summary>What if an analysis fails?</summary>
         <div class="prose">The credit goes back automatically. A failure on our side is never
           charged for &mdash; the balance is an append-only ledger, so the refund is a visible entry
@@ -214,6 +219,14 @@ details .prose{padding:0 0 20px;font-size:14.5px}
       var p = d.packs[k], each = p.amount / p.credits / 100;
       el.innerHTML = fmt.format(p.amount/100) +
         '<small>/ ' + (p.credits === 1 ? '1 credit' : fmt.format(each) + ' each') + '</small>';
+      /* The queue line comes from the server's own flag, because this page claimed a priority
+         queue for a while when nothing in the code implemented one. The markup keeps it, so a
+         failed fetch still renders the truth as it stands today; what the server can do is take
+         it away, which is the direction the mistake ran in. */
+      if(!p.priority){
+        var li = document.querySelector('[data-pack="'+k+'"] [data-prio]');
+        if(li) li.remove();
+      }
     });
     if(typeof d.free_per_day === 'number'){
       var n = d.free_per_day, w = WORDS[n] || String(n);

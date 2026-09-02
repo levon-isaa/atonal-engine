@@ -17,8 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import analyze, tagger, billing
 
 # One analysis at a time. librosa + a 300MB PANNs model are both CPU and memory heavy; two
-# concurrent requests do not run twice as fast, they thrash and can exhaust memory.
-_ANALYSIS = threading.Semaphore(1)
+# concurrent requests do not run twice as fast, they thrash and can exhaust memory. The
+# serialisation itself now lives in _Slot below, which owns the order as well as the count.
 
 # ------------------------------------------------------------------ WAITING IS NOT ANALYSING
 # A second customer arriving during someone else's analysis blocks on the semaphore above, and
@@ -35,9 +35,10 @@ _ANALYSIS = threading.Semaphore(1)
 # uses the duration the length probe already measured, at a rate that starts from the numbers in
 # analyze.py's comment and then calibrates itself to whatever machine this is -- the same thing
 # analyze.Progress does with its own totals, and for the same reason.
-_QLOCK = threading.Lock()
-_WAITING = []                # _Slot objects blocked on _ANALYSIS, in arrival order
+_QCOND = threading.Condition()          # guards _WAITING, _RUNNING, _BUSY and _EST_RATE
+_WAITING = []                # _Slot objects waiting for the slot, in SERVICE order
 _RUNNING = None              # (started_at, audio_seconds) of the one holding it
+_BUSY = False                # is the slot taken
 _EST_FIXED = 2.8             # imports and the PANNs checkpoint: constant per analysis
 _EST_RATE = 0.036            # wall seconds per second of audio (measured: 3.51s at 20s, 25.81s at 640s)
 
@@ -55,59 +56,85 @@ def _est_observe(audio_secs, wall):
         return
     r = (wall - _EST_FIXED) / audio_secs
     if 0.002 < r < 1.0:
-        with _QLOCK:
+        with _QCOND:
             _EST_RATE += (r - _EST_RATE) * 0.3
 
 
 class _Slot:
-    """The analysis slot, taken as a context manager so the wait for it can report itself.
+    """The analysis slot, taken as a context manager so the wait for it can report itself
+    and so the ORDER of the wait is ours to decide.
 
     Nothing here changes what is serialised or for how long -- one analysis at a time is the
-    right answer and stays. What changes is that the queue is visible from outside it.
+    right answer and stays. What changes is that the queue is visible from outside it, and
+    that a key which bought a pack carrying `priority` is served before one that did not.
+    That line was on the pricing page for a while with nothing behind it.
+
+    TURN-TAKING RATHER THAN A RACE. The first version of this looped on
+    Semaphore.acquire(timeout=0.4), which cannot express an order at all: every waiter
+    re-enters the semaphore's own wait queue on each pass, so whoever happens to be woken
+    wins. It was not even reliably first-come. A condition variable plus an explicitly
+    ordered list makes the next server a decision instead of an accident.
     """
 
-    def __init__(self, job, secs):
-        self.job, self.secs = job, secs
+    def __init__(self, job, secs, prio=False):
+        self.job, self.secs, self.prio = job, secs, bool(prio)
 
     def _say_waiting(self):
-        with _QLOCK:
-            try:
-                pos = _WAITING.index(self)
-            except ValueError:
-                pos = 0
-            ahead = [w.secs for w in _WAITING[:pos]]
-            run = _RUNNING
-        wait = sum(_est(s) for s in ahead)
-        if run:
-            wait += max(0.0, _est(run[1]) - (time.time() - run[0]))
+        """Caller holds _QCOND. Only _progress_set's own lock is taken below it, and nothing
+        anywhere takes _QCOND while holding that, so the nesting is one-way."""
+        try:
+            pos = _WAITING.index(self)
+        except ValueError:
+            pos = 0
+        wait = sum(_est(w.secs) for w in _WAITING[:pos])
+        if _RUNNING:
+            wait += max(0.0, _est(_RUNNING[1]) - (time.time() - _RUNNING[0]))
+        # `ahead` CAN GO UP while someone is waiting, when a priority upload arrives behind
+        # them and is placed in front. That is what it looks like to be overtaken, and the
+        # honest thing is to show it rather than to freeze a number that is no longer true.
         _progress_set(self.job, {"stage": "waiting", "p": 0.0, "next": 0.0,
-                                 "eta": round(wait, 1), "ahead": pos + (1 if run else 0)})
+                                 "eta": round(wait, 1),
+                                 "ahead": pos + (1 if _RUNNING else 0)})
+
+    def _seat(self):
+        """Insert into _WAITING at the position we should be served from. Priority goes ahead
+        of everything unprioritised and behind everything prioritised, so each class stays
+        first-come within itself and no one is reordered twice."""
+        i = len(_WAITING)
+        if self.prio:
+            while i > 0 and not _WAITING[i - 1].prio:
+                i -= 1
+        _WAITING.insert(i, self)
 
     def __enter__(self):
-        # Non-blocking first, so the common case -- nobody else here -- never flashes a
-        # "waiting" state it is not in.
-        if not _ANALYSIS.acquire(blocking=False):
-            with _QLOCK:
-                _WAITING.append(self)
-            try:
+        global _BUSY, _RUNNING
+        with _QCOND:
+            # The common case -- nobody else here -- never enters the queue and so never
+            # flashes a "waiting" state it is not in.
+            if _BUSY or _WAITING:
+                self._seat()
                 self._say_waiting()
-                while not _ANALYSIS.acquire(timeout=0.4):
-                    self._say_waiting()
-            finally:
-                with _QLOCK:
+                try:
+                    while _BUSY or _WAITING[0] is not self:
+                        _QCOND.wait(0.5)         # timed, so the countdown keeps ticking
+                        self._say_waiting()
+                except BaseException:
                     if self in _WAITING:
                         _WAITING.remove(self)
-        global _RUNNING
-        with _QLOCK:
+                    _QCOND.notify_all()          # our seat is free; someone else may be next
+                    raise
+                _WAITING.remove(self)
+            _BUSY = True
             _RUNNING = (time.time(), self.secs)
         self.t0 = time.time()
         return self
 
     def __exit__(self, *exc):
-        global _RUNNING
-        with _QLOCK:
+        global _BUSY, _RUNNING
+        with _QCOND:
+            _BUSY = False
             _RUNNING = None
-        _ANALYSIS.release()
+            _QCOND.notify_all()
         if exc[0] is None:
             _est_observe(self.secs, time.time() - self.t0)
         return False
@@ -451,7 +478,7 @@ class H(BaseHTTPRequestHandler):
             digest = hashlib.sha256(data).hexdigest()
             hit = cache_get(digest)
             if hit is not None:
-                # Returned WITHOUT taking _ANALYSIS: a cache hit does no CPU work, so queueing it
+                # Returned WITHOUT taking the analysis slot: a cache hit does no CPU work, so queueing it
                 # behind a running analysis would stall it for no reason.
                 print(f"[cache] {name} -> {digest[:12]}", flush=True)
                 del data
@@ -502,7 +529,7 @@ class H(BaseHTTPRequestHandler):
                 freed = (self._ip(), billing.utc_day())
             print(f"[analyze] {name} ({n/1024:.0f} KB{'' if secs is None else f', {secs/60:.1f} min'})", flush=True)
             _progress_set(job, {"stage": "queued", "p": 0.0, "next": 0.0, "eta": 0.0})
-            with _Slot(job, secs):
+            with _Slot(job, secs, prio=bool(key) and billing.has_priority(key)):
                 d = analyze.build_director(tmp, progress=lambda pr: _progress_set(job, pr))
             cache_put(digest, d)
             # Built defensively and BEFORE the response. This used to index d['sections'],
