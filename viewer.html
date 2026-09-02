@@ -4237,6 +4237,56 @@ const MODV={};                                 // this frame's summed value per 
    is locked to the grid the same way the form's rotation is -- an LFO on wall-clock time would
    drift against the track within a few bars, which is the whole reason Sketch offers 1/1..1/8
    rather than a frequency in hertz. */
+/* ============================ ONE TRACK, ONE FILM ============================
+   The page says "the same track always produces the same film", and the shape selection below
+   carries a note saying there is no Math.random left in it. Both were true of the SHAPE and of
+   nothing else: three live calls fed the visual -- the sample-and-hold on every beat, the
+   'Section step' source on every boundary, and rerollVariant's tilt and hue, which the comment
+   beside it describes as changing the FIELD.
+
+   MEASURED, the same track loaded twice and frozen at t=12.0s:
+
+        VART.tilt   0.177641  vs  0.194322
+        VART.hue    0.212115  vs  0.162022
+        SIG.snap    0.522426  vs  0.826864
+        SIG.sect    0.071156  vs  0.255064
+        frame hash  222402376 vs  439587333
+
+   The analysis was identical across both -- 4 sections, 175.99 bpm -- so it was only ever the
+   renderer. That is not just a broken sentence on the marketing page: EXPORT RE-RENDERS. Someone
+   who exports a clip at 1080p and then again at 4K was getting two different films.
+
+   POSITIONAL, NOT SEQUENTIAL. A seeded stream would be reproducible only if every draw happened
+   in the same order every time, which seeking, looping and export all break. So each value is a
+   pure hash of (track, what, where): beat index for the sample-and-hold, section start for the
+   per-section ones. Scrub backwards and the same bar rolls the same number.
+
+   The seed comes from the ANALYSIS, not the filename -- duration, bpm and the section list --
+   so it is stable across a rename and across the cache, and two different tracks still disagree.
+   Variety on demand is unaffected: rollAll() below still rolls, and still takes a seed. */
+let _tsDir=null, _tsVal=0;
+function trackSeed(){
+  let d=null;
+  // try/catch, not a null test: `director` is declared with `let` further down the file and
+  // rerollVariant() is called at load time above it, so touching it there is a TDZ
+  // ReferenceError rather than undefined. Before a track exists the seed is 0, deterministically.
+  try{ d=director; }catch(e){ return 0; }
+  if(d===_tsDir) return _tsVal;
+  _tsDir=d;
+  if(!d){ return (_tsVal=0); }
+  const t=d.tempo||{}, m=d.meta||{};
+  _tsVal=seedOf((m.duration||0)+'|'+(t.bpm||0)+'|'
+    +(d.sections||[]).map(x=>(+x.t0).toFixed(3)+':'+x.label).join(','));
+  return _tsVal;
+}
+/* A value in [0,1) from the track seed, a purpose and a position. The finalise steps are
+   murmur3's; without them the low bits of two adjacent positions stay visibly correlated, and
+   'a new number every beat' would come out as a slow ramp. */
+function hash01(salt, n){
+  let h=(trackSeed() ^ Math.imul(salt|0,0x9E3779B1) ^ Math.imul(n|0,0x85EBCA77))>>>0;
+  h^=h>>>16; h=Math.imul(h,0x7FEB352D); h^=h>>>15; h=Math.imul(h,0x846CA68B); h^=h>>>16;
+  return (h>>>0)/4294967296;
+}
 let beatPhase=0, snapV=0.5, snapAt=-1, sectRand=0.5, barOrigin=0;
 function modUpdate(dt,bpm){
   /* THE LFO CLOCK IS THE GRID'S CLOCK when there is one. `beatPhase += dt*bpm/60` is the same
@@ -4250,10 +4300,22 @@ function modUpdate(dt,bpm){
      place. barOrigin is the last beat the analyser called a downbeat, so SIG.bar crosses zero
      where the music's bar does. It is only ever set from events.downbeats; with no downbeats it
      stays 0 and the bar is as arbitrary as it was, which is the honest fallback. */
-  if(director && isPlaying) beatPhase = beatsAtTime(pos()) - barOrigin;
+  /* FOLLOW THE PLAYHEAD, NOT THE WALL CLOCK -- and `isPlaying` was the wrong test for that.
+     pos() is defined in every state: renderClock during an offline take, pausedAt when stopped,
+     the audio clock when playing. So whenever there IS a director the beat index can be derived,
+     and deriving it is the only version that is both correct and repeatable.
+     WHAT THE OLD CONDITION COST, in the case that matters most: startRender does
+     `renderClock = isPlaying ? pos() : pausedAt`, so a take started from a PAUSED playhead --
+     position the head, press Record, the ordinary way to export a chosen passage -- ran the whole
+     render on the free-running branch. The sample-and-hold's beat grid was then not locked to the
+     music at all, and it started from whatever beatPhase had drifted to during the live preview,
+     so two exports of the same passage disagreed. Measured under export conditions: SIG.snap
+     0.461757 vs 0.804456 across two loads with everything else already identical.
+     The free-running branch stays for the case it was written for: no track, nothing to follow. */
+  if(director) beatPhase = beatsAtTime(pos()) - barOrigin;
   else beatPhase += dt*Math.max(20,bpm)/60;
   const b=Math.floor(beatPhase);
-  if(b!==snapAt){ snapAt=b; snapV=Math.random(); }
+  if(b!==snapAt){ snapAt=b; snapV=hash01(1,b); }   // by BEAT INDEX, so scrubbing back re-rolls the same
   SIG.beat = 0.5+0.5*Math.sin(beatPhase*6.2831853);
   SIG.bar  = 0.5+0.5*Math.sin(beatPhase*6.2831853/4);
   SIG.snap = snapV; SIG.sect = sectRand; SIG.steady = 1;
@@ -4845,16 +4907,18 @@ const VAR ={tilt:0,hue:0};
 const VARi={tilt:0,hue:0};   // the variant's first pole; see the easing in frame()
 const VART={tilt:0,hue:0};
 let lastSecKey='';
-function rerollVariant(){
+function rerollVariant(where){
   // VARPIN neutralises the per-section random variant. It has to exist for the same reason POSE
   // does: the variant changes the FIELD, so it changes how many march steps a frame costs, and
   // two builds timed across separate page loads are otherwise being compared on two different
   // scenes. A frame-time A/B without this is not a comparison. (Learned the hard way: a 73 ms
   // vs 50 ms result that looked like a clean win was two different variants.)
   if(window.VARPIN||location.search.indexOf('varpin')>=0){ VART.tilt=0; VART.hue=0.5; return; }
-  const R=Math.random;
-  VART.tilt=(R()-0.5)*0.5;
-  VART.hue=R();
+  // `where` identifies the SECTION, not the visit: the same section of the same track lands on
+  // the same variant however many times it is played or seeked into. See ONE TRACK, ONE FILM.
+  const w=where|0;
+  VART.tilt=(hash01(2,w)-0.5)*0.5;
+  VART.hue=hash01(3,w);
 }
 /* SEGMENT COUNT, ON SECTION BOUNDARIES, FROM THE MUSIC.
    The reference's most visible motion is not its rotation, it is its DENSITY: over eight seconds
@@ -6699,7 +6763,7 @@ function frame(){
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
     moodTarget=s.palette||MO;
-    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant();
+    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(Math.round(s.t0*1000));
       // requested, not fired: commitReform lands it on the next downbeat. A boundary always gets
       // its change, so the beat budget is reset rather than tested.
       /* A BOUNDARY GETS PRIORITY, NOT A FREE PASS. Resetting the limiter outright let two close
@@ -6737,7 +6801,7 @@ function frame(){
       const beatSec=60/((director&&director.tempo&&director.tempo.bpm)||120);
       if(lastBeatDown && lastBeatT>=s.t0-beatSec*0.25 && lastBeatT<=t+1e-6) commitReform(beatsAtTime(t));
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
-      sectRand=Math.random();                       // the matrix's 'Section step' source
+      sectRand=hash01(4,Math.round(s.t0*1000));     // the matrix's 'Section step' source, per SECTION
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
       /* ONE RUNG PER BOUNDARY, not a jump to wherever the mapping points. The mapping spans the
          whole 2..8 the profiles allow, so two consecutive sections can ask for 3 and then 7 --
