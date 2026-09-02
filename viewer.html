@@ -5958,9 +5958,30 @@ async function loadFile(file){
             }catch(e){ /* a dropped poll must never fail the analysis */ }
             finally{ inFlight=false; }
           }
+          /* THE EASE MUST NOT BE ABLE TO FINISH, because the estimate it eases over is regularly
+             short and a bar that has arrived is a bar that has stopped. The old curve was
+             1-(1-k)^2 over k=min(1, el/eta): it reaches the stage's end EXACTLY at the announced
+             time and then sits there for however long the stage actually takes.
+
+             MEASURED on the running viewer, sampling #statFill through a 3-minute analysis: the
+             bar reached 96.1% after 3.28s of a 6.24s wait and did not move again for 2.96s --
+             47% of the whole wait spent frozen, and it never reached 100 at all. The cause is
+             upstream: harmonic/percussive is announced at 1.58s and takes 5.02s here (the other
+             stages are over-announced by the same factor in the other direction, which is why
+             the first half races). The weights are ratios measured on one track, and how much
+             work the non-HPSS stages do depends on the material, so they cannot be right for
+             everything -- which means the client has to stay honest when they are wrong.
+
+             x/(x+1) never reaches 1, so there is always somewhere left to go and the bar always
+             moves. At the announced time it is 75% of the way across the stage; at twice that
+             86%, at three times 90%, at ten times 97%. THE TRADE, stated rather than hidden: when
+             the estimate is RIGHT the bar is at 75% of the stage's span when the stage ends, and
+             the last quarter arrives as a step at the stage change. A forward step reads as
+             progress. A stationary bar reads as a hang, and this file has the number for how long
+             that hang was. */
           const el=(performance.now()-stageT0)/1000;
-          const k=seen.eta>0 ? Math.min(1, el/seen.eta) : 1;
-          const eased=seen.p + (seen.next-seen.p)*(1-Math.pow(1-k,2));   // decelerates into the end
+          const x=seen.eta>0 ? 3*el/seen.eta : 1e9;
+          const eased=seen.p + (seen.next-seen.p)*(x/(x+1));
           // Monotonic by construction, belt as well as braces: a progress bar that retreats reads
           // as a fault even when the number behind it is correct.
           shown=Math.max(shown, UPLOAD_SHARE + eased*(1-UPLOAD_SHARE));
