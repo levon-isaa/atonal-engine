@@ -327,6 +327,7 @@ class H(BaseHTTPRequestHandler):
         ext = os.path.splitext(name)[1] or ".mp3"
         tmp = None
         charged = None            # (key, attempt-ref) once a credit has been taken
+        freed = None              # (ip, day) once a FREE take has been recorded
         try:
             data = self.rfile.read(n)
             # Cache on the CONTENT, not the filename: the same track renamed is the same
@@ -366,6 +367,7 @@ class H(BaseHTTPRequestHandler):
                                  f"{'track' if billing.FREE_PER_DAY == 1 else 'tracks'} for today. "
                                  f"A credit unlocks the next one.",
                         "code": "free_used"})
+                freed = (self._ip(), billing.utc_day())
             fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
             with os.fdopen(fd, "wb") as fp: fp.write(data)
             del data                                     # drop the upload copy before analysis allocates
@@ -386,9 +388,13 @@ class H(BaseHTTPRequestHandler):
             self._json(200, d)
             print(f"[done] {name}: {secs} sections, genre={genre} bpm={bpm}", flush=True)
         except Exception as e:
-            # A crash on our side must never cost the customer a credit.
+            # A crash on our side must never cost the customer a credit -- and that has to
+            # include the ones who have not paid yet, which for a long time it did not. The free
+            # branch below is the same promise as the ledger refund above it; see free_refund.
             if charged:
                 billing.refund(charged[0], "refund: analysis failed", "rf:" + charged[1])
+            elif freed:
+                billing.free_refund(*freed)
             traceback.print_exc()                        # full detail to the server log...
             # ...but never to the client: the raw exception carried absolute filesystem paths
             # and the full ffmpeg command line.

@@ -208,10 +208,17 @@ def refund(key: str, reason: str, ref: str):
 
 # ---------------------------------------------------------------- free tier
 
+def utc_day() -> str:
+    """The day free_use is bucketed by. Exposed so a caller can record which day it
+    took from and hand the same one back to free_refund — a take at 23:59:59 and the
+    failure that follows it must not credit tomorrow."""
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
 def free_take(ip: str) -> bool:
     """One free analysis for this IP today, if any are left."""
     init()
-    day = time.strftime("%Y-%m-%d", time.gmtime())
+    day = utc_day()
     with _conn() as c:
         try:
             c.execute("BEGIN IMMEDIATE")
@@ -229,9 +236,30 @@ def free_take(ip: str) -> bool:
             raise
 
 
+def free_refund(ip: str, day: str) -> None:
+    """Give a free analysis back, for the same reason `refund` gives a credit back.
+
+    THE PROMISE WAS ONLY BEING KEPT FOR PEOPLE WHO PAID. refund() above says a crash
+    on our side must never cost the customer, and the analyse path called it — but only
+    on the branch where a KEY was charged. A free upload that failed to decode took the
+    day's allowance and never gave it back, so the person most likely to be evaluating
+    the product lost their try to a file we could not read, and could not try another
+    until tomorrow. Verified against the running server before this existed: reset the
+    counter to 0, POST an undecodable body, get 500 "could not decode audio", and the
+    counter reads 1.
+
+    Floored at zero and scoped to the day the take was recorded against, so a double
+    call cannot mint allowance and a refund that crosses UTC midnight cannot credit a
+    day that was never charged.
+    """
+    init()
+    with _conn() as c:
+        c.execute("UPDATE free_use SET n=MAX(0,n-1) WHERE ip=? AND day=?", (ip, day))
+
+
 def free_left(ip: str) -> int:
     init()
-    day = time.strftime("%Y-%m-%d", time.gmtime())
+    day = utc_day()
     with _conn() as c:
         row = c.execute("SELECT n FROM free_use WHERE ip=? AND day=?", (ip, day)).fetchone()
     return max(0, FREE_PER_DAY - (int(row[0]) if row else 0))
