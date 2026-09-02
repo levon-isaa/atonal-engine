@@ -466,6 +466,19 @@ const RKEY = (function(){
   return {get,set};
 })();
 window.RKEY=RKEY;
+
+/* The server's length limit, as this page last learned it. Not a setting and not a copy of the
+   server's number -- a cache of the last 413, so an over-long file can be refused before it is
+   uploaded rather than after. Empty until the first refusal, which is the honest state: the
+   limit is configurable server-side and guessing it here would eventually refuse a track the
+   server would have accepted. Read in loadFile, written from the 413 handler. */
+const MAXMIN = (function(){
+  const K='atonal.maxmin';
+  const get = ()=>{ try{ const v=parseFloat(localStorage.getItem(K)); return v>0?v:0; }catch(e){ return 0; } };
+  const set = v=>{ try{ localStorage.setItem(K, String(v)); }catch(e){} };
+  return {get,set};
+})();
+window.MAXMIN=MAXMIN;
 const $=id=>document.getElementById(id);
 window.__errs=[];
 function __showErr(m){ let d=document.getElementById('__err'); if(!d){ d=document.createElement('div'); d.id='__err';
@@ -5903,6 +5916,21 @@ async function loadFile(file){
   let buf;
   try{ buf=await file.arrayBuffer(); audioBuffer=await ctx.decodeAudioData(buf.slice(0)); }
   catch(e){ showStat('Could not decode audio',true); hideStat(2600); return; }
+  /* THE LENGTH LIMIT IS CHECKED HERE TOO, and here it costs no upload at all.
+     The server refuses a track over ATONAL_MAX_MINUTES -- analysis is 0.036s and 4.95 MB of RSS
+     per SECOND of audio, so an hour-long set is 19 GB and blocks every other customer behind the
+     single analysis slot. It refuses cheaply, before charging, but it can only refuse a file it
+     has already received: at 300MB that is minutes of someone's upstream spent to be told no.
+     We already know the answer -- decodeAudioData just gave us the exact duration -- so once the
+     limit is known, ask locally and never send the file.
+     LEARNED FROM THE SERVER'S OWN 413 rather than hard-coded or fetched at startup: the limit is
+     configurable and this page must not carry a second copy of it that can drift. Unknown on a
+     first run, which costs one upload and is then right for every file after. */
+  if(MAXMIN.get() && audioBuffer.duration > MAXMIN.get()*60){
+    showStat('That track is '+(audioBuffer.duration/60).toFixed(0)+' minutes long and the limit is '
+      +MAXMIN.get()+'. Trim it, or split it into parts and analyse those.',true);
+    hideStat(9000); $('drop').style.display=''; return;
+  }
   // ---- upload + analyse, with a real progress bar ----
   // The bar is driven by two different real signals, not by a timer pretending to be one:
   // the upload leg comes from XHR's own byte counter, and the analysis leg from the server,
@@ -6006,6 +6034,8 @@ async function loadFile(file){
                  ? '  That render key was not recognised.'
                  : '  Credits are at site/pricing.html; set one with RKEY.set(\'atk_...\').';
             }
+            // Remember the limit so the next over-long file is refused before it is uploaded.
+            if(xhr.status===413 && j.code==='too_long' && j.limit_minutes>0) MAXMIN.set(j.limit_minutes);
           }catch(e){}
           reject(new Error(m));
         }

@@ -53,9 +53,11 @@ def _progress_clear(job):
 PORT = int(os.environ.get("ATONAL_PORT", "8770"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, "out", "cache")
-# A whole track is read into memory before analysis, so this is the real ceiling on a request.
-# 300MB covers a long lossless file with room to spare; without a cap a bad or hostile request
-# can drive the process into swap.
+# The ceiling on the TRANSFER. It is not the ceiling on the work, which this comment used to
+# claim it was: analysis cost is linear in seconds of audio and has no term in file size, so
+# 300 MB of 128 kbps mp3 is five hours and about 94 GB. That is analyze.MAX_SECONDS' job now;
+# see the measurements above it. This number still earns its place -- the body is read into
+# memory in one call below, on a thread per request -- it just bounds a different thing.
 MAX_UPLOAD = 300 * 1024 * 1024
 
 
@@ -165,6 +167,22 @@ class H(BaseHTTPRequestHandler):
                 self._json(400, {"error": "could not confirm that purchase"})
             return True
         return False
+
+    @staticmethod
+    def _too_long(seconds):
+        """One wording, whether the probe caught it or the backstop did.
+
+        It names the track's own length as well as the limit, because "too long" without a
+        number leaves the customer guessing which of their files is the problem, and it says
+        nothing was charged, because that is the first thing anyone who has paid will wonder.
+        """
+        lim = analyze.MAX_SECONDS
+        return {"error": f"That track is {seconds/60:.0f} minutes long and the limit is "
+                         f"{lim/60:.0f}. Trim it, or split it into parts and analyse those. "
+                         f"Nothing was charged for this.",
+                "code": "too_long",
+                "minutes": round(seconds / 60.0, 1),
+                "limit_minutes": round(lim / 60.0, 1)}
 
     def _body(self, cap=1 << 20):
         try:
@@ -346,6 +364,26 @@ class H(BaseHTTPRequestHandler):
                 print(f"[cache] {name} -> {digest[:12]}", flush=True)
                 del data
                 return self._json(200, hit)
+            # Written HERE, above the gate, and that ordering is the point: ffmpeg needs a
+            # path to read a header from, and the length check below has to happen before a
+            # credit is taken. Writing a temp file is bounded by MAX_UPLOAD and costs a disk
+            # write we were going to do anyway.
+            fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
+            with os.fdopen(fd, "wb") as fp: fp.write(data)
+            del data                                     # drop the upload copy before analysis allocates
+            # ---- THE LENGTH CHECK ----
+            # ABOVE THE GATE, because a track we refuse is a track nobody should pay for. It
+            # costs ~11ms (analyze.probe_duration reads the container header and stops), against
+            # an analysis that is 0.036s and 4.95 MB of RSS for every second of audio -- so a
+            # five-hour upload that would have taken the process down is now a 413 with a
+            # sentence the customer can act on, and their credit is untouched.
+            secs = analyze.probe_duration(tmp)
+            if secs is not None and secs > analyze.MAX_SECONDS:
+                # Logged like every other outcome. A refusal is a thing an operator needs to be
+                # able to see -- if the cap is set too low, the only evidence is these lines.
+                print(f"[too long] {name}: {secs/60:.1f} min "
+                      f"(limit {analyze.MAX_SECONDS/60:.0f})", flush=True)
+                return self._json(413, self._too_long(secs))
             # ---- THE GATE ----
             # Below the cache check on purpose: a cache hit does no work, so
             # charging for it would be charging for a dictionary lookup. Above
@@ -356,27 +394,21 @@ class H(BaseHTTPRequestHandler):
             attempt = digest[:16] + ":" + secrets.token_hex(6)
             if key:
                 if not billing.key_exists(key):
-                    del data
                     return self._json(402, {"error": "That render key is not recognised.",
                                             "code": "bad_key"})
                 if not billing.spend(key, "analyze " + name[:60], "an:" + attempt):
-                    del data
                     return self._json(402, {"error": "No credits left on this key.",
                                             "code": "no_credits", "balance": 0})
                 charged = (key, attempt)
             else:
                 if not billing.free_take(self._ip()):
-                    del data
                     return self._json(402, {
                         "error": f"That is your free "
                                  f"{'track' if billing.FREE_PER_DAY == 1 else 'tracks'} for today. "
                                  f"A credit unlocks the next one.",
                         "code": "free_used"})
                 freed = (self._ip(), billing.utc_day())
-            fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
-            with os.fdopen(fd, "wb") as fp: fp.write(data)
-            del data                                     # drop the upload copy before analysis allocates
-            print(f"[analyze] {name} ({n/1024:.0f} KB)", flush=True)
+            print(f"[analyze] {name} ({n/1024:.0f} KB{'' if secs is None else f', {secs/60:.1f} min'})", flush=True)
             _progress_set(job, {"stage": "queued", "p": 0.0, "next": 0.0, "eta": 0.0})
             with _ANALYSIS:
                 d = analyze.build_director(tmp, progress=lambda pr: _progress_set(job, pr))
@@ -392,6 +424,17 @@ class H(BaseHTTPRequestHandler):
             bpm = (d.get("tempo") or {}).get("bpm", "?")
             self._json(200, d)
             print(f"[done] {name}: {secs} sections, genre={genre} bpm={bpm}", flush=True)
+        except analyze.TooLong as e:
+            # The probe above catches this before the gate; this is the backstop firing, for a
+            # container whose header did not carry a duration. Same answer, same refund -- what
+            # must not happen is that it arrives as the generic "analysis failed", which tells a
+            # customer nothing and reads as our fault rather than a limit they can work around.
+            if charged:
+                billing.refund(charged[0], "refund: over the length limit", "rf:" + charged[1])
+            elif freed:
+                billing.free_refund(*freed)
+            print(f"[too long] {name}: {e}", flush=True)
+            self._json(413, self._too_long(e.seconds))
         except Exception as e:
             # A crash on our side must never cost the customer a credit -- and that has to
             # include the ones who have not paid yet, which for a long time it did not. The free

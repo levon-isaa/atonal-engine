@@ -28,6 +28,76 @@ SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
 DIRECTOR_FPS = 30     # continuous-curve output rate
 
+# ------------------------------------------------------------------ THE REAL CEILING
+# COST FOLLOWS SECONDS OF AUDIO, NOT BYTES OF UPLOAD, and until this existed the only limit
+# was a byte count. MEASURED on this machine, one analysis per fresh process:
+#
+#       audio     wall     peak RSS
+#         20s     3.51s      1588 MB
+#         80s     5.01s      2198 MB
+#        320s    13.76s      3486 MB
+#        640s    25.81s      4656 MB
+#
+# Both are linear in DURATION: 1495 MB fixed (the PANNs model and the libraries) plus
+# 4.95 MB and 0.036 s for every second of audio. Neither has any term in file size.
+#
+# server.py caps the upload at 300 MB, and its comment reasons from "a whole track is read
+# into memory", which is right -- but a byte cap only bounds duration for LOSSLESS audio.
+# A 128 kbps MP3 carries 16 KB per second (measured: 10.2 MB for 640 s), so 300 MB of it is
+# 5 hours 12 minutes -- and at the rates above that is ~94 GB of RSS and 11 minutes of
+# analysis. The process dies, and because server.py serialises analysis behind a single
+# semaphore it takes every other customer's request down with it.
+#
+# It is not only the hostile case. A one-hour DJ set is an entirely reasonable thing to try:
+# 19 GB and 2.2 minutes, during which nobody else can analyse anything.
+#
+# So the cap is on duration, it is checked from the container header in ~11 ms (see
+# probe_duration), and server.py checks it BEFORE taking a credit -- a track we refuse is
+# a track nobody should pay for.
+MAX_MINUTES = float(os.environ.get("ATONAL_MAX_MINUTES", "20"))
+MAX_SECONDS = MAX_MINUTES * 60.0
+
+
+class TooLong(ValueError):
+    """Raised instead of analysing something that would cost more than we allow.
+
+    Carries the numbers so the caller can say which track and by how much, rather than
+    the generic failure the customer would otherwise see.
+    """
+    def __init__(self, seconds, limit=None):
+        self.seconds = float(seconds)
+        self.limit = float(limit if limit is not None else MAX_SECONDS)
+        super().__init__("audio is %.1f min; the limit is %.1f min"
+                         % (self.seconds / 60.0, self.limit / 60.0))
+
+
+def probe_duration(path):
+    """Seconds of audio in `path`, or None when the container will not say.
+
+    ffmpeg with no output file reads the header and exits; measured at 11-18 ms on both a
+    56 MB wav and a 10 MB mp3, against a 350-440 ms full decode of the same files. Cheap
+    enough to run before anything is charged.
+
+    None is a real answer, not a failure: some streams carry no duration in the header. The
+    backstop in load_audio covers that case exactly, after the decode and before the arrays.
+    """
+    import imageio_ffmpeg
+    try:
+        r = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-i", path],
+                           capture_output=True, timeout=30)
+    except Exception:
+        return None
+    for line in r.stderr.decode("utf-8", "replace").splitlines():
+        i = line.find("Duration:")
+        if i < 0:
+            continue
+        try:
+            h, m, sec = line[i + 9:].split(",")[0].strip().split(":")
+            return int(h) * 3600 + int(m) * 60 + float(sec)
+        except ValueError:
+            return None                  # "N/A", or a shape we do not recognise
+    return None
+
 # ----------------------------------------------------------------------------- IO
 def load_audio(path):
     """Decode anything to mono+stereo float via the bundled ffmpeg, load with soundfile."""
@@ -42,6 +112,15 @@ def load_audio(path):
     try:
         subprocess.run([ff, "-y", "-i", path, "-ac", "2", "-ar", str(SR), "-f", "wav", tmp],
                        check=True, capture_output=True)
+        # THE BACKSTOP FOR THE DURATION CAP, and the reason it is here rather than only in the
+        # caller: probe_duration reads the SOURCE header, which can be absent or wrong, while
+        # this reads the decoded wav and cannot be either. sf.info is a header read -- 0.3 ms
+        # against a 60-90 ms sf.read of the same file -- so it costs nothing to be sure, and it
+        # runs BEFORE the arrays are allocated, which is the whole point: at 5 hours the read
+        # below is 3.3 GB of float32 in one call.
+        info = sf.info(tmp)
+        if info.samplerate and info.frames / float(info.samplerate) > MAX_SECONDS:
+            raise TooLong(info.frames / float(info.samplerate))
         data, sr = sf.read(tmp, dtype="float32", always_2d=True)   # (n, ch)
     finally:
         # ran only on success before, so every failed decode left a full-length wav behind —
