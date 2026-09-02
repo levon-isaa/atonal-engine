@@ -20,6 +20,98 @@ import analyze, tagger, billing
 # concurrent requests do not run twice as fast, they thrash and can exhaust memory.
 _ANALYSIS = threading.Semaphore(1)
 
+# ------------------------------------------------------------------ WAITING IS NOT ANALYSING
+# A second customer arriving during someone else's analysis blocks on the semaphore above, and
+# for as long as that lasts the only thing their page was told was {"stage": "queued", "p": 0,
+# "next": 0, "eta": 0}. The client strips "queued" from its label, so it read "Analysing..."
+# with the bar parked at the upload share and no way to move -- the exact frozen bar the ease
+# in viewer.html exists to prevent, except here nothing was happening at all.
+#
+# MEASURED, two 25s uploads 0.9s apart against this server: the second sat in that state for
+# 2.5s of a 3.7s request. On real material the wait is the whole of the other track's analysis,
+# and with a 20-minute cap that is up to 46 seconds of a page that looks hung.
+#
+# So say what is true: waiting, how many are in front, and for roughly how long. The estimate
+# uses the duration the length probe already measured, at a rate that starts from the numbers in
+# analyze.py's comment and then calibrates itself to whatever machine this is -- the same thing
+# analyze.Progress does with its own totals, and for the same reason.
+_QLOCK = threading.Lock()
+_WAITING = []                # _Slot objects blocked on _ANALYSIS, in arrival order
+_RUNNING = None              # (started_at, audio_seconds) of the one holding it
+_EST_FIXED = 2.8             # imports and the PANNs checkpoint: constant per analysis
+_EST_RATE = 0.036            # wall seconds per second of audio (measured: 3.51s at 20s, 25.81s at 640s)
+
+
+def _est(secs):
+    return _EST_FIXED + _EST_RATE * max(0.0, secs or 0.0)
+
+
+def _est_observe(audio_secs, wall):
+    """Pull the rate towards what this machine actually just did. Guarded on both sides
+    because one absurd sample -- a swapping box, a clock jump -- must not poison every
+    estimate after it."""
+    global _EST_RATE
+    if not audio_secs or audio_secs < 20 or wall <= _EST_FIXED:
+        return
+    r = (wall - _EST_FIXED) / audio_secs
+    if 0.002 < r < 1.0:
+        with _QLOCK:
+            _EST_RATE += (r - _EST_RATE) * 0.3
+
+
+class _Slot:
+    """The analysis slot, taken as a context manager so the wait for it can report itself.
+
+    Nothing here changes what is serialised or for how long -- one analysis at a time is the
+    right answer and stays. What changes is that the queue is visible from outside it.
+    """
+
+    def __init__(self, job, secs):
+        self.job, self.secs = job, secs
+
+    def _say_waiting(self):
+        with _QLOCK:
+            try:
+                pos = _WAITING.index(self)
+            except ValueError:
+                pos = 0
+            ahead = [w.secs for w in _WAITING[:pos]]
+            run = _RUNNING
+        wait = sum(_est(s) for s in ahead)
+        if run:
+            wait += max(0.0, _est(run[1]) - (time.time() - run[0]))
+        _progress_set(self.job, {"stage": "waiting", "p": 0.0, "next": 0.0,
+                                 "eta": round(wait, 1), "ahead": pos + (1 if run else 0)})
+
+    def __enter__(self):
+        # Non-blocking first, so the common case -- nobody else here -- never flashes a
+        # "waiting" state it is not in.
+        if not _ANALYSIS.acquire(blocking=False):
+            with _QLOCK:
+                _WAITING.append(self)
+            try:
+                self._say_waiting()
+                while not _ANALYSIS.acquire(timeout=0.4):
+                    self._say_waiting()
+            finally:
+                with _QLOCK:
+                    if self in _WAITING:
+                        _WAITING.remove(self)
+        global _RUNNING
+        with _QLOCK:
+            _RUNNING = (time.time(), self.secs)
+        self.t0 = time.time()
+        return self
+
+    def __exit__(self, *exc):
+        global _RUNNING
+        with _QLOCK:
+            _RUNNING = None
+        _ANALYSIS.release()
+        if exc[0] is None:
+            _est_observe(self.secs, time.time() - self.t0)
+        return False
+
 # Progress is reported on a SIDE CHANNEL rather than by streaming the response, so POST /analyze
 # keeps its existing contract: one request, one director.json, no chunk parsing on the client.
 # The analysis thread writes here and the polling GET reads it.
@@ -410,7 +502,7 @@ class H(BaseHTTPRequestHandler):
                 freed = (self._ip(), billing.utc_day())
             print(f"[analyze] {name} ({n/1024:.0f} KB{'' if secs is None else f', {secs/60:.1f} min'})", flush=True)
             _progress_set(job, {"stage": "queued", "p": 0.0, "next": 0.0, "eta": 0.0})
-            with _ANALYSIS:
+            with _Slot(job, secs):
                 d = analyze.build_director(tmp, progress=lambda pr: _progress_set(job, pr))
             cache_put(digest, d)
             # Built defensively and BEFORE the response. This used to index d['sections'],

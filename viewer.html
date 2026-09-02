@@ -5962,6 +5962,7 @@ async function loadFile(file){
         if(e.lengthComputable) setProg((e.loaded/e.total)*UPLOAD_SHARE,'Uploading…');
       };
       xhr.upload.onload = ()=>{
+        shown=UPLOAD_SHARE;            // the analysis leg starts here, and never below it
         setProg(UPLOAD_SHARE,'Analysing…');
         // Poll the side channel. The server reports where each stage STARTS and ENDS and how long
         // it expects to take, and the client eases between the two — the single longest stage
@@ -6007,13 +6008,28 @@ async function loadFile(file){
              the last quarter arrives as a step at the stage change. A forward step reads as
              progress. A stationary bar reads as a hang, and this file has the number for how long
              that hang was. */
-          const el=(performance.now()-stageT0)/1000;
-          const x=seen.eta>0 ? 3*el/seen.eta : 1e9;
-          const eased=seen.p + (seen.next-seen.p)*(x/(x+1));
-          // Monotonic by construction, belt as well as braces: a progress bar that retreats reads
-          // as a fault even when the number behind it is correct.
-          shown=Math.max(shown, UPLOAD_SHARE + eased*(1-UPLOAD_SHARE));
-          setProg(shown,'Analysing'+(seen.stage&&seen.stage!=='queued'?' — '+seen.stage:'')+'…');
+          /* WAITING IS NOT ANALYSING, AND THE BAR MUST NOT PRETEND OTHERWISE.
+             The server runs one analysis at a time, so a second upload arriving during someone
+             else's blocks. It used to report that as stage "queued", which this label stripped,
+             leaving "Analysing…" over a bar that could not move because nothing was being
+             analysed -- a hang, by every signal the page gives. The server now says how many
+             tracks are in front and roughly how long they will take; the countdown is the proof
+             of life the bar cannot be, so the bar HOLDS at the upload share rather than creeping
+             through a stage that has not begun. It moves when the work does. */
+          if(seen.stage==='waiting'){
+            const n=seen.ahead|0, w=Math.max(0,Math.round(seen.eta||0));
+            setProg(shown, n<1 ? 'Waiting for the analyser…'
+              : 'Waiting — '+(n===1?'1 track':n+' tracks')+' ahead of yours'
+                +(w>0?', about '+fmt(w):'')+'…');
+          } else {
+            const el=(performance.now()-stageT0)/1000;
+            const x=seen.eta>0 ? 3*el/seen.eta : 1e9;
+            const eased=seen.p + (seen.next-seen.p)*(x/(x+1));
+            // Monotonic by construction, belt as well as braces: a progress bar that retreats reads
+            // as a fault even when the number behind it is correct.
+            shown=Math.max(shown, UPLOAD_SHARE + eased*(1-UPLOAD_SHARE));
+            setProg(shown,'Analysing'+(seen.stage&&seen.stage!=='queued'?' — '+seen.stage:'')+'…');
+          }
         },300);
       };
       xhr.onload = ()=>{
