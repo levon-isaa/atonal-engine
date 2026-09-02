@@ -4810,6 +4810,7 @@ function motionPeriodsFor(s){
    state it was left in rather than one that was fixed. wob goes with them: the shader term it
    fed was removed with the trembling. What is left is the two that do something. */
 const VAR ={tilt:0,hue:0};
+const VARi={tilt:0,hue:0};   // the variant's first pole; see the easing in frame()
 const VART={tilt:0,hue:0};
 let lastSecKey='';
 function rerollVariant(){
@@ -6051,7 +6052,7 @@ const sm=(a,b,r,dt)=>a+(b-a)*(1-Math.exp(-r*dt));
    -- the factor that makes a two-pole reach 90% exactly when the one-pole it replaces did. Kept
    as the arithmetic rather than as two magic numbers so the old rates stay legible: they are
    still 0.55 and 0.45. See the easing in frame(). */
-const CAM_W=0.55*1.689, CAM_WS=0.45*1.689, MOOD_W=1.6*1.689;
+const CAM_W=0.55*1.689, CAM_WS=0.45*1.689, MOOD_W=1.6*1.689, VAR_W=1.0*1.689;
 /* VISUAL STATE — the single multidimensional vector the renderer consumes. Everything above
    this line is interpretation; everything below only ever reads VS. Each dimension is
    critically-damped SPRING interpolated rather than exponentially smoothed: a spring carries
@@ -6631,7 +6632,15 @@ function frame(){
   } else if(director){ $('next').textContent='—'; }
   // ease shape params (slower = smoother morphs between sections)
   for(const k in SH) SH[k]=sm(SH[k],compTarget[k],1.1,dt);
-  for(const k in VAR) VAR[k]=sm(VAR[k],VART[k],1.0,dt);
+  /* THE VARIANT EASES IN TWO POLES TOO -- same defect, and this one moves the FORM. VAR.tilt is
+     added straight onto u_tilt, so it is the object's own lean, and rerollVariant() redraws it
+     from a fresh uniform at every section boundary: tilt over a 0.5 range, hue over the whole
+     unit interval. Two uniform draws differ by a third of their range on average, so the
+     expected step is 0.167 in tilt and 0.333 in hue, and a one-pole at r=1.0 answers those with
+     0.167 rad/s and 0.333/s on the first frame from a standstill. The lean does not start
+     turning, it is already turning. w = 1.689r keeps 90% at the 2.30s it reached before. */
+  { const k=1-Math.exp(-VAR_W*dt);
+    for(const kk in VAR){ VARi[kk]+=(VART[kk]-VARi[kk])*k; VAR[kk]+=(VARi[kk]-VAR[kk])*k; } }
   for(const k in MAT) MAT[k]=sm(MAT[k],MATT[k],2.5,dt);
   for(const k in FIN) FIN[k]=sm(FIN[k],FINT[k],2.5,dt);
   for(const k in LK) LK[k]=sm(LK[k],LKT[k],3.0,dt);
@@ -6767,24 +6776,33 @@ function frame(){
      0.55 -> 0.929 and 0.45 -> 0.760. Measured on the isolated step, t90 went 4.02s -> 4.13s: the
      move still takes the time it took.
 
-     THE RESULT, pooled over three tracks played end to end, both builds at a matched 49fps, with
-     the target step located exactly rather than guessed at -- the first two attempts to find it
-     from the section times alone were off by visLead and measured ordinary motion instead, and
-     both were wrong before this was right. Median one-frame velocity jump at a target step:
+     THE RESULT, pooled over whole tracks played end to end, both builds at a matched 49fps, and
+     EVERY FIGURE DIVIDED BY THE SIZE OF THE TARGET STEP. That normalisation is not decoration:
+     the size of a boundary's step is set by which two presets the analyser happened to pick, and
+     the two arms do not sample the same ones. Without it the median camera step was 1.00 in one
+     arm and 1.80 in the other, and the peak velocity came out 14% WORSE -- a result that was
+     written down here as an honest mixed finding and was purely the confound. Per unit of step:
 
-                    one-pole   two-pole
-         CM.dist      0.364      0.047     -87%
-         CM.fov       0.037      0.004     -89%
-         MO[0]        0.391      0.088     -77%
+                    one-frame jump        peak |v|
+                    one-pole  two-pole    one-pole  two-pole
+         CM.dist      0.364     0.028       0.545     0.346
+         CM.fov       0.365     0.028       0.545     0.346
+         MO[0]        1.037     0.266       1.555     1.002
+         VAR.tilt     0.649     0.093       0.981     0.628
+         VAR.hue      0.658     0.093       0.981     0.628
 
-     ON THE PEAK VELOCITY THE RESULT IS MIXED, AND THAT IS THE HONEST VERSION. Theory says the
-     peak should fall to w/e against the one-pole's r -- 0.342 against 0.550 -- and on a clean
-     isolated step it does: 0.981 -> 0.625. Across real tracks the median peak for CM.dist went
-     the other way, 0.545 -> 0.620 (+14%), because boundaries arrive about every 12s against a
-     4.1s settle, so the second pole is still carrying residual from the last move when the next
-     one starts and has further to travel. The palette, which has more headroom, does show the
-     predicted drop (0.551 -> 0.329). So this buys the ONSET, unambiguously, and does not
-     reliably buy the peak. The onset is the half the eye reads. */
+     So the onset falls by 74-92% and the peak by 36-37% -- and 0.628 against a predicted w/e of
+     0.621 is the closed form to within 1%, on twelve rerolls, which is the check that the thing
+     measured is the thing intended. (The one-pole's jump per step reads 0.36-0.66 rather than
+     the theoretical 1.0 because at 50fps the step lands mid-frame and the first sample is a
+     partial one; the ratio between the arms is unaffected.)
+
+     ONE MORE DEAD END, since it cost two wrong answers: locating the target step from
+     director.sections times is off by visLead, several frames, and measures ordinary motion
+     instead -- it reported this change as a REGRESSION twice. Call currentSection(pos()+visLead())
+     inside the probe's own rAF and watch the returned preset name change. And a downsampled
+     full-frame pixel difference sees none of this at all: it alternates between ~3.2 and ~0.44
+     whatever the camera does, because the capture sometimes grabs one frame twice. */
   { const kc=1-Math.exp(-CAM_W*dt), ks=1-Math.exp(-CAM_WS*dt);
     CMi.dist  +=(camTarget.dist  -CMi.dist  )*kc;  CM.dist  +=(CMi.dist  -CM.dist  )*kc;
     CMi.height+=(camTarget.height-CMi.height)*kc;  CM.height+=(CMi.height-CM.height)*kc;
