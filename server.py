@@ -154,7 +154,12 @@ class H(BaseHTTPRequestHandler):
             if not billing.billing_ready():
                 self._json(503, {"error": "billing is not configured"}); return True
             try:
-                self._json(200, billing.claim(sid))
+                # The key the BROWSER already holds, if any, in a header rather than the query
+                # string -- it is a bearer credential and a query string reaches access logs and
+                # Referer headers. It is only ever compared against a hash here, never stored;
+                # see the note in billing.claim.
+                have = (self.headers.get("X-Render-Key") or "").strip() or None
+                self._json(200, billing.claim(sid, have_key=have))
             except Exception as e:
                 traceback.print_exc()
                 self._json(400, {"error": "could not confirm that purchase"})

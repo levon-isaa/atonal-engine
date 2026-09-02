@@ -386,9 +386,12 @@ def _grant_for_session(txn) -> dict:
     if not sid:
         raise ValueError("transaction has no id")
     with _conn() as c:
-        row = c.execute("SELECT key_plain, credits FROM claims WHERE session_id=?", (sid,)).fetchone()
+        row = c.execute("SELECT key_plain, credits, key_hash FROM claims WHERE session_id=?",
+                        (sid,)).fetchone()
     if row:
-        return {"key": row[0], "credits": int(row[1]), "fresh": False}
+        # key_hash comes back with it so claim() can confirm a key the CLIENT already holds
+        # when key_plain has been wiped; it is popped before anything is sent.
+        return {"key": row[0], "credits": int(row[1]), "fresh": False, "key_hash": row[2]}
 
     custom = txn.get("custom_data") or {}
     try:
@@ -425,10 +428,10 @@ def _grant_for_session(txn) -> dict:
     with _conn() as c:
         c.execute("INSERT OR REPLACE INTO claims(session_id,key_plain,key_hash,credits,created)"
                   " VALUES(?,?,?,?,?)", (sid, key_plain, key_hash, credits, time.time()))
-    return {"key": key_plain, "credits": credits, "fresh": True}
+    return {"key": key_plain, "credits": credits, "fresh": True, "key_hash": key_hash}
 
 
-def claim(session_id: str) -> dict:
+def claim(session_id: str, have_key: str = None) -> dict:
     """Called by the success page with the _ptxn Paddle put in the return URL.
 
     It re-reads the transaction FROM PADDLE rather than trusting the query
@@ -448,8 +451,38 @@ def claim(session_id: str) -> dict:
     if txn.get("status") not in ("completed", "paid"):
         return {"error": "not paid"}
     out = _grant_for_session(txn)
+    kh = out.pop("key_hash", None)          # never sent to the client; only compared here
+    if kh:
+        with _conn() as c:
+            out["balance"] = int((c.execute(
+                "SELECT COALESCE(SUM(delta),0) FROM ledger WHERE key_hash=?", (kh,)
+            ).fetchone() or [0])[0] or 0)
+    # A REPEAT PURCHASE USED TO END ON THE ERROR PAGE. The plaintext key is wiped after CLAIM_TTL,
+    # deliberately, so the database holds nothing that can spend credits. A returning customer's
+    # second pack therefore tops up their EXISTING key_hash -- correctly, the credits land -- and
+    # then had no plaintext to show, so claim() returned an error and the success page told
+    # someone who had just paid to reply to their receipt and wait for support.
+    #
+    # REPRODUCED END TO END against a temp database: purchase, age the claim past the TTL, purchase
+    # again with the same email. Balance on the original key goes 10 -> 20 and claim() returns
+    # {"error": "key no longer retrievable"}. The money was always right; the page was wrong, on
+    # the most ordinary path a paying customer has.
+    #
+    # TWO ANSWERS, IN ORDER. If the browser still holds the key -- and it does on the machine the
+    # first purchase was made from, because the success page saved it there -- it can send it and
+    # we CONFIRM rather than reveal: hash what arrived, compare, hand the same string back. The
+    # server learns nothing it did not already have and stores nothing new, so the "holds nothing
+    # usable" property above is untouched; the customer is told that the key they already have is
+    # the one that just gained credits.
+    #
+    # Failing that, this is still not an error. The purchase succeeded, the credits exist and the
+    # balance is known, so say so and let the page render a top-up rather than a fault.
     if not out.get("key"):
-        return {"error": "key no longer retrievable", "credits": out.get("credits", 0)}
+        if have_key and kh and secrets.compare_digest(_hash(have_key), kh):
+            out["key"] = have_key
+            out["restored"] = True          # confirmed from the client's own copy, not from ours
+        else:
+            out["topped_up"] = True         # paid, credited, key issued on an earlier purchase
     return out
 
 

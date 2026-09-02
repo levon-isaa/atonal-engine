@@ -93,6 +93,44 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
         </div>
       </div>
 
+      <!-- A TOP-UP IS NOT A FAULT. When a returning customer buys again, the credits go onto the
+           key they already have and there is no new key to hand over -- the plaintext was wiped
+           after the claim window on purpose. This used to fall through to the panel below and
+           tell someone who had just paid to contact support. See billing.claim. -->
+      <div id="topup" class="hide">
+        <span class="pill ok"><i></i><span class="lab on">Payment received</span></span>
+        <h1 style="margin-top:22px">Credits added to your key.</h1>
+        <p class="prose" style="margin-top:16px">This purchase topped up the key you already have,
+          so there is no new one to copy. Keys are shown once and never stored in a form we can
+          read back &mdash; which is why this page cannot print it again, and why nobody else can
+          either.</p>
+
+        <div class="p" style="margin-top:24px">
+          <div class="sh"><span class="ix">CREDITS</span><span class="lab">On your existing key</span><span class="rl"></span></div>
+          <div class="pad">
+            <div class="stat">
+              <div><b id="tuCredits">0</b><span class="lab">Credits added</span></div>
+              <div><b id="tuTotal">&mdash;</b><span class="lab">Balance on that key</span></div>
+              <div><b>&infin;</b><span class="lab">Renders and exports</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="steps">
+          <div><b>01</b><span>If you are on the machine you first bought from, the key is already
+            saved here &mdash; just open the renderer.</span></div>
+          <div><b>02</b><span>Anywhere else, paste the key you saved into the renderer&rsquo;s key
+            field once.</span></div>
+          <div><b>03</b><span>Lost it? Reply to the receipt Paddle emailed you and we will issue a
+            replacement against this purchase.</span></div>
+        </div>
+
+        <div style="display:flex;gap:12px;margin-top:28px;flex-wrap:wrap">
+          <a class="btn" href="../viewer.html">Open the renderer <span class="k">&rarr;</span></a>
+          <a class="btn o" href="./pricing.html">Buy more credits</a>
+        </div>
+      </div>
+
       <div id="fail" class="hide">
         <span class="pill"><i></i><span class="lab on">Something is off</span></span>
         <h1 style="margin-top:22px">We couldn&rsquo;t confirm that.</h1>
@@ -142,12 +180,29 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
 
   if(!sid){ fail('This page needs a checkout transaction to look up, and the link has none.'); return; }
 
-  fetch(API + '/claim?session_id=' + encodeURIComponent(sid))
+  /* The key this browser already holds rides along in a HEADER, not the query string: it is a
+     bearer credential, and query strings reach access logs and Referer headers. The server only
+     ever hashes it and compares -- so on a top-up it can confirm "yes, that is the key that just
+     gained credits" without the database having to hold anything it could reveal. */
+  var held = null;
+  try { held = localStorage.getItem('atonal.key') || null; } catch(e){}
+
+  fetch(API + '/claim?session_id=' + encodeURIComponent(sid),
+        held ? { headers: { 'X-Render-Key': held } } : undefined)
     .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
     .then(function(res){
       var j = res.j || {};
       if(!res.ok || j.error) throw new Error(j.error || 'could not confirm the purchase');
-      if(!j.key) throw new Error('That purchase is confirmed, but the key is past the window where it can be shown again.');
+
+      /* Paid, credited, and the key was issued on an earlier purchase. Nothing is wrong here and
+         the page must not say that it is. */
+      if(!j.key){
+        $('loading').classList.add('hide');
+        $('topup').classList.remove('hide');
+        $('tuCredits').textContent = j.credits;
+        if(j.balance != null) $('tuTotal').textContent = j.balance;
+        return;
+      }
 
       $('loading').classList.add('hide');
       $('done').classList.remove('hide');
@@ -157,10 +212,15 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
       /* Same origin as the renderer, so storing it here is storing it there. */
       try { localStorage.setItem('atonal.key', j.key); } catch(e){}
 
-      fetch(API + '/credits?key=' + encodeURIComponent(j.key))
-        .then(function(r){ return r.json(); })
-        .then(function(c){ $('total').textContent = c.balance != null ? c.balance : j.credits; })
-        .catch(function(){ $('total').textContent = j.credits; });
+      /* claim() already returns the balance for this key, so the extra round trip only has to
+         happen when it did not. */
+      if(j.balance != null){ $('total').textContent = j.balance; }
+      else {
+        fetch(API + '/credits?key=' + encodeURIComponent(j.key))
+          .then(function(r){ return r.json(); })
+          .then(function(c){ $('total').textContent = c.balance != null ? c.balance : j.credits; })
+          .catch(function(){ $('total').textContent = j.credits; });
+      }
 
       var box = $('key');
       function reveal(){ box.classList.remove('blur'); $('revealLab').textContent = 'Visible'; }
