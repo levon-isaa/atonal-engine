@@ -3985,6 +3985,21 @@ const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
    default nobody chose. */
 const CMi={dist:CM.dist,height:CM.height,spin:CM.spin,fov:CM.fov};
 let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
+/* THE BAR PHRASING, added to the three rotation angles at the point they are USED rather than
+   folded into the integration. See the block that computes them in frame(): keeping them as
+   offsets is what makes drift structurally impossible, because an offset returns to zero and an
+   integral does not. Zeroed by the POSE pin, so every A/B in this file still compares one pose. */
+let spinSwing=0, tumbleSwing=0, swirlSwing=0, swingPhi=0;
+let swAmpS=0, swAmpT=0, swAmpW=0;   // the three smoothed amplitudes; see the easing beside them
+const SWING_W=8.0;                  // t90 0.49s
+const BAR_BEATS=4;      // 4/4. Checked, not assumed: across all ten cached analyses the ratio of
+                        // beats to downbeats is 3.88..4.17, so this holds on every track here.
+/* HOW HARD THE BAR PHRASES THE TURN, as a fraction of the turn's own rate. This is the number the
+   removed camera sway did not have: at BAR_SWING the peak swing rate is exactly that multiple of
+   the base rate, whatever the tempo, the ladder rung or flow are doing. Below 1 the turn can
+   never stop and never reverse, which is the property the sway failed. The sway's own ratio,
+   measured after the fact, was 4.4. */
+const BAR_SWING=0.50;   window.BAR_SWING=BAR_SWING;
 /* ---- KALEIDOSCOPE, DRIVEN BY THE TRACK ----
 
    THE FIRST RULE FIRED ON SECTIONS LABELLED "drop" AND NOTHING ELSE, and on most real tracks that
@@ -4717,6 +4732,10 @@ const snapBeats=b=>{ let best=SPIN_BEAT_STEPS[0], err=1e9;
 const RATIO_PAIRS=[[2.5,2],[2,2.5],[3,2],[2,3.5],[2.5,3],[3.5,2.5]];   // [tumble, swirl] as multiples
 const MOTP ={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // live, eased
 let eFlow=null;        // the energy curve's own recent mean -- see `flow` in the frame loop
+let fSm1=1, fSm2=1;    // flow's two poles -- see the smoothing beside it
+/* t90 0.9s. Kills the beat-rate tremble in `flow` and keeps the bar-rate swell it exists for;
+   the arithmetic is beside the smoother. */
+const FLOW_W=4.3;
 let aFlow=1;           // ...and flow's own running mean, which is what re-centres it
 const MOTPT={spin:SPIN_BEATS, tumble:TUMBLE_BEATS, swirl:SWIRL_BEATS};   // target
 function hashAt(x){ return Math.abs(Math.sin(x*127.1+311.7)*43758.5453)%1; }
@@ -6920,7 +6939,31 @@ function frame(){
      fixture that exaggerates the very effect being measured will mislead again otherwise. */
   const fRaw = 1 + (dEf>0 ? dEf*1.15 : dEf*0.55);
   aFlow += (fRaw-aFlow)*(1-Math.exp(-dt/8.0));
-  const flow = Math.max(0.78, Math.min(1.55, fRaw - (aFlow-1)));
+  /* AND IT IS SMOOTHED, BECAUSE IT WAS TREMBLING. The note above says this is "slow enough to be
+     a swell, not a tremble" and backs it with the DISTRIBUTION of dEf -- p10/p90 of -0.31/+0.35.
+     A distribution cannot answer that question. What matters is the STEP, and nobody had looked
+     at it: eFlow and aFlow are both smoothed, but `energy` is sampled raw off the curve every
+     frame, so dEf inherits every bit of that curve's own frame-rate content and hands it
+     straight to the form's turn rate.
+
+     MEASURED, frame to frame, on the 176bpm fixture: flow moved p90 27% and up to 54% of its
+     entire 0.78..1.55 range BETWEEN TWO ADJACENT FRAMES, and reversed direction 2.6 times a
+     second -- against about 1.5/s for the "bar or two" it is described as. That is a tremble by
+     any reading, and it is on the multiplier that sets how fast the form turns.
+
+     HOW MUCH OF THAT IS THE FIXTURE, since this file has been misled by one before: the energy
+     curve's adjacent-sample step, as a share of its range, is p90 0.087..0.118 across the four
+     substantial REAL analyses and 0.549 on that fixture. So real music is about four times
+     gentler and the effect is real but smaller -- call it 7% of flow's range per frame rather
+     than 27%. Still a step, still on a rate, still every frame.
+
+     TWO POLES, w=4.3, which is t90 0.9s. At 120bpm that attenuates beat-rate content (2 Hz) to
+     about 10% and keeps bar-rate (0.5 Hz) at about 65% -- exactly the split the original note
+     asks for. The clamp stays on the OUTPUT so it remains a hard bound rather than something the
+     smoother can be talked out of. */
+  { const k=1-Math.exp(-FLOW_W*dt), c=fRaw-(aFlow-1);
+    fSm1+=(c-fSm1)*k; fSm2+=(fSm1-fSm2)*k; }
+  const flow = Math.max(0.78, Math.min(1.55, fSm2));
   /* The off-axes take it at reduced strength rather than in full. All three swelling by the same
      factor is ONE gesture seen three times, which reads as the whole object throbbing; giving
      the body the swell and the off-axes about half of it keeps the three rates from locking
@@ -6973,6 +7016,136 @@ function frame(){
   formSpin   += 2*Math.PI*dBeats*(rSpin/MOTP.spin + selfRate);
   formTumble += 2*Math.PI*dBeats/MOTP.tumble*rTum;       // second axis, about X
   formSwirl  += 2*Math.PI*dBeats/MOTP.swirl *rSwi;       // third axis, about Z
+  /* THE TURN IS PHRASED BY THE BAR. Everything above paces the rotation from the music -- the
+     ladder sets a period per section, `flow` breathes it inside the section -- and none of it
+     puts the rotation in a fixed relationship with the GRID. The beat itself lives entirely in
+     the LIGHT: u_pulse reaches the key, the rim, the bloom, the exposure and the filter gain,
+     and not one thing that moves the form.
+
+     MEASURED by folding the drawn spin rate onto each track's own downbeats, with the beat pulse
+     folded alongside as a control, on two fixtures with different tempi (bin 0 is the downbeat):
+
+       176bpm   pulse  1.37 1.01 0.86 0.89 0.85 0.87 0.86 1.28    51% p2p, on the beat (control)
+                rate   0.85 1.17 0.83 1.17 0.83 1.15 0.83 1.17    35% p2p
+       120bpm   rate   0.87 0.88 1.07 1.29 1.19 0.94 0.82 0.92    47% p2p
+
+     Neither is phrasing. The first repeats identically on all four beats -- it has a beat and no
+     BAR, so nothing distinguishes the downbeat from the others. The second is a single cycle
+     that peaks in the MIDDLE of the bar, which is worse than nothing: the form is slowest where
+     the music is strongest.
+
+     A NOTE ON WHICH FIXTURE, because the first reading of this was wrong. The bench tracks are
+     not interchangeable here. Folding the analysed ENERGY curve onto each track's own downbeats:
+     the four substantial real analyses peak ON the beat, 9-28% p2p; arc120 and click120 peak
+     MID-BAR at 103-118%. So the 120bpm row above is a property of that fixture, not of music,
+     and a diagnosis taken only from it would have been a diagnosis of the fixture. fast176 is
+     the one that behaves like real material. Both rows are kept because the fix has to work on
+     both, and it does.
+
+     WHAT THIS IS, AND WHY IT IS NOT THE SWAY THAT WAS REMOVED. A bar-locked sine on the camera
+     orbit was tried and removed, and the note at the orbit says exactly why: its peak rate was
+     4.4x the orbit it rode on, so for half of every bar the camera REVERSED, and "the eye reads
+     that as instability however musical its period". The conclusion drawn there is the rule this
+     obeys -- the motion has to stay MONOTONIC -- and the fault named there is that the sway "was
+     sized against nothing at all". So this is sized against exactly one thing:
+
+         peak swing rate / base rate = BAR_SWING, by construction and independent of tempo,
+         of the ladder rung and of flow.
+
+     At 0.50 the turn runs between half and one-and-a-half times its own rate and never reverses,
+     never stops, and never changes direction. The removed sway had that ratio at 4.4.
+
+     IT CANNOT DRIFT, which is the other half of the brief. The swing is an OFFSET on the angle,
+     not a term in the integration, and sin() returns to zero -- so at every downbeat the form is
+     at exactly the angle the un-phrased build would have had, to the bit. The rate peaks there
+     too (cos is at its maximum where sin is zero), so the fastest movement in the bar and the
+     form's arrival on its grid position are the same instant. Half a bar later it is on grid
+     again, moving slowest. Two arrivals a bar, both exact.
+
+     THE AMPLITUDE FOLLOWS THE LIVE RATE so the ratio above stays fixed: a peak swing rate of
+     BAR_SWING*base needs an offset amplitude of BAR_SWING*BAR_BEATS*rate_in_revs_per_beat, and
+     the tempo cancels out of it entirely.
+
+     THE OFF-AXES TAKE 0.55 AND 0.30, the shares `flow` already uses, and for the reason given
+     there: all three swelling by the same factor is one gesture seen three times, which reads as
+     the whole object throbbing rather than as a body with a lean on it.
+
+     THE RESULT, both fixtures, matched frame rates, measured inside the track only (a capture
+     that runs past the last downbeat reads pure noise and briefly showed 2.55% reversals at
+     -139 deg/s that were entirely off the end of a 21s file):
+
+                       drawn rate over the bar          p2p    reversals
+       176bpm  before  0.85 1.17 0.83 1.17 0.83 ...    34.8%      0
+               after   1.47 1.13 0.83 0.53 0.56 ...    94.0%      1 frame in 1213, at -0.0 deg/s
+       120bpm  before  0.87 0.88 1.07 1.29 1.19 ...    47.2%      0
+               after   1.33 1.03 0.74 0.59 0.64 ...    82.5%      1 frame in 2219, at -0.1 deg/s
+
+     One cycle per bar, peaking on the downbeat, on both. The mean rate is preserved -- 27.90 to
+     26.35 deg/s and 15.56 to 15.53 -- so this is phrasing the turn, not speeding it up. The
+     swing reaches its grid position at the downbeat to within 0.08 deg median and 0.25 deg worst
+     case, which is the arithmetic working rather than a tolerance being met.
+
+     BAR_SWING is on window, so the depth is one assignment to try.
+
+     GATED ON REAL ANALYSED DOWNBEATS. With no downbeats barOrigin stays 0 and the bar is in an
+     arbitrary PLACE -- the right length in the wrong position, which would surge at a random
+     point in the bar and be worse than not phrasing at all. All ten cached analyses have them,
+     so this is a guard rather than a common path. */
+  /* THE PHASE COMES FROM THE TWO DOWNBEATS EITHER SIDE, not from a beat count divided by four,
+     and that was a real reversal bug rather than a nicety. Taking phi as
+     (beatsAtTime(t)-barOrigin)/4 assumes every bar is exactly four beats; the analyser's
+     downbeats are 3.88..4.17 beats apart, so phi reached about 0.98 and then barOrigin advanced
+     and reset it to 0. sin() jumps 0.125 across that seam, in one frame -- and MEASURED on the
+     176bpm fixture that put the DRAWN rate negative on 4.03% of frames, to -40 deg/s. Exactly
+     the reversal the removed camera sway died of, reintroduced by an assumption about time
+     signatures rather than by the swing itself.
+     Interpolating between the real downbeats makes phi run 0..1 inside whatever the analyser
+     actually called a bar, so the seam is sin(2pi) to sin(0) -- zero to zero -- and the 4/4
+     assumption disappears from the arithmetic entirely.
+
+     AND THE PHASE READS pos() WITH NO LEAD, WHICH IS THE OTHER HALF OF THE SAME BUG AND THE
+     LARGER ONE. visLead() is derived from frameEMA, so it MOVES WITH THE FRAME TIME -- 12ms to
+     60ms as the frame breathes. That is right for a discrete event, which wants to be scheduled
+     early; it is wrong for a continuous phase, because the phase then jitters by up to 4% of a
+     bar between two frames while the clock underneath it has not moved. MEASURED with the lead
+     in: the swing's own rate reached 88 deg/s p99 56, against a clock frequently at 10-20, and
+     the drawn rate went negative on 4.14% of frames. Fixing the 4/4 assumption alone changed
+     that by 0.11 points, because it was never the cause.
+
+     musicalStep integrates beatsAtTime(pos()) with no lead, so reading pos() here puts the swing
+     on EXACTLY the clock the angle it rides on is integrated from. That is what makes the ratio
+     a guarantee rather than an average: dphi and dBeats are then the same step scaled by the
+     same tempo, every term cancels, and
+
+         peak swing rate / base rate = BAR_SWING
+
+     holds frame by frame whatever the tempo, the rung, flow or the frame rate are doing. The
+     lead it gives up is 1-4% of a bar on a phrasing that spans the whole bar, which is not a
+     quantity the eye has any way to see. */
+  if(director && isPlaying && dbSet && director.events.downbeats){
+    const D=director.events.downbeats, tt=pos();   // pos() ALONE -- see the note on the lead below
+    let lo=0, hi=D.length-1, k=-1;
+    while(lo<=hi){ const m=(lo+hi)>>1; if(D[m]<=tt){ k=m; lo=m+1; } else hi=m-1; }
+    const span=(k>=0 && k+1<D.length) ? D[k+1]-D[k] : 0;
+    if(span>0.10 && span<8.0){
+      const phi=Math.min(1,Math.max(0,(tt-D[k])/span)); swingPhi=phi;
+      const sw=Math.sin(2*Math.PI*phi), kk=BAR_SWING*BAR_BEATS;
+      /* THE AMPLITUDE IS SMOOTHED AND THE PHASE IS NOT, which is the whole trick. Differentiating
+         A*sin(2pi*phi) gives the term this is sized for -- A*2pi*cos*dphi, whose ratio to the base
+         rate is exactly BAR_SWING -- plus a term nobody sized, dA/dt*sin. A moves with rSpin and
+         with the eased period, and while `flow` was trembling that second term was four times the
+         first: it drove the drawn rate to -41 deg/s on 4% of frames. Smoothing flow fixed the
+         cause; this bounds what is left, at t90 0.49s, fast enough that a ladder change still
+         lands inside its own ease. Smoothing the amplitude cannot touch the two properties that
+         matter, because both belong to sin(): it is still exactly zero at the downbeat, and it
+         still has its maximum slope there. */
+      { const ks=1-Math.exp(-SWING_W*dt);
+        swAmpS  += (kk*rSpin/Math.max(1e-3,MOTP.spin)   - swAmpS )*ks;
+        swAmpT  += (kk*rTum *0.55/Math.max(1e-3,MOTP.tumble) - swAmpT )*ks;
+        swAmpW  += (kk*rSwi *0.30/Math.max(1e-3,MOTP.swirl)  - swAmpW )*ks; }
+      spinSwing=swAmpS*sw; tumbleSwing=swAmpT*sw; swirlSwing=swAmpW*sw;
+    } else { spinSwing=0; tumbleSwing=0; swirlSwing=0; }
+  } else { spinSwing=0; tumbleSwing=0; swirlSwing=0; }
   /* SYNC READOUT, console-only. tBeats is where the MUSIC is, in beats, straight off the audio
      clock; spinBeats is where the FORM is, in the same unit. Their difference is the sync error,
      and if the two clocks are the same clock it can only be the constant it started at. */
@@ -6993,6 +7166,12 @@ function frame(){
       rscale:+rscale.toFixed(3), dprScale:+dprScale.toFixed(2), tier:TIER, frameAvg:+frameAvg.toFixed(1),
       shaScale:+shaScale.toFixed(2), shaTaps:shaTaps(),
       spin:formSpin, tumble:formTumble, swirl:formSwirl,
+      /* THE PHRASING, separately from the angle it rides on. spin+spinSwing is what was drawn;
+         spin alone is the bar-locked clock. Reading them apart is how you check the two things
+         this is supposed to guarantee -- that the swing returns to zero on every downbeat, and
+         that the rate never goes negative. See BAR_SWING. */
+      spinSwing:spinSwing, spinOut:formSpin+spinSwing, swingPhi:swingPhi, rSpinNow:rSpin,
+      tumbleSwing:+tumbleSwing.toFixed(5), swirlSwing:+swirlSwing.toFixed(5),
       camAng:+camAng.toFixed(4), kalSpin:+kalSpin.toFixed(4),   // the two on the wall clock
       pSpin:+MOTP.spin.toFixed(2), pTum:+MOTP.tumble.toFixed(2), pSwi:+MOTP.swirl.toFixed(2),
       pulseS:+pulseS.toFixed(3), energy:+energy.toFixed(3), arousal:+arousal.toFixed(3),
@@ -7127,7 +7306,8 @@ function frame(){
   // which has invalidated more than one comparison here. window.POSE={spin,cam,tumble} holds
   // all three -- tumble is a second axis now, so pinning the first two no longer pins the pose.
   if(window.POSE){ formSpin=window.POSE.spin; camAng=window.POSE.cam;
-                   formTumble=window.POSE.tumble||0; formSwirl=window.POSE.swirl||0; }
+                   formTumble=window.POSE.tumble||0; formSwirl=window.POSE.swirl||0;
+                   spinSwing=0; tumbleSwing=0; swirlSwing=0; }   // the pin has to hold the phrasing too
   /* CAMERA KICK OFF. A decaying angular offset on the camera from every low and sub onset is the
      same trembling as the scale punch, applied to the frame instead of the form -- and a shaking
      CAMERA is worse, because it moves the background too, so the whole image judders. Left at 0
@@ -7148,7 +7328,13 @@ function frame(){
   const TAU=6.283185307179586;
   userEl = ((userEl % TAU) + TAU) % TAU; if(userEl > Math.PI) userEl -= TAU;
   userAz = ((userAz % TAU) + TAU) % TAU; if(userAz > Math.PI) userAz -= TAU;
-  const spin = formSpin;
+  const spin = formSpin + spinSwing;   // see the bar phrasing above
+  /* THE COMBINED LEAN, COMPUTED ONCE. u_tilt is uploaded to the scene pass and to the motion
+     blur, and map() and objP() both read it -- the note at TUMBLE_BEATS is explicit that those
+     have to agree or the surface texture slides through the geometry. Two call sites that each
+     rebuild the sum is how they come to disagree, so there is one sum and both read it. */
+  const tilt = VAR.tilt + formTumble + tumbleSwing;
+  const swirlA = formSwirl + swirlSwing;
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
   // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
   // genuinely neither shape; the longer that state is held the more it reads as one form flowing
@@ -7336,9 +7522,9 @@ function frame(){
   gl.uniform1f(US('u_spin'),spin);
   // the section's held lean plus the tumble, as ONE angle -- see TUMBLE_BEATS for why they are
   // not two uniforms
-  gl.uniform1f(US('u_tilt'),VAR.tilt+formTumble);
+  gl.uniform1f(US('u_tilt'),tilt);
   gl.uniform1f(US('u_iridHue'),VAR.hue);
-  gl.uniform1f(US('u_swirl'),formSwirl);
+  gl.uniform1f(US('u_swirl'),swirlA);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
      have segments (p2Rotor, p2Clover) and just a reasonable angle on the four that do not. See
      the kaleidoscope note in map() for why that is fine and why this is a dial to look at rather
@@ -7837,7 +8023,7 @@ function frame(){
     // the SAME combined angle map() gets, or the reprojection undoes a rotation the field never
     // applied. (There is no u_mbTiltP: the tumble's own contribution to screen velocity is not
     // represented, which is dormant while every tier ships shutter:0.)
-    gl.uniform1f(UP('u_mbTilt'),VAR.tilt+formTumble);
+    gl.uniform1f(UP('u_mbTilt'),tilt);
     gl.uniform1f(UP('u_shutter'),(TIERS[TIER].shutter||0)*Math.min(2.5,dt*60)*(DX.mblur!==undefined?DX.mblur:1));
     MBP={ro:[roX,roY,roZ],rt:[rx,ry,rz],up:[ux,uy,uz],fw:[fx,fy,fz],spin:spin,fov:fovY};
     // underground grade: darker, grittier, higher contrast
