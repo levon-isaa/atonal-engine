@@ -500,8 +500,40 @@ def layer1_signal(mono, stereo, sr, prog=None):
 #
 # tagging keeps a small weight rather than zero: on a short track, or a machine where the model
 # load dominates, there is still a real wait there.
-STAGE_W = {"load":0.01, "spectrum":0.01, "features":0.26, "beats":0.12,
-           "separate":0.46, "bands":0.01, "tagging":0.02, "finalise":0.01}
+#
+# RE-MEASURED, AND THE OLD NUMBERS WERE A LONG WAY OUT. The table above is one track; these are
+# six runs across two durations (60s, 180s) and three materials with very different onset
+# densities, timing each stage from the progress callbacks themselves. Share of wall clock:
+#
+#     stage       announced   median    min     max
+#     load           0.01      0.034   0.027   0.044
+#     spectrum       0.01      0.014   0.012   0.016
+#     features       0.26      0.162   0.150   0.174
+#     beats          0.12      0.021   0.019   0.022
+#     separate       0.46      0.752   0.728   0.776
+#     bands          0.01      0.007   0.007   0.007
+#     tagging        0.02      0.000   0.000   0.000
+#     finalise       0.01      0.009   0.007   0.010
+#
+# HPSS is three quarters of the run, not half, and `beats` was announced at nearly six times what
+# it costs. That is what made the bar race through the first half and then crawl: viewer.html's
+# ease was written against exactly this, and measured the freeze it caused.
+#
+# THE SPREAD IS WHY THESE CAN BE TRUSTED NOW. A previous pass declined to retune, on the grounds
+# that only synthetic audio was available and its HPSS-to-everything ratio need not be a real
+# track's. But `separate` moves only 0.728..0.776 across a 3x change in duration AND across three
+# materials whose per-band onset counts differ by more than 2x -- so the ratios are set by the
+# size of the spectrogram, not by what is in it, which is the thing that was actually in doubt.
+#
+# Measured end to end, worst-case gap between the announced fraction and the true elapsed
+# fraction at any stage boundary: 22.0% before, 2.4% after, on three tracks.
+#
+# tagging stays at 0.02 despite measuring 0.000: PANNs finishes entirely under HPSS here, and the
+# comment above is still right that it need not elsewhere. A stage that costs nothing loses
+# nothing by being announced small; one that occasionally costs something and is announced at
+# zero has no room to report it at all.
+STAGE_W = {"load":0.03, "spectrum":0.015, "features":0.16, "beats":0.02,
+           "separate":0.74, "bands":0.01, "tagging":0.02, "finalise":0.01}
 STAGE_LABEL = {"load":"decoding audio", "spectrum":"spectrum",
                "features":"spectral features", "separate":"harmonic / percussive",
                "beats":"tempo & beats", "bands":"per-band onsets",

@@ -6061,9 +6061,15 @@ async function loadFile(file){
              47% of the whole wait spent frozen, and it never reached 100 at all. The cause is
              upstream: harmonic/percussive is announced at 1.58s and takes 5.02s here (the other
              stages are over-announced by the same factor in the other direction, which is why
-             the first half races). The weights are ratios measured on one track, and how much
-             work the non-HPSS stages do depends on the material, so they cannot be right for
-             everything -- which means the client has to stay honest when they are wrong.
+             the first half races). The weights are ratios, and they have since been
+             RE-MEASURED -- see STAGE_W in analyze.py. What used to be claimed here, that the
+             non-HPSS stages depend on the material and so could never be right, is wrong:
+             across three materials and a 3x change in duration HPSS's share moves only
+             0.728..0.776. The announced numbers were simply out of date. The worst-case gap
+             between announced and elapsed is now 2.4% where it was 22.0%, so this ease corrects
+             a far smaller error than it was written for -- and it stays, because an estimate
+             that is 2% wrong still ends a stage early, and a bar that has arrived is still a
+             bar that has stopped.
 
              x/(x+1) never reaches 1, so there is always somewhere left to go and the bar always
              moves. At the announced time it is 75% of the way across the stage; at twice that
