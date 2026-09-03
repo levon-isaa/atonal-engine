@@ -22,7 +22,7 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
