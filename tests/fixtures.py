@@ -183,3 +183,40 @@ def phase_shift_track(shift_at_bar=16, bars=32, bpm=120.0):
         _crash(x, d, bi, 0.34)
         _pad(x, t, d, d + 4 * beat, CHORDS[bi % 4], 3)
     return _write(path, x), truth, bpm
+
+
+def band_isolated_track(seconds=30.0):
+    """Events in the sub, mid and air bands only -- NOTHING between 1.2k and 4.5k, so the high
+    band is empty by construction. An empty band used to report a full set of onsets, because
+    pick_onsets normalises by the band's own maximum and thresholds on a percentile of itself:
+    both relative, so numerical noise scales up until a quarter of frames clear the bar.
+
+    Enveloped BEFORE band-limiting, deliberately. Enveloping afterwards re-spreads the spectrum
+    -- a 4ms attack is about 250Hz wide -- and the first version of this fixture leaked into the
+    very band it was meant to leave empty, which made the measurement say the bands leak when
+    what leaked was the fixture."""
+    path = os.path.join(CACHE, "band_isolated.wav")
+    spec = {"sub": (35, 78, 0.95, 0.0), "mid": (300, 1100, 0.80, 0.7),
+            "air": (5000, 10000, 0.70, 1.4)}
+    truth = {k: [round(off + 2.0 * i, 3) for i in range(int((seconds - 2) / 2.0))]
+             for k, (_, _, _, off) in spec.items()}
+    if os.path.exists(path):
+        return path, truth
+    rng = np.random.RandomState(7)
+    t = np.arange(int(SR * seconds)) / SR
+    x = np.zeros_like(t)
+    for name, (lo, hi, amp, off) in spec.items():
+        n = int(0.30 * SR)
+        env = np.minimum(1.0, np.arange(n) / max(1, int(0.020 * SR))) * np.exp(-np.arange(n) / (0.070 * SR))
+        y = rng.randn(n) * env
+        Y = np.fft.rfft(y)
+        fr = np.fft.rfftfreq(n, 1.0 / SR)
+        Y[(fr < lo) | (fr > hi)] = 0
+        b = np.fft.irfft(Y, n)
+        b = b / (np.max(np.abs(b)) + 1e-9)
+        for at in truth[name]:
+            i = int(at * SR)
+            m = min(len(b), len(x) - i)
+            if m > 0:
+                x[i:i + m] += amp * b[:m]
+    return _write(path, x), truth

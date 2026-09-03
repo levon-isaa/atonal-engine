@@ -22,7 +22,7 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 7
+ANALYSIS_VERSION = 8
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
@@ -245,17 +245,46 @@ def pick_onsets(env, times, min_gap_s, sr):
             last = i
     return out
 
+# A band must carry at least this share of the average spectral magnitude before its onsets
+# are believed. See layer1b_bands: an EMPTY band used to emit a full complement of them.
+BAND_PRESENCE_FLOOR = 0.04
+
+
 def layer1b_bands(S, sr, times):
-    """Per-band level curves + discrete onsets, straight off the magnitude spectrogram."""
+    """Per-band level curves + discrete onsets, straight off the magnitude spectrogram.
+
+    AN EMPTY BAND USED TO REPORT A FULL SET OF ONSETS, and the reason is in pick_onsets: it
+    divides the envelope by the band's OWN maximum and then thresholds on a percentile OF
+    ITSELF. Both are relative, so there is no level at which a band is too quiet to speak --
+    numerical noise gets scaled up to fill 0..1 and roughly a quarter of frames clear the 72nd
+    percentile. MEASURED on a fixture built with nothing at all between 1.2k and 4.5k: that
+    band holds 0.01% of the track's energy and reported 55 onsets in 30 seconds. The renderer
+    routes visual events per band, so those are events fired from nothing.
+
+    Neither the band's flux peak nor its absolute level separates an empty band from a quiet
+    real one -- both overlap across the fixtures. What does is the band's share of the average
+    spectral magnitude:
+
+        bands empty by construction   0.0018 .. 0.0118
+        every other band              0.1658 .. 57.78
+
+    a gap of fourteen times, which is what BAND_PRESENCE_FLOOR sits in. The level curve is
+    still produced either way: a near-zero level is honest, where a phantom onset is not.
+    """
     import librosa
     freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
     levels, onsets = {}, {}
+    ref = float(np.mean(S)) if S.size else 0.0
     for name, lo, hi, gap in BANDS:
         idx = np.where((freqs >= lo) & (freqs < hi))[0]
         if len(idx) == 0:
             idx = np.array([min(len(freqs) - 1, 1)])
         B = S[idx, :]
         levels[name] = np.sqrt((B ** 2).mean(axis=0))               # band RMS
+        present = ref > 1e-12 and (float(np.mean(B)) / ref) >= BAND_PRESENCE_FLOOR
+        if not present:
+            onsets[name] = []
+            continue
         L = np.log1p(B)                                             # log-domain flux
         d = np.maximum(np.diff(L, axis=1, prepend=L[:, :1]), 0)     # half-wave rectified
         onsets[name] = pick_onsets(d.mean(axis=0), times, gap, sr)

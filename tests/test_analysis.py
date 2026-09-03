@@ -150,11 +150,45 @@ def test_phase_does_not_flap():
               % ("four-to-the-floor" if ff else "kick-only", odd, len(db)))
 
 
+# ------------------------------------------------------------------------- onsets
+def test_band_presence():
+    """A band with nothing in it must say nothing. Measured before the gate: a band holding
+    0.01% of the track's energy reported 55 onsets in 30 seconds, and the renderer routes
+    visual events per band, so those fired from nothing."""
+    print("\nper-band onsets, empty band   (was: 55 onsets from 0.01% of the energy)")
+    path, truth = fixtures.band_isolated_track()
+    ons = analyze.build_director(path)["events"]["onsets"]
+    check(len(ons.get("high", [])) == 0,
+          "high band (empty by construction) reports %d onsets" % len(ons.get("high", [])))
+    for band in ("sub", "mid", "air"):
+        got = [o[0] for o in ons.get(band, [])]
+        want = truth[band]
+        found = sum(1 for tr in want if any(abs(g - tr) <= 0.12 for g in got))
+        check(found >= len(want) - 1,
+              "%s band found %d of its %d events" % (band, found, len(want)))
+
+
+def test_band_presence_does_not_silence_real_bands():
+    """The other side of the gate. Every band of the shipped fixtures carries real content and
+    must keep reporting after it."""
+    print("\nper-band onsets, real material   (the gate must not silence these)")
+    for name in ("arc120", "click120", "fast176"):
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "assets", name + ".wav")
+        if not os.path.exists(path):
+            print("  --   %s not present, skipped" % name)
+            continue
+        ons = analyze.build_director(path)["events"]["onsets"]
+        empty = [b for b in ("sub", "low", "mid", "high", "air") if not ons.get(b)]
+        check(not empty, "%s: every band reports onsets (silent: %s)" % (name, empty or "none"))
+
+
 GROUPS = {
     "tempo": [test_tempo],
     "structure": [test_structure, test_energy_only_boundaries],
     "downbeat": [test_downbeat_phase, test_phase_does_not_flap],
     "phase": [test_phase_shift],
+    "onsets": [test_band_presence, test_band_presence_does_not_silence_real_bands],
 }
 
 if __name__ == "__main__":
