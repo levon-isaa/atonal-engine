@@ -608,7 +608,7 @@ uniform sampler2D u_svg;            // R = signed distance, in object units, fro
 uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
 uniform float u_volOn,u_volPad,u_nEps,u_shaJit;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
-uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR;
+uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR,u_morphB;
 uniform int u_shaN;
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
@@ -1177,7 +1177,14 @@ vec3 formRot(vec3 p){
 float blendField(vec3 p,float a,float b,float m){
   if(u_morphU<0.5) return mix(a,b,m);            // legacy average, for A/B
   const float K=1.0;
-  float comp=K*0.5*(1.0-abs(2.0*m-1.0))*u_morphC;
+  float ax=abs(2.0*m-1.0);
+  // NORMALISED, because the soft-abs does not vanish at the ends on its own: at b=0.15
+  // 1-(sqrt(1+b*b)-b) is 0.139, not 0, so BOTH pure shapes came out dilated and the first
+  // step of the morph measured a 3.55x jump. Dividing by the value at ax=1 pins sb(0)=
+  // sb(1)=0 and sb(0.5)=1 for every b, and at b=0 it is still exactly the triangle.
+  float r0=sqrt(1.0+u_morphB*u_morphB)-u_morphB;
+  float sb=1.0-(sqrt(ax*ax+u_morphB*u_morphB)-u_morphB)/max(r0,1e-4);
+  float comp=K*0.5*sb*u_morphC;
   return smin3(a+K*m, b+K*(1.0-m), u_morphK)-comp;
 }
 /* THE MELT IS A DILATION, NOT A MIX WITH A BALL -- and the ball was the reported fault.
@@ -3907,7 +3914,35 @@ const shaTaps=()=>Math.round(SHA_FLOOR+(STEP.shaN-SHA_FLOOR)*Math.max(0,Math.min
    soft mass with the chevron only just readable. 0.20 fuses them into a single body while the
    chevron ridges stay in relief. Nothing facets at any of the three -- the dilation cannot
    produce facets, so the setting is a question of how much identity to keep, not of artefacts. */
-const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15};  window.MORPH=MORPH;
+/* `bump` rounds the TIP of the compensation curve. comp used to be a strict triangle,
+   0.5*(1-|2m-1|), whose derivative flips sign at m=0.5 -- a corner in the middle of every
+   transition. Measured on a pinned Rings->Truss sweep, per-step visual change either side
+   of the midpoint went 0.45 then 1.40: the morph stalls, then lurches, at 3.1x.
+   The curve is now a soft-abs, 1-(sqrt(ax*ax+b*b)-b), which at b=0 IS the triangle exactly
+   -- so this knob is backward compatible by construction -- and for b>0 rounds only the
+   tip, leaving the endpoint slope of 2 that gives the transition its soft start and stop.
+   sin(pi*m) and sin^2(pi*m) were tried first and both made the START abrupt, because their
+   endpoint slopes are pi and 0 rather than 2.
+
+   0.15 IS MEASURED, AND ON THREE SHAPE PAIRS, not one -- an earlier pass in this file was caught
+   tuning against a single fixture. Per-step visual change over a pinned sweep, worst step-to-step
+   ratio (the lurch) and the standard deviation of the rate (evenness):
+
+              lurch  base -> 0.15     evenness  base -> 0.15
+       2->3     2.54 -> 2.09            0.411 -> 0.294
+       0->1     4.17 -> 1.48            0.419 -> 0.314
+       4->5     3.63 -> 1.76            0.594 -> 0.442
+
+   Every pair improves on both. Larger values keep flattening the rate -- 0.32 reaches 0.268 on
+   2->3 -- but they buy it by hardening the entry and exit, which is the part that makes a change
+   of shape read as deliberate: `start` goes 0.36 at 0.10 to 1.09 at 0.32, where 1.0 is the
+   average rate and anything below it is a soft edge. 0.15 keeps both ends under 0.65 on all
+   three pairs while taking most of the evenness.
+
+   ALL OF IT MEASURED IN ONE PAGE LOAD. Comparing sweeps across loads is void: TFREEZE pins the
+   camera and section wherever they happened to be, and the same build measured 0.19 and 1.27 for
+   the same quantity on two loads. That confound wasted three comparisons before it was caught. */
+const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15, bump:0.15};  window.MORPH=MORPH;
 /* Kaleidoscope order and ring offset. off is the fraction of the reach the copies are pushed off
    the fold axis; kalEval derives their scale from it so the silhouette radius never changes.
    0.30 rather than something larger, chosen against the two profile extremes: a solid form (Wave)
@@ -8015,6 +8050,7 @@ function frame(){
   // window.MORPHU=0 restores the old mix() blend for comparison; see evalForm.
   gl.uniform1f(US('u_morphU'), (window.MORPHU===0)?0:1);
   gl.uniform1f(US('u_morphK'), MORPH.k); gl.uniform1f(US('u_morphC'), MORPH.comp);
+  gl.uniform1f(US('u_morphB'), MORPH.bump);
   gl.uniform1f(US('u_morphBlob'), MORPH.blob); gl.uniform1f(US('u_morphR'), MORPH.r);
 
   gl.uniform1i(US('u_shaN'),shaTaps());   // governor-scaled; see SHA_FLOOR
