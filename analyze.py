@@ -639,10 +639,25 @@ def layer2_structure(f, sr):
     de = np.abs(np.gradient(smooth(e, 21)))
     thr = float(np.percentile(de, 92))
     wait = int(4 * sr / HOP)                       # >=4 s between novelty boundaries
-    nov, last = [], -10**9
-    for i in range(1, len(de) - 1):
-        if de[i] > thr and de[i] >= de[i-1] and de[i] >= de[i+1] and (i - last) > wait:
-            nov.append(i); last = i
+    # STRONGEST FIRST, NOT EARLIEST. The scan used to run left to right, keep the first peak over
+    # the threshold and then block the next four seconds -- so any ripple that happened to come
+    # first suppressed a genuine drop arriving two seconds later. The merge below already carries
+    # this exact argument for its own choice ("taking the earliest throws away a hard drop
+    # whenever a weak boundary happens to sit a few seconds before it, and the drop is the one
+    # edit in the track that has to land"); the picker feeding it was doing the opposite.
+    #
+    # It matters because the marginal peaks are not rare. On a fixture with a steady kick,
+    # measured: the two real level changes scored 7.6 and 14.0 times the threshold, and ten more
+    # peaks were kept at 1.00 to 1.66 -- the beat's own RMS ripple, which crosses a 92nd
+    # percentile easily because most of the distribution is quiet frames between beats.
+    # Ordering by height does not remove those, but it stops them from evicting anything real.
+    cand = [i for i in range(1, len(de) - 1)
+            if de[i] > thr and de[i] >= de[i-1] and de[i] >= de[i+1]]
+    nov = []
+    for i in sorted(cand, key=lambda j: -de[j]):
+        if all(abs(i - j) > wait for j in nov):
+            nov.append(i)
+    nov.sort()
     nov_t = librosa.frames_to_time(np.array(nov, dtype=int), sr=sr, hop_length=HOP).tolist()
     bt += nov_t
 
