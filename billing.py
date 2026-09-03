@@ -118,10 +118,35 @@ def init():
               PRIMARY KEY(ip, day)
             );
             """)
+            # Fold any address stored before _norm_email existed into the same form, so the
+            # lookup in _grant_for_session keeps using the index and an older key is still
+            # found. Touches only rows that actually differ, and runs once per process.
+            c.execute("UPDATE keys SET email=LOWER(TRIM(email)) "
+                      "WHERE email IS NOT NULL AND email <> LOWER(TRIM(email))")
         _ready = True
 
 
 CLAIM_TTL = 24 * 3600
+
+
+def _norm_email(e):
+    """The form an address is stored and matched in: trimmed and lower-cased.
+
+    A REPEAT PURCHASE IS MATCHED BY EMAIL, so whatever the customer typed has to reduce to
+    one identity or _grant_for_session's whole promise fails. It was an exact string
+    compare, and Paddle hands back the address as entered -- so "Levon.Isaa@Example.com"
+    from a desktop and "levon.isaa@example.com" from a phone are two people to it.
+    REPRODUCED: three purchases differing only in case and a trailing space issued THREE
+    keys with 10 credits each. The customer had paid for 30 and the largest balance they
+    could see was 10, which is exactly the juggling the docstring below says not to do.
+
+    Lower-casing the local part is technically not RFC-safe -- "A@x.com" and "a@x.com" MAY
+    be different mailboxes -- but no mail provider in practice treats them so, and the
+    alternative here is not correctness, it is splitting a paying customer's balance across
+    keys they did not know they had.
+    """
+    e = (e or "").strip().lower()
+    return e or None
 
 
 def _hash(key: str) -> str:
@@ -156,6 +181,7 @@ def grant(key_hash: str, credits: int, reason: str, ref: str, email=None) -> boo
     init()
     now = time.time()
     with _conn() as c:
+        email = _norm_email(email)
         c.execute("INSERT OR IGNORE INTO keys(key_hash,email,created) VALUES(?,?,?)",
                   (key_hash, email, now))
         if email:
@@ -423,8 +449,8 @@ def _grant_for_session(txn) -> dict:
     if credits <= 0:
         raise ValueError("transaction carries no credit count")
 
-    email = ((txn.get("customer") or {}).get("email")
-             or _customer_email(txn.get("customer_id")))
+    email = _norm_email((txn.get("customer") or {}).get("email")
+                        or _customer_email(txn.get("customer_id")))
 
     key_plain, key_hash = None, None
     if email:
