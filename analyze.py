@@ -22,7 +22,7 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 8
+ANALYSIS_VERSION = 9
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
@@ -238,12 +238,38 @@ def pick_onsets(env, times, min_gap_s, sr):
     en = e / mx
     thr = max(0.10, float(np.percentile(en, 72)))
     wait = max(1, int(min_gap_s * sr / HOP))
-    out, last = [], -10**9
-    for i in range(1, len(en) - 1):
-        if en[i] > thr and en[i] >= en[i-1] and en[i] > en[i+1] and (i - last) > wait:
-            out.append([round(float(times[i]), 3), round(float(en[i]), 3)])
-            last = i
-    return out
+    # STRONGEST FIRST, NOT EARLIEST -- the same shape as the novelty picker in layer2, though
+    # NOT for the same reason, and the difference is worth writing down because the obvious
+    # reason is wrong.
+    #
+    # The obvious reason: scanning left to right and blocking min_gap after each keeper means
+    # the FIRST peak wins however small, so a ghost note before a snare evicts the snare. That
+    # was the hypothesis. It is not reachable here. For the exclusion to decide anything the two
+    # events must be closer than min_gap, which is 35-75ms; for two peaks to EXIST they must be
+    # further apart than the analysis can smear them, and S is an n_fft=2048 STFT at 22050Hz --
+    # a 93ms window -- with the envelope then smoothed over 3 frames of 23.2ms. Two hits close
+    # enough for the gap to matter are inside one analysis window and arrive as a single peak.
+    # MEASURED, 20 pairs of a weak hit then a strong one, at 30ms, 50ms, 55ms and 60ms apart and
+    # in three different bands: the reported onset sits at the weak hit's time in every
+    # configuration, before this change and after it, because there is only ever one peak to
+    # pick. Strongest-first cannot fix what the resolution has already merged.
+    #
+    # It is kept anyway, on the narrower ground that it is the defensible rule: among candidate
+    # maxima the loudest is the one to report, and "whichever came first" is not a rule at all.
+    # It does change output -- 2 of 5 fixtures -- by choosing a different local maximum inside a
+    # merged blob, not by resolving anything new.
+    #
+    # IF THE TIME RESOLUTION EVER CHANGES, this becomes load-bearing. A shorter n_fft for the
+    # band flux would let real hits inside 75ms separate, and then the earliest-wins rule would
+    # start discarding the loud one for real.
+    cand = [i for i in range(1, len(en) - 1)
+            if en[i] > thr and en[i] >= en[i-1] and en[i] > en[i+1]]
+    keep = []
+    for i in sorted(cand, key=lambda j: -en[j]):
+        if all(abs(i - j) > wait for j in keep):
+            keep.append(i)
+    keep.sort()
+    return [[round(float(times[i]), 3), round(float(en[i]), 3)] for i in keep]
 
 # A band must carry at least this share of the average spectral magnitude before its onsets
 # are believed. See layer1b_bands: an EMPTY band used to emit a full complement of them.
