@@ -4040,8 +4040,23 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
 let spinSwing=0, tumbleSwing=0, swirlSwing=0, swingPhi=0;
 let swAmpS=0, swAmpT=0, swAmpW=0;   // the three smoothed amplitudes; see the easing beside them
 const SWING_W=8.0;                  // t90 0.49s
-const BAR_BEATS=4;      // 4/4. Checked, not assumed: across all ten cached analyses the ratio of
-                        // beats to downbeats is 3.88..4.17, so this holds on every track here.
+/* THE FALLBACK ONLY. The bar's real length is now read per bar from the analyser -- see
+   swBarBeats below -- because this constant was checked against the wrong statistic. The old note
+   here said "the ratio of beats to downbeats is 3.88..4.17, so this holds on every track": that
+   is a per-TRACK average, and averages hide exactly what the amplitude cares about. Per BAR,
+   across the same ten cached analyses:
+
+       tmpqybuekfm.mp3  131bpm  218 bars   3.61 .. 4.36   10 bars (4.6%) outside 4.00+-0.25
+       tmpatx0t6s6.mp3  176bpm  183 bars   3.62 .. 4.43    5 bars (2.7%) outside
+
+   Both are real tracks; the synthetic fixtures are all 3.90..4.09 and would never have shown it.
+   The amplitude is linear in the bar's length, so an 11% short bar is an 11% error in the one
+   quantity BAR_SWING is defined to pin. Small, and on a few percent of bars -- but it is the
+   difference between a guarantee and an approximation, and the exact number was already in hand. */
+const BAR_BEATS=4;
+// Declared AFTER BAR_BEATS on purpose: it is initialised from it, and a const is not
+// hoisted -- reading it above this line is a temporal-dead-zone ReferenceError at load.
+let swBarK=-1, swBarBeats=BAR_BEATS;   // the current bar's length in beats; see the phrasing
 /* HOW HARD THE BAR PHRASES THE TURN, as a fraction of the turn's own rate. This is the number the
    removed camera sway did not have: at BAR_SWING the peak swing rate is exactly that multiple of
    the base rate, whatever the tempo, the ladder rung or flow are doing. Below 1 the turn can
@@ -7354,7 +7369,17 @@ function frame(){
     const span=(k>=0 && k+1<D.length) ? D[k+1]-D[k] : 0;
     if(span>0.10 && span<8.0){
       const phi=Math.min(1,Math.max(0,(tt-D[k])/span)); swingPhi=phi;
-      const sw=Math.sin(2*Math.PI*phi), kk=BAR_SWING*BAR_BEATS;
+      /* THE BAR'S OWN LENGTH, not 4. The offset amplitude that makes peak-swing-rate/base-rate
+         come out at exactly BAR_SWING is linear in how many beats the bar spans, and `span` --
+         which the phase above already uses -- says what that is. Taken from beatsAtTime at the
+         two downbeats rather than from span*bpm/60, so it stays exact through a tempo that
+         drifts. Recomputed only when the bar changes, and it falls back to BAR_BEATS if the
+         analyser hands back something outside 1..12 beats. */
+      if(k!==swBarK){ swBarK=k;
+        let bb=BAR_BEATS;
+        try{ bb=beatsAtTime(D[k+1])-beatsAtTime(D[k]); }catch(e){}
+        swBarBeats=(bb>1 && bb<12) ? bb : BAR_BEATS; }
+      const sw=Math.sin(2*Math.PI*phi), kk=BAR_SWING*swBarBeats;
       /* THE AMPLITUDE IS SMOOTHED AND THE PHASE IS NOT, which is the whole trick. Differentiating
          A*sin(2pi*phi) gives the term this is sized for -- A*2pi*cos*dphi, whose ratio to the base
          rate is exactly BAR_SWING -- plus a term nobody sized, dA/dt*sin. A moves with rSpin and
