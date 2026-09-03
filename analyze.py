@@ -22,7 +22,7 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 4
+ANALYSIS_VERSION = 5
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
@@ -134,6 +134,11 @@ def load_audio(path):
 
 # --------------------------------------------------------------------- utilities
 TEMPO_LO, TEMPO_HI = 70.0, 160.0    # the range essentially all dance/electronic music lives in
+# The octave check above beat_track. The ratio sits in a measured gap of more than 10x
+# (0.055 correct, 0.674 halved); the cap is what stops an 8th-note kick pattern being
+# doubled into a tempo nothing plays at.
+OCTAVE_MID_RATIO = 0.30
+OCTAVE_MAX_BPM = 210.0
 
 # How many structural boundaries to ASK the segmenter for, as one per this many seconds.
 # Named and module-level so it can be swept against a track of known structure rather than being
@@ -326,6 +331,39 @@ def layer1_signal(mono, stereo, sr, prog=None):
                                            start_bpm=128.0, trim=False)
     bpm = float(np.atleast_1d(tempo)[0])
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP)
+    # ---- OCTAVE CHECK ----
+    # The tracker locks to HALF the tempo above roughly 175 BPM. librosa scores the period
+    # against a log-normal prior around start_bpm, and at 128 the two candidates are nearly
+    # equidistant -- log2(180/128) is 0.49 and log2(90/128) is -0.51 -- so which one wins is
+    # close to a coin toss. MEASURED on a click ladder, everything from 70 to 174 came back
+    # exact and then:  178 -> 89.1,  180 -> 89.1,  190 -> 95.7,  200 -> 99.4. Not a reporting
+    # slip either: the GRID itself was at half, so the fit below faithfully reports the wrong
+    # metrical level and the client interpolates a grid with every other beat missing. That is
+    # drum and bass, hardcore, gabber and footwork -- a real part of the catalogue, not an edge.
+    #
+    # The evidence that settles it is already to hand: if the grid is at half tempo then every
+    # MIDPOINT between two beats is itself a beat, and carries onset strength to prove it. On
+    # the same ladder the separation is not marginal --
+    #     tracked correctly   mid/beat  0.000 .. 0.055
+    #     locked at half      mid/beat  0.674 .. 1.030
+    # so the threshold sits in a gap of more than a factor of ten. Measured on lo_onset, which
+    # is the low band (fmax 160Hz), so an offbeat hat cannot fake it; only a kick can.
+    #
+    # Capped, because a genuine 8th-note kick pattern would also light up the midpoints and
+    # doubling THAT would report 360 BPM. Nothing real needs the doubled reading above the cap.
+    if len(beats) >= 8:
+        _b = np.asarray(beats, dtype=int)
+        _mid = (_b[:-1] + _b[1:]) // 2
+        _in = lambda ix: ix[(ix >= 0) & (ix < len(lo_onset))]
+        _sb, _sm = _in(_b), _in(_mid)
+        _vb = float(np.mean(lo_onset[_sb])) if _sb.size else 0.0
+        _vm = float(np.mean(lo_onset[_sm])) if _sm.size else 0.0
+        _step = float(np.median(np.diff(beat_times))) if len(beat_times) > 2 else 0.0
+        if _vb > 1e-9 and _step > 1e-3 and (_vm / _vb) > OCTAVE_MID_RATIO \
+           and (120.0 / _step) <= OCTAVE_MAX_BPM:
+            beats = np.unique(np.concatenate([_b, _mid]))
+            beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP)
+            bpm *= 2.0
     # ---- HALF-BEAT PHASE CHECK ----
     # Tracking on the low band fixes most of the offbeat locking but not all of it, because the
     # dynamic program is scored on PERIODICITY and a grid shifted by exactly half a beat is just
