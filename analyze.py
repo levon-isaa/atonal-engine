@@ -276,6 +276,37 @@ def pick_onsets(env, times, min_gap_s, sr):
 BAND_PRESENCE_FLOOR = 0.04
 
 
+# THE 93ms CEILING, AND WHY A SHORTER WINDOW IS NOT THE FIX. Tried and reverted, with the
+# numbers, so the next attempt starts from here rather than from the same idea.
+#
+# S is n_fft=2048 at 22050Hz -- a 93ms window -- and two hits closer than that land in one
+# frame. MEASURED, 24 pairs of equal hits, counting how many came back as TWO onsets:
+#
+#     separation    2048/512 (now)   1024/256   512/128
+#         40ms          0/24          24/24      24/24
+#         60ms          0/24          24/24      24/24
+#         80ms         24/24          24/24      24/24
+#
+# So nothing under ~70ms resolves, and that is not exotic: 32nd notes at 140bpm are 54ms apart,
+# 16ths at 200bpm are 75ms. Trap hats and fast percussion are reported as half what they play.
+# Timing improves too -- median error 5.6ms now, 3.1ms at 1024/256, 1.5ms at 512/128 -- and the
+# extra transform costs about 10ms on a 27s track, which is nothing.
+#
+# IT STILL MAKES THE ANSWER WORSE, because pick_onsets thresholds on percentile(env, 72) and
+# that is calibrated to this frame count. More frames means more quiet ones between events, a
+# lower 72nd percentile, and marginal peaks admitted. On a fixture with exactly 256 kicks by
+# construction, low-band onsets:
+#
+#     2048/512  256   <- correct
+#     1024/512  366
+#     1024/256  963
+#      512/128 1611
+#
+# Monotonic in frame count, which is the threshold and not the window. Resolving 60ms hits is
+# worth having, but it needs an absolute or beat-relative threshold first; a shorter transform
+# alone trades a real limitation for a worse one.
+
+
 def layer1b_bands(S, sr, times):
     """Per-band level curves + discrete onsets, straight off the magnitude spectrogram.
 
