@@ -22,7 +22,7 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 6
+ANALYSIS_VERSION = 7
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
@@ -139,6 +139,12 @@ TEMPO_LO, TEMPO_HI = 70.0, 160.0    # the range essentially all dance/electronic
 # doubled into a tempo nothing plays at.
 OCTAVE_MID_RATIO = 0.30
 OCTAVE_MAX_BPM = 210.0
+
+# The downbeat phase is decided per window of this many beats, with this cost for
+# changing between windows. Both are swept against a fixture whose bar marker shifts
+# mid-track; see the DOWNBEATS block.
+DOWNBEAT_WIN = int(os.environ.get("ATONAL_DB_WIN", "16"))        # 4 bars at 4/4
+DOWNBEAT_SWITCH = float(os.environ.get("ATONAL_DB_SWITCH", "1.2"))
 
 # How many structural boundaries to ASK the segmenter for, as one per this many seconds.
 # Named and module-level so it can be swept against a track of known structure rather than being
@@ -498,13 +504,49 @@ def layer1_signal(mono, stereo, sr, prog=None):
             chord[1:] = np.linalg.norm(np.diff(cb, axis=1), axis=0)
             chord[0] = chord[1]
         score = _z(kick) + _z(crash) + _z(chord)
-        best, best_score = 0, -np.inf
-        for ph in range(4):
-            sl = score[ph::4]
-            sc = float(np.mean(sl)) if len(sl) else -np.inf
-            if sc > best_score:
-                best, best_score = ph, sc
-        db_times = [float(x) for x in beat_times[best::4]]
+        # ---- THE PHASE CAN CHANGE, AND USED TO BE CHOSEN ONCE FOR THE WHOLE TRACK ----
+        # One odd bar -- a dropped beat, an inserted half bar, an edit -- shifts every downbeat
+        # after it, and a single global phase then has to be wrong on one side of that point or
+        # the other. MEASURED on a fixture whose bar marker shifts by one beat halfway through:
+        # 16/16 downbeats before the shift, 0/16 after. Half the track, and it is the half the
+        # listener has already settled into.
+        #
+        # So the phase is decided per window of DOWNBEAT_WIN beats, with a Viterbi over the four
+        # states and a cost for changing. The cost is the whole design: without it the phase
+        # follows every noisy window and the bar grid flaps, which is worse than being wrong
+        # consistently. With it, a change has to be paid for by sustained evidence, which is
+        # exactly what a real edit provides and what noise does not.
+        nb = len(beat_times)
+        W = max(4, int(DOWNBEAT_WIN))
+        nwin = max(1, int(np.ceil(nb / float(W))))
+        emis = np.zeros((nwin, 4), dtype=np.float64)
+        for w in range(nwin):
+            idx = np.arange(w * W, min(nb, (w + 1) * W))
+            vals = []
+            for ph in range(4):
+                sel = idx[(idx % 4) == ph]
+                vals.append(float(np.mean(score[sel])) if sel.size else None)
+            fill = min([v for v in vals if v is not None], default=0.0)
+            emis[w] = [fill if v is None else v for v in vals]
+        cost = emis[0].copy()
+        back = np.zeros((nwin, 4), dtype=int)
+        arange4 = np.arange(4)
+        for w in range(1, nwin):
+            new = np.empty(4, dtype=np.float64)
+            for ph in range(4):
+                cand = cost - DOWNBEAT_SWITCH * (arange4 != ph)
+                j = int(np.argmax(cand))
+                back[w, ph] = j
+                new[ph] = emis[w, ph] + cand[j]
+            cost = new
+        ph = int(np.argmax(cost))
+        phases = [0] * nwin
+        phases[nwin - 1] = ph
+        for w in range(nwin - 1, 0, -1):
+            ph = int(back[w, ph])
+            phases[w - 1] = ph
+        db_times = [float(beat_times[i]) for i in range(nb)
+                    if (i % 4) == phases[min(i // W, nwin - 1)]]
     f["downbeat_times"] = db_times
     f["beat_times"]  = beat_times.tolist()
     # tempo stability: dynamic tempo std (API name moved across librosa versions)
