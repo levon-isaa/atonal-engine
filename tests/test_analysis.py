@@ -2,7 +2,7 @@
 """Accuracy tests for the analysis: is it RIGHT, not merely unchanged.
 
     python tests/test_analysis.py            everything
-    python tests/test_analysis.py tempo      one group (tempo, structure, downbeat, phase)
+    python tests/test_analysis.py tempo      one group (tempo, structure, downbeat, phase, onsets, tonality)
 
 Dependency-free and self-checking in the same way as test_director.py next door, which covers
 the CONTRACT -- the shape of director.json and that it survives degenerate input. This file
@@ -183,12 +183,103 @@ def test_band_presence_does_not_silence_real_bands():
         check(not empty, "%s: every band reports onsets (silent: %s)" % (name, empty or "none"))
 
 
+# ------------------------------------------------------------------ tonality
+# The renderer tints the whole frame by the key, and gates that on strength * confidence:
+#     const w=(T.strength||0)*(T.confidence||0);
+#     if(w<0.08) return 0;                       // viewer.html, keyRot()
+# So this constant is not a test preference -- it is the number the feature actually turns on
+# at, and these tests measure against it.
+KEY_GATE = 0.08
+
+# Shapes that do NOT all start on the tonic, so nothing about the answer is handed over. Both
+# minor shapes REST on the tonic for two bars of four, and that is the point rather than a
+# convenience: what a time-averaged chroma can read is which chord the music spends its time on.
+# Left out are i-VI-III-VII and III-VII-i-VI -- equal-duration natural-minor loops whose pitch
+# content is exactly that of their relative major. Nothing here can separate those; see
+# test_key_accuracy.
+#
+# A three-chord loop written as [3, 6, 0] is NOT the same fixture: 16 bars is 5.33 cycles of it,
+# so the FIRST degree gets six bars against five each for the others, and all three roots then
+# come back as the subdominant -- correctly, because that is what the track dwells on. Written
+# as a four-bar loop the intent is in the shape.
+KEY_SHAPES = [("major", [0, 4, 5, 3]), ("major", [5, 3, 0, 4]),
+              ("minor", [5, 6, 0, 0]), ("minor", [3, 6, 0, 0])]
+
+
+def _tonality(path):
+    return analyze.build_director(path)["tonality"]
+
+
+def test_key_gate_survives_drums():
+    """`strength` used to be distance-from-uniform on the FULL-MIX chroma, which made it a
+    measure of how little percussion a track had rather than how tonal it was. Across 84
+    generated progressions, all tonal by construction, only 19 cleared the renderer's gate --
+    23%. The key tint was switched off for every track with a drummer in it."""
+    print("\nkey gate, tonal progressions with a full kit   (was: 23% cleared it)")
+    passed = tot = 0
+    for mode, prog in KEY_SHAPES:
+        for pc in (0, 5, 9):
+            t = _tonality(fixtures.key_track(pc, mode, prog, drums=1.0))
+            w = (t["strength"] or 0) * (t["confidence"] or 0)
+            tot += 1
+            passed += w >= KEY_GATE
+    check(passed == tot, "%d/%d tonal tracks clear the gate (mix chroma cleared 23%%)"
+          % (passed, tot))
+
+
+def test_strength_is_not_a_drum_meter():
+    """MEASURED on one C major I-V-vi-IV with nothing changed but the drum level, the old
+    strength ran 0.463 0.372 0.278 0.188 0.106 0.055 -- an 8.4x swing over a harmony that never
+    moves, and at the loudest the key itself flipped to A minor."""
+    print("\nstrength vs drum level, harmony held fixed   (was: 8.3x swing, key flipped)")
+    vals, keys = [], []
+    for drums in (0.0, 0.25, 1.0, 2.0):
+        t = _tonality(fixtures.key_track(0, "major", [0, 4, 5, 3], drums=drums))
+        vals.append(t["strength"])
+        keys.append("%s %s" % (t["key"], t["mode"]))
+    swing = max(vals) / max(min(vals), 1e-6)
+    check(swing < 2.0, "strength %s -> swing %.2fx over 0..2 drums" %
+          (" ".join("%.3f" % v for v in vals), swing))
+    check(len(set(keys)) == 1, "key is the same at every drum level: %s" % " | ".join(keys))
+    check(min(vals) > 0.4, "quietest reading %.3f still reads as clearly tonal" % min(vals))
+
+
+def test_atonal_stays_below_the_gate():
+    """The complement of the gate test, and the reason `strength` cannot simply be raised: the
+    whole-tone wash has no key at all, and the old distance-from-uniform measure scored it 0.757
+    -- clearing the gate at w = 0.132 and tinting the frame on nothing."""
+    print("\nmaterial with no key at all   (was: the whole-tone wash cleared the gate)")
+    for kind in ("noise", "drums", "chromatic", "wholetone"):
+        t = _tonality(fixtures.atonal_track(kind))
+        w = (t["strength"] or 0) * (t["confidence"] or 0)
+        check(w < KEY_GATE, "%-9s strength %.3f * conf %.3f = %.3f < %.2f"
+              % (kind, t["strength"], t["confidence"], w, KEY_GATE))
+
+
+def test_key_accuracy():
+    """A floor under the key itself, so the tonality work above cannot quietly trade accuracy
+    for a healthier gate. The harmonic chroma scores exactly what the mix chroma scored on the
+    full 84-case sweep -- 60/84 either way -- and every miss is the same one: an equal-duration
+    natural-minor loop reported as its relative major. That failure is not in KEY_SHAPES because
+    it is not fixable here; it is in the docstring of layer2c_tonality with the numbers."""
+    print("\nkey identification, four shapes x three roots")
+    ok = tot = 0
+    for mode, prog in KEY_SHAPES:
+        for pc in (0, 5, 9):
+            t = _tonality(fixtures.key_track(pc, mode, prog, drums=1.0))
+            tot += 1
+            ok += (t["key"] == fixtures.PITCHES[pc] and t["mode"] == mode)
+    check(ok == tot, "%d/%d keys identified" % (ok, tot))
+
+
 GROUPS = {
     "tempo": [test_tempo],
     "structure": [test_structure, test_energy_only_boundaries],
     "downbeat": [test_downbeat_phase, test_phase_does_not_flap],
     "phase": [test_phase_shift],
     "onsets": [test_band_presence, test_band_presence_does_not_silence_real_bands],
+    "tonality": [test_key_gate_survives_drums, test_strength_is_not_a_drum_meter,
+                 test_atonal_stays_below_the_gate, test_key_accuracy],
 }
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 9
+ANALYSIS_VERSION = 10
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
@@ -370,6 +370,18 @@ def layer1_signal(mono, stereo, sr, prog=None):
             H, P = librosa.effects.hpss(mono)
             _hp["h"] = librosa.feature.rms(y=H, hop_length=HOP)[0]
             _hp["p"] = librosa.feature.rms(y=P, hop_length=HOP)[0]
+            # THE KEY IS READ OFF H, NOT OFF THE MIX -- see layer2c_tonality for the numbers.
+            # Computed here, on this thread, because H is already in hand and is dropped as soon
+            # as the worker returns; doing it outside would mean either keeping H alive (53 MB on
+            # a ten-minute track) or separating twice.
+            #
+            # IT IS A SECOND CQT AND IT IS NOT FREE. Being on the worker thread does not hide it:
+            # MEASURED end to end, best of three, 0.0337 -> 0.0362 s/s on a 128s fixture and
+            # 0.0352 -> 0.0381 s/s on a 64s one, so about +8% on the analysis cost law. The
+            # mix chroma cannot simply be dropped in its favour -- the downbeat chord-change
+            # signal below reads f["chroma"] BEFORE this thread is joined, and moving the join
+            # up to share one chroma would serialise HPSS and cost more than the CQT saves.
+            _hp["chroma"] = librosa.feature.chroma_cqt(y=H, sr=sr, hop_length=HOP)
         except Exception as e:
             _hp["e"] = e
     _hp_th = threading.Thread(target=_hpss_worker, name="hpss", daemon=True)
@@ -665,6 +677,7 @@ def layer1_signal(mono, stereo, sr, prog=None):
     if _hp.get("e") is not None:
         raise _hp["e"]
     f["harm"], f["perc"] = _hp["h"], _hp["p"]
+    f["chroma_h"] = _hp["chroma"]                   # harmonic-only chroma, for the key
     # per-band levels + the individual hits in each band (done here, while S is in hand)
     step("bands")
     f["band_levels"], f["band_onsets"] = layer1b_bands(S, sr, f["times"])
@@ -937,6 +950,12 @@ KS_MINOR = np.array([6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17
 PITCHES  = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
 
 
+# Scale degrees of the major and natural minor scales, used by `strength` below.
+MAJ_SCALE = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1], dtype=bool)
+MIN_SCALE = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype=bool)
+DIATONIC_FLOOR = 7.0 / 12.0     # what a perfectly flat chroma scores; 0 on the reported scale
+
+
 def layer2c_tonality(f):
     """Key, mode, and how tonal the track is at all.
 
@@ -946,10 +965,54 @@ def layer2c_tonality(f):
 
     `strength` is separate and answers a different question — whether the track is tonal in the
     first place. A drum loop or a noise wash has a near-flat chroma, which still produces a
-    winning key, just a meaningless one. Measured as distance from a uniform distribution, so
-    the renderer can ignore the key when there is not really one.
+    winning key, just a meaningless one.
+
+    BOTH OF THESE USED TO BE READ OFF THE FULL MIX, AND `strength` WAS THEREFORE A MEASURE OF
+    HOW LITTLE PERCUSSION THE TRACK HAD. Percussion is broadband: it adds roughly the same
+    weight to all twelve pitch classes, which flattens the chroma without touching the harmony.
+    The old `strength` was distance-from-uniform, so it read that flattening as "not tonal".
+    MEASURED on one C major I-V-vi-IV progression with nothing changed but the drum level:
+
+        drums     0.00   0.10   0.25   0.50   1.00   2.00
+        strength  0.463  0.372  0.278  0.188  0.106  0.055
+
+    An 8.4x swing over a harmony that never moves, and at 2.00 the key itself flipped to A
+    minor. A normally mixed track landed near 0.10 -- next to a bare drum loop at 0.022.
+
+    That mattered because the renderer gates the key tint on `strength * confidence >= 0.08`
+    (viewer.html, keyRot). ACROSS 84 GENERATED PROGRESSIONS, ALL TONAL BY CONSTRUCTION, 12
+    ROOTS x 7 SHAPES, ONLY 19 CLEARED THAT GATE -- 23%. The whole feature was switched off for
+    the four fifths of the catalogue that have a drummer in them.
+
+    Two changes, both needed:
+
+    1. The chroma comes from the HARMONIC component of HPSS, which the pipeline already
+       computes and used to throw away (see layer1_signal). Percussion is what the separation
+       exists to remove.
+    2. `strength` is the share of chroma weight falling inside the winning key's scale, rescaled
+       so that a flat chroma reads 0. Distance-from-uniform asks "is any pitch class
+       prominent"; this asks "is the pitch content consistent with a key", which is the actual
+       question. A whole-tone wash has no key at all and scored 0.757 under the old measure --
+       clearing the gate at w=0.132 -- and scores 0.000 under this one.
+
+    Gate pass rate on the same 84 tonal progressions, and it is the pair that does it:
+
+        mix      + distance-from-uniform (shipped)   19/84   23%
+        mix      + diatonic share                    67/84   80%
+        harmonic + distance-from-uniform             84/84  100%   <- but see below
+        harmonic + diatonic share                    84/84  100%
+
+    The third row is not safe on its own: on the harmonic component a bare drum loop scores
+    0.141 for distance-from-uniform, which can clear the gate. With diatonic share it is 0.000.
+    Every atonal fixture -- white and pink noise, drum loop, kick alone, chromatic wash,
+    whole-tone wash, cluster over drums -- stays at or under w = 0.005 against a gate of 0.08.
+
+    THE KEY ITSELF IS NOT MORE ACCURATE FOR THIS. Both chromas score 60/84 on those same
+    progressions, identically. What was broken was not the answer but the confidence that there
+    was a question, and the renderer believed it.
     """
-    ch = np.asarray(f["chroma"], dtype=np.float64)
+    ch = np.asarray(f.get("chroma_h") if f.get("chroma_h") is not None else f["chroma"],
+                    dtype=np.float64)
     prof = ch.mean(axis=1)
     tot = float(prof.sum())
     if not np.isfinite(tot) or tot <= 1e-9:
@@ -968,12 +1031,13 @@ def layer2c_tonality(f):
     top = scored[0]
     rival = next((x for x in scored[1:] if x[1] != top[1]), (0.0, "", ""))
     margin = float(np.clip((top[0] - rival[0]) / 0.35, 0, 1))
-    # entropy against uniform: 0 = flat chroma (no key worth reporting), 1 = one pitch class
-    ent = -np.sum(prof * np.log(prof + 1e-12)) / np.log(12.0)
-    strength = float(np.clip(1.0 - ent, 0, 1) * 3.0)
+    # share of the chroma inside the winning key's scale, rescaled so a flat chroma reads 0
+    scale = np.roll(MAJ_SCALE if top[2] == "major" else MIN_SCALE, PITCHES.index(top[1]))
+    share = float(prof[scale].sum())
+    strength = (share - DIATONIC_FLOOR) / (1.0 - DIATONIC_FLOOR)
     return {"key": top[1], "mode": top[2],
             "confidence": round(margin, 3),
-            "strength": round(min(1.0, strength), 3)}
+            "strength": round(float(np.clip(strength, 0.0, 1.0)), 3)}
 
 
 def onset_rate(f, win_s=2.0):

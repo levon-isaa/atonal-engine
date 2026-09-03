@@ -220,3 +220,72 @@ def band_isolated_track(seconds=30.0):
             if m > 0:
                 x[i:i + m] += amp * b[:m]
     return _write(path, x), truth
+
+
+# ------------------------------------------------------------------ tonality
+# Scale degrees and the triad on each, major and natural minor.
+_MAJ, _MIN, _DIM = (0, 4, 7), (0, 3, 7), (0, 3, 6)
+_MAJ_DEG = [(0, _MAJ), (2, _MIN), (4, _MIN), (5, _MAJ), (7, _MAJ), (9, _MIN), (11, _DIM)]
+_MIN_DEG = [(0, _MIN), (2, _DIM), (3, _MAJ), (5, _MIN), (7, _MIN), (8, _MAJ), (10, _MAJ)]
+PITCHES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def _hz(pc, octave=3):
+    return 440.0 * (2 ** ((pc - 9) / 12.0 + (octave - 4)))
+
+
+def key_track(root_pc, mode, prog, drums=1.0, bars=16, bpm=100.0, seed=11):
+    """A diatonic chord loop in a known key, over a drum kit of adjustable level.
+
+    `prog` is a list of scale-degree INDICES, so the same shape transposes to all twelve roots.
+    `drums` scales the kit only -- the harmony is identical at every level, which is what makes
+    the tonality tests able to separate "how tonal is this" from "how loud is the drummer".
+    """
+    name = "key_%s_%s_%s_%s.wav" % (PITCHES[root_pc].replace("#", "s"), mode,
+                                    "".join(str(d) for d in prog), ("%.2f" % drums).replace(".", ""))
+    path = os.path.join(CACHE, name)
+    if os.path.exists(path):
+        return path
+    spb = 60.0 / bpm
+    bar = spb * 4
+    n = int(SR * bar * bars) + SR
+    t = np.arange(n) / SR
+    x = np.zeros(n)
+    degs = _MAJ_DEG if mode == "major" else _MIN_DEG
+    for b in range(bars):
+        step, triad = degs[prog[b % len(prog)]]
+        chord = [_hz((root_pc + step + iv) % 12, 3 + ((root_pc + step + iv) // 12)) for iv in triad]
+        chord.append(_hz((root_pc + step) % 12, 2))              # bass root
+        _pad(x, t, b * bar, (b + 1) * bar, chord, 4, level=1.0)
+    if drums > 0:
+        for k in range(int(bars * 4)):
+            _kick(x, k * spb, amp=0.6 * drums)
+            if k % 2 == 1:
+                _crash(x, k * spb, seed + k, amp=0.20 * drums)
+    return _write(path, x)
+
+
+def atonal_track(kind, seconds=40.0, seed=3):
+    """Material with no key at all. `strength` must stay near zero on every one of these."""
+    path = os.path.join(CACHE, "atonal_%s.wav" % kind)
+    if os.path.exists(path):
+        return path
+    n = int(SR * seconds)
+    t = np.arange(n) / SR
+    rng = np.random.RandomState(seed)
+    if kind == "noise":
+        x = rng.randn(n) * 0.3
+    elif kind == "drums":
+        x = np.zeros(n)
+        for k in range(int(seconds / 0.5)):
+            _kick(x, k * 0.5)
+            _crash(x, k * 0.5 + 0.25, seed + k, amp=0.3)
+    elif kind == "chromatic":
+        x = sum(np.sin(2 * np.pi * 220 * 2 ** (p / 12.0) * t) for p in range(12)) / 12.0
+    elif kind == "wholetone":
+        # six equally spaced pitches: peaked chroma, no key. The old distance-from-uniform
+        # `strength` scored this 0.757 and cleared the renderer's gate on it.
+        x = sum(np.sin(2 * np.pi * 220 * 2 ** (p / 12.0) * t) for p in range(0, 12, 2)) / 6.0
+    else:
+        raise ValueError(kind)
+    return _write(path, x)
