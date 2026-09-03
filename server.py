@@ -238,6 +238,41 @@ class H(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204); self._cors(); self.end_headers()
 
+    @staticmethod
+    def _bucket(addr):
+        """The identity the free tier counts against.
+
+        IPv4 IS THE ADDRESS. IPv6 IS THE /64, AND THAT DIFFERENCE IS THE WHOLE POINT.
+        A v6 host does not have an address, it has a range: RFC 4941 privacy extensions
+        rotate the low 64 bits on a schedule (daily on most desktops, and some stacks take a
+        fresh one per connection), and every device behind one subscriber line gets its own
+        address out of the same /64 anyway. Counting the full 128 bits therefore counts
+        something that changes on its own, so `FREE_PER_DAY` was not a daily limit for any
+        v6 client -- it was a per-address limit on an address they get a new one of for free.
+        billing.py says the free tier exists to close "the unbounded-cost-with-zero-revenue
+        case"; on v6 it was wide open, and analysis is 0.036s of CPU and up to 4.95 MB of RSS
+        per second of audio on a single serialised slot.
+
+        The /64 is the right unit because it is what gets delegated to a subscriber: smaller
+        and the rotation defeats it, larger and one ISP's customers share a bucket.
+
+        IPv4-mapped addresses (::ffff:1.2.3.4, which is what a dual-stack listener reports for
+        a v4 client) resolve to the v4 address, so the same caller is one identity whichever
+        socket family it arrives on rather than two.
+        """
+        try:
+            import ipaddress
+            ip = ipaddress.ip_address(addr.strip())
+            if getattr(ip, "ipv4_mapped", None):
+                return str(ip.ipv4_mapped)
+            if ip.version == 6:
+                return str(ipaddress.ip_network(str(ip) + "/64", strict=False))
+            return str(ip)
+        except ValueError:
+            # Not an address we can parse -- a hostname from a header, say. Counting it as
+            # itself is still better than counting nothing.
+            return (addr or "").strip()[:64]
+
     def _ip(self):
         """The free tier counts per IP, so behind a proxy the header is the only
         real client address -- but it is client-settable, so it is trusted ONLY
@@ -247,8 +282,8 @@ class H(BaseHTTPRequestHandler):
         if os.environ.get("ATONAL_TRUST_PROXY"):
             fwd = self.headers.get("X-Forwarded-For", "")
             if fwd:
-                return fwd.split(",")[0].strip()[:64]
-        return self.client_address[0]
+                return self._bucket(fwd.split(",")[0][:64])
+        return self._bucket(self.client_address[0])
 
     def _billing_get(self, path, q):
         """GET side of billing. Returns True if it handled the request."""
