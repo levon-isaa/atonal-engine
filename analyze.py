@@ -22,7 +22,7 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 5
+ANALYSIS_VERSION = 6
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
@@ -466,15 +466,42 @@ def layer1_signal(mono, stereo, sr, prog=None):
     # into bars, the true one is the grouping whose first beats carry the most low-frequency
     # onset energy, because that is where the kick sits in almost all metered popular music.
     # Falls back to phase 0 when there is no evidence either way.
+    # THE KICK ALONE CANNOT FIND THE BAR IN FOUR-TO-THE-FLOOR, which is most of the catalogue
+    # this renders. When every beat carries the same kick, all four phases score the same
+    # low-band energy and the pick is made on noise. MEASURED on a 120bpm four-to-the-floor
+    # fixture whose bar is marked by a crash and a chord change -- both above the 160Hz band
+    # this was looking at -- with the true phase placed at each of the four offsets in turn:
+    # 2 of 4 correct, and the four phase scores within 25% of each other.
+    #
+    # So score the phase on the three things that actually mark a bar, not one of them:
+    #   the KICK      lo_onset, the low band -- what this always used
+    #   the CRASH     f["flux"], full-band onset -- a crash or an open hat is broadband
+    #   the CHORD     how far the chroma moves from the previous beat
+    # Each is standardised across beats before they are added, so no term dominates by having
+    # bigger units, and a track that only carries one of the three is still decided by it.
     db_times = []
     if len(beat_times) >= 8:
-        # the same low-band envelope the grid was tracked on, computed once above
-        lo = lo_onset
-        bf = np.clip(f["beat_frames"], 0, len(lo) - 1)
-        strength = lo[bf]
+        def _z(v):
+            v = np.asarray(v, dtype=np.float64)
+            sd = float(np.std(v))
+            return (v - float(np.mean(v))) / sd if sd > 1e-9 else np.zeros_like(v)
+        bfr = np.asarray(f["beat_frames"], dtype=int)
+        nb = len(bfr)
+        kick = lo_onset[np.clip(bfr, 0, len(lo_onset) - 1)]
+        flux = np.asarray(f["flux"], dtype=np.float64)
+        crash = flux[np.clip(bfr, 0, len(flux) - 1)]
+        ch = np.asarray(f["chroma"], dtype=np.float64)
+        cb = ch[:, np.clip(bfr, 0, ch.shape[1] - 1)]
+        cb = cb / (np.linalg.norm(cb, axis=0, keepdims=True) + 1e-9)
+        chord = np.zeros(nb, dtype=np.float64)
+        if nb > 1:
+            chord[1:] = np.linalg.norm(np.diff(cb, axis=1), axis=0)
+            chord[0] = chord[1]
+        score = _z(kick) + _z(crash) + _z(chord)
         best, best_score = 0, -np.inf
         for ph in range(4):
-            sc = float(np.mean(strength[ph::4])) if len(strength[ph::4]) else -np.inf
+            sl = score[ph::4]
+            sc = float(np.mean(sl)) if len(sl) else -np.inf
             if sc > best_score:
                 best, best_score = ph, sc
         db_times = [float(x) for x in beat_times[best::4]]
