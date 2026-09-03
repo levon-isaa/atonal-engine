@@ -203,6 +203,30 @@ def cache_get(digest):
     return hit
 
 
+def cache_stale(digest):
+    """True when these exact bytes WERE analysed here, under an older pipeline.
+
+    cache_get returns None for three different situations -- never seen, unreadable, and
+    analysed by a previous ANALYSIS_VERSION -- and the third one is not a miss. The pricing
+    page says "upload the same file again and it is served from cache at no charge", and that
+    promise is about the FILE. Bumping ANALYSIS_VERSION emptied it silently: every track a
+    customer had already paid to analyse became chargeable again, through no act of theirs,
+    on the next pipeline improvement. This is how the gate below tells the two apart.
+
+    A corrupt or unreadable entry is deliberately NOT stale: it proves nothing about what was
+    analysed, so it falls through and is treated as new.
+    """
+    fp = cache_path(digest)
+    if not os.path.exists(fp):
+        return False
+    try:
+        with open(fp, "r") as fh:
+            hit = json.load(fh)
+    except Exception:
+        return False
+    return (hit.get("meta") or {}).get("analysis_version") != analyze.ANALYSIS_VERSION
+
+
 def cache_put(digest, director):
     """Write atomically: a reader must never observe a half-written entry."""
     try:
@@ -544,9 +568,19 @@ class H(BaseHTTPRequestHandler):
             # everything expensive, so nothing is spent before payment is.
             # The ref is per ATTEMPT rather than per track, so a refund below
             # cannot leave a track permanently free to re-analyse.
+            #
+            # A VERSION BUMP IS NOT A REASON TO CHARGE SOMEONE AGAIN. These bytes having a
+            # stale entry means the analysis was already bought here once; the pipeline
+            # changing afterwards is our decision, not the customer's, and the pricing page
+            # promises the FILE is free the second time. So the work is redone -- they get the
+            # better analysis -- and the gate is skipped. Same rule for free and for paid,
+            # which is also how a plain cache hit already behaves: free to everyone, not just
+            # to whoever paid first.
             key = (self.headers.get("X-Render-Key") or "").strip()
             attempt = digest[:16] + ":" + secrets.token_hex(6)
-            if key:
+            if cache_stale(digest):
+                print(f"[reanalyse] {name} -> {digest[:12]} (older pipeline; not charged)", flush=True)
+            elif key:
                 if not billing.key_exists(key):
                     return self._json(402, {"error": "That render key is not recognised.",
                                             "code": "bad_key"})

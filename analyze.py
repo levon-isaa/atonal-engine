@@ -22,7 +22,7 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
@@ -578,6 +578,40 @@ class Progress:
         self.done = min(1.0, self.done + wk)
 
 
+# How hard a structural boundary argues against a loudness one, as a multiplier on the
+# feature-space jump it sits on. 0 restores the old behaviour exactly (a flat 1.0), which is
+# what the sweep below was measured against.
+SEG_STRUCT_GAIN = float(os.environ.get("ATONAL_SEG_STRUCT_GAIN", "1.0"))
+
+
+def _struct_strength(sync, bounds):
+    """How much the beat-synchronous feature stack actually changes across each boundary.
+
+    Scored on the SAME shape as a novelty peak -- 1 + (this change / a typical change) -- so the
+    two are comparable quantities rather than a number against a constant. The typical change is
+    the median beat-to-beat step in the same space, which makes the score read as "this is N
+    times an ordinary moment", independent of how loud or busy the track is.
+    """
+    S = np.asarray(sync, dtype=float)
+    if S.ndim != 2 or S.shape[1] < 4:
+        return [1.0] * len(bounds)
+    step = np.linalg.norm(np.diff(S, axis=1), axis=0)
+    med = float(np.median(step)) if step.size else 0.0
+    if not np.isfinite(med) or med <= 1e-9:
+        return [1.0] * len(bounds)
+    W = 8                                   # beats averaged each side; two bars at 4/4
+    out = []
+    for b in np.atleast_1d(bounds):
+        b = int(b)
+        a0, a1 = max(0, b - W), b
+        c0, c1 = b, min(S.shape[1], b + W)
+        if a1 - a0 < 2 or c1 - c0 < 2:
+            out.append(1.0); continue
+        jump = float(np.linalg.norm(S[:, c0:c1].mean(axis=1) - S[:, a0:a1].mean(axis=1)))
+        out.append(1.0 + SEG_STRUCT_GAIN * jump / med)
+    return out
+
+
 # ========================================================= LAYER 2: STRUCTURE
 def layer2_structure(f, sr):
     import librosa
@@ -591,10 +625,13 @@ def layer2_structure(f, sr):
     sync = librosa.util.sync(stack, beats, aggregate=np.mean)
     kmax = int(np.clip(f["duration"] / SEG_SECONDS_PER_BOUNDARY, SEG_KMAX_LO, SEG_KMAX_HI))
     bt = [0.0, f["duration"]]
+    struct_t, struct_s = [], []
     try:
         bounds = librosa.segment.agglomerative(sync, kmax)      # structural boundaries
         bframes = beats[np.clip(bounds, 0, len(beats) - 1)]
-        bt += librosa.frames_to_time(bframes, sr=sr, hop_length=HOP).tolist()
+        struct_t = librosa.frames_to_time(bframes, sr=sr, hop_length=HOP).tolist()
+        bt += struct_t
+        struct_s = _struct_strength(sync, bounds)
     except Exception:
         bt += np.linspace(0, f["duration"], kmax + 1).tolist()
     # add ENERGY-NOVELTY boundaries so hard build->drop / drop->breakdown changes land
@@ -615,6 +652,13 @@ def layer2_structure(f, sr):
     strength = {}
     for t in bt:
         strength.setdefault(round(t, 2), 1.0)
+    # STRUCTURE GETS A STRENGTH OF ITS OWN. It used to be a flat 1.0 while a novelty peak scored
+    # 1 + de/thr -- and de > thr is the very test for being a peak, so novelty scored above 2.0
+    # ALWAYS and structure lost every contest it entered. The merge was not choosing between two
+    # kinds of evidence, it was preferring loudness unconditionally. See _struct_strength.
+    for t, sc in zip(struct_t, struct_s):
+        k = round(t, 2)
+        strength[k] = max(strength.get(k, 0.0), sc)
     for i, t in zip(nov, nov_t):
         k = round(t, 2)
         strength[k] = max(strength.get(k, 0.0), 1.0 + float(de[i] / max(thr, 1e-9)))
