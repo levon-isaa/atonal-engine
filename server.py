@@ -17,8 +17,127 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import analyze, tagger, billing
 
 # One analysis at a time. librosa + a 300MB PANNs model are both CPU and memory heavy; two
-# concurrent requests do not run twice as fast, they thrash and can exhaust memory.
-_ANALYSIS = threading.Semaphore(1)
+# concurrent requests do not run twice as fast, they thrash and can exhaust memory. The
+# serialisation itself now lives in _Slot below, which owns the order as well as the count.
+
+# ------------------------------------------------------------------ WAITING IS NOT ANALYSING
+# A second customer arriving during someone else's analysis blocks on the semaphore above, and
+# for as long as that lasts the only thing their page was told was {"stage": "queued", "p": 0,
+# "next": 0, "eta": 0}. The client strips "queued" from its label, so it read "Analysing..."
+# with the bar parked at the upload share and no way to move -- the exact frozen bar the ease
+# in viewer.html exists to prevent, except here nothing was happening at all.
+#
+# MEASURED, two 25s uploads 0.9s apart against this server: the second sat in that state for
+# 2.5s of a 3.7s request. On real material the wait is the whole of the other track's analysis,
+# and with a 20-minute cap that is up to 46 seconds of a page that looks hung.
+#
+# So say what is true: waiting, how many are in front, and for roughly how long. The estimate
+# uses the duration the length probe already measured, at a rate that starts from the numbers in
+# analyze.py's comment and then calibrates itself to whatever machine this is -- the same thing
+# analyze.Progress does with its own totals, and for the same reason.
+_QCOND = threading.Condition()          # guards _WAITING, _RUNNING, _BUSY and _EST_RATE
+_WAITING = []                # _Slot objects waiting for the slot, in SERVICE order
+_RUNNING = None              # (started_at, audio_seconds) of the one holding it
+_BUSY = False                # is the slot taken
+_EST_FIXED = 2.8             # imports and the PANNs checkpoint: constant per analysis
+_EST_RATE = 0.036            # wall seconds per second of audio (measured: 3.51s at 20s, 25.81s at 640s)
+
+
+def _est(secs):
+    return _EST_FIXED + _EST_RATE * max(0.0, secs or 0.0)
+
+
+def _est_observe(audio_secs, wall):
+    """Pull the rate towards what this machine actually just did. Guarded on both sides
+    because one absurd sample -- a swapping box, a clock jump -- must not poison every
+    estimate after it."""
+    global _EST_RATE
+    if not audio_secs or audio_secs < 20 or wall <= _EST_FIXED:
+        return
+    r = (wall - _EST_FIXED) / audio_secs
+    if 0.002 < r < 1.0:
+        with _QCOND:
+            _EST_RATE += (r - _EST_RATE) * 0.3
+
+
+class _Slot:
+    """The analysis slot, taken as a context manager so the wait for it can report itself
+    and so the ORDER of the wait is ours to decide.
+
+    Nothing here changes what is serialised or for how long -- one analysis at a time is the
+    right answer and stays. What changes is that the queue is visible from outside it, and
+    that a key which bought a pack carrying `priority` is served before one that did not.
+    That line was on the pricing page for a while with nothing behind it.
+
+    TURN-TAKING RATHER THAN A RACE. The first version of this looped on
+    Semaphore.acquire(timeout=0.4), which cannot express an order at all: every waiter
+    re-enters the semaphore's own wait queue on each pass, so whoever happens to be woken
+    wins. It was not even reliably first-come. A condition variable plus an explicitly
+    ordered list makes the next server a decision instead of an accident.
+    """
+
+    def __init__(self, job, secs, prio=False):
+        self.job, self.secs, self.prio = job, secs, bool(prio)
+
+    def _say_waiting(self):
+        """Caller holds _QCOND. Only _progress_set's own lock is taken below it, and nothing
+        anywhere takes _QCOND while holding that, so the nesting is one-way."""
+        try:
+            pos = _WAITING.index(self)
+        except ValueError:
+            pos = 0
+        wait = sum(_est(w.secs) for w in _WAITING[:pos])
+        if _RUNNING:
+            wait += max(0.0, _est(_RUNNING[1]) - (time.time() - _RUNNING[0]))
+        # `ahead` CAN GO UP while someone is waiting, when a priority upload arrives behind
+        # them and is placed in front. That is what it looks like to be overtaken, and the
+        # honest thing is to show it rather than to freeze a number that is no longer true.
+        _progress_set(self.job, {"stage": "waiting", "p": 0.0, "next": 0.0,
+                                 "eta": round(wait, 1),
+                                 "ahead": pos + (1 if _RUNNING else 0)})
+
+    def _seat(self):
+        """Insert into _WAITING at the position we should be served from. Priority goes ahead
+        of everything unprioritised and behind everything prioritised, so each class stays
+        first-come within itself and no one is reordered twice."""
+        i = len(_WAITING)
+        if self.prio:
+            while i > 0 and not _WAITING[i - 1].prio:
+                i -= 1
+        _WAITING.insert(i, self)
+
+    def __enter__(self):
+        global _BUSY, _RUNNING
+        with _QCOND:
+            # The common case -- nobody else here -- never enters the queue and so never
+            # flashes a "waiting" state it is not in.
+            if _BUSY or _WAITING:
+                self._seat()
+                self._say_waiting()
+                try:
+                    while _BUSY or _WAITING[0] is not self:
+                        _QCOND.wait(0.5)         # timed, so the countdown keeps ticking
+                        self._say_waiting()
+                except BaseException:
+                    if self in _WAITING:
+                        _WAITING.remove(self)
+                    _QCOND.notify_all()          # our seat is free; someone else may be next
+                    raise
+                _WAITING.remove(self)
+            _BUSY = True
+            _RUNNING = (time.time(), self.secs)
+        self.t0 = time.time()
+        return self
+
+    def __exit__(self, *exc):
+        global _BUSY, _RUNNING
+        with _QCOND:
+            _BUSY = False
+            _RUNNING = None
+            _QCOND.notify_all()
+        if exc[0] is None:
+            _est_observe(self.secs, time.time() - self.t0)
+        return False
 
 # Progress is reported on a SIDE CHANNEL rather than by streaming the response, so POST /analyze
 # keeps its existing contract: one request, one director.json, no chunk parsing on the client.
@@ -53,9 +172,11 @@ def _progress_clear(job):
 PORT = int(os.environ.get("ATONAL_PORT", "8770"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, "out", "cache")
-# A whole track is read into memory before analysis, so this is the real ceiling on a request.
-# 300MB covers a long lossless file with room to spare; without a cap a bad or hostile request
-# can drive the process into swap.
+# The ceiling on the TRANSFER. It is not the ceiling on the work, which this comment used to
+# claim it was: analysis cost is linear in seconds of audio and has no term in file size, so
+# 300 MB of 128 kbps mp3 is five hours and about 94 GB. That is analyze.MAX_SECONDS' job now;
+# see the measurements above it. This number still earns its place -- the body is read into
+# memory in one call below, on a thread per request -- it just bounds a different thing.
 MAX_UPLOAD = 300 * 1024 * 1024
 
 
@@ -80,6 +201,30 @@ def cache_get(digest):
     if (hit.get("meta") or {}).get("analysis_version") != analyze.ANALYSIS_VERSION:
         return None
     return hit
+
+
+def cache_stale(digest):
+    """True when these exact bytes WERE analysed here, under an older pipeline.
+
+    cache_get returns None for three different situations -- never seen, unreadable, and
+    analysed by a previous ANALYSIS_VERSION -- and the third one is not a miss. The pricing
+    page says "upload the same file again and it is served from cache at no charge", and that
+    promise is about the FILE. Bumping ANALYSIS_VERSION emptied it silently: every track a
+    customer had already paid to analyse became chargeable again, through no act of theirs,
+    on the next pipeline improvement. This is how the gate below tells the two apart.
+
+    A corrupt or unreadable entry is deliberately NOT stale: it proves nothing about what was
+    analysed, so it falls through and is treated as new.
+    """
+    fp = cache_path(digest)
+    if not os.path.exists(fp):
+        return False
+    try:
+        with open(fp, "r") as fh:
+            hit = json.load(fh)
+    except Exception:
+        return False
+    return (hit.get("meta") or {}).get("analysis_version") != analyze.ANALYSIS_VERSION
 
 
 def cache_put(digest, director):
@@ -117,6 +262,41 @@ class H(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204); self._cors(); self.end_headers()
 
+    @staticmethod
+    def _bucket(addr):
+        """The identity the free tier counts against.
+
+        IPv4 IS THE ADDRESS. IPv6 IS THE /64, AND THAT DIFFERENCE IS THE WHOLE POINT.
+        A v6 host does not have an address, it has a range: RFC 4941 privacy extensions
+        rotate the low 64 bits on a schedule (daily on most desktops, and some stacks take a
+        fresh one per connection), and every device behind one subscriber line gets its own
+        address out of the same /64 anyway. Counting the full 128 bits therefore counts
+        something that changes on its own, so `FREE_PER_DAY` was not a daily limit for any
+        v6 client -- it was a per-address limit on an address they get a new one of for free.
+        billing.py says the free tier exists to close "the unbounded-cost-with-zero-revenue
+        case"; on v6 it was wide open, and analysis is 0.036s of CPU and up to 4.95 MB of RSS
+        per second of audio on a single serialised slot.
+
+        The /64 is the right unit because it is what gets delegated to a subscriber: smaller
+        and the rotation defeats it, larger and one ISP's customers share a bucket.
+
+        IPv4-mapped addresses (::ffff:1.2.3.4, which is what a dual-stack listener reports for
+        a v4 client) resolve to the v4 address, so the same caller is one identity whichever
+        socket family it arrives on rather than two.
+        """
+        try:
+            import ipaddress
+            ip = ipaddress.ip_address(addr.strip())
+            if getattr(ip, "ipv4_mapped", None):
+                return str(ip.ipv4_mapped)
+            if ip.version == 6:
+                return str(ipaddress.ip_network(str(ip) + "/64", strict=False))
+            return str(ip)
+        except ValueError:
+            # Not an address we can parse -- a hostname from a header, say. Counting it as
+            # itself is still better than counting nothing.
+            return (addr or "").strip()[:64]
+
     def _ip(self):
         """The free tier counts per IP, so behind a proxy the header is the only
         real client address -- but it is client-settable, so it is trusted ONLY
@@ -126,8 +306,8 @@ class H(BaseHTTPRequestHandler):
         if os.environ.get("ATONAL_TRUST_PROXY"):
             fwd = self.headers.get("X-Forwarded-For", "")
             if fwd:
-                return fwd.split(",")[0].strip()[:64]
-        return self.client_address[0]
+                return self._bucket(fwd.split(",")[0][:64])
+        return self._bucket(self.client_address[0])
 
     def _billing_get(self, path, q):
         """GET side of billing. Returns True if it handled the request."""
@@ -165,6 +345,22 @@ class H(BaseHTTPRequestHandler):
                 self._json(400, {"error": "could not confirm that purchase"})
             return True
         return False
+
+    @staticmethod
+    def _too_long(seconds):
+        """One wording, whether the probe caught it or the backstop did.
+
+        It names the track's own length as well as the limit, because "too long" without a
+        number leaves the customer guessing which of their files is the problem, and it says
+        nothing was charged, because that is the first thing anyone who has paid will wonder.
+        """
+        lim = analyze.MAX_SECONDS
+        return {"error": f"That track is {seconds/60:.0f} minutes long and the limit is "
+                         f"{lim/60:.0f}. Trim it, or split it into parts and analyse those. "
+                         f"Nothing was charged for this.",
+                "code": "too_long",
+                "minutes": round(seconds / 60.0, 1),
+                "limit_minutes": round(lim / 60.0, 1)}
 
     def _body(self, cap=1 << 20):
         try:
@@ -341,44 +537,68 @@ class H(BaseHTTPRequestHandler):
             digest = hashlib.sha256(data).hexdigest()
             hit = cache_get(digest)
             if hit is not None:
-                # Returned WITHOUT taking _ANALYSIS: a cache hit does no CPU work, so queueing it
+                # Returned WITHOUT taking the analysis slot: a cache hit does no CPU work, so queueing it
                 # behind a running analysis would stall it for no reason.
                 print(f"[cache] {name} -> {digest[:12]}", flush=True)
                 del data
                 return self._json(200, hit)
+            # Written HERE, above the gate, and that ordering is the point: ffmpeg needs a
+            # path to read a header from, and the length check below has to happen before a
+            # credit is taken. Writing a temp file is bounded by MAX_UPLOAD and costs a disk
+            # write we were going to do anyway.
+            fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
+            with os.fdopen(fd, "wb") as fp: fp.write(data)
+            del data                                     # drop the upload copy before analysis allocates
+            # ---- THE LENGTH CHECK ----
+            # ABOVE THE GATE, because a track we refuse is a track nobody should pay for. It
+            # costs ~11ms (analyze.probe_duration reads the container header and stops), against
+            # an analysis that is 0.036s and 4.95 MB of RSS for every second of audio -- so a
+            # five-hour upload that would have taken the process down is now a 413 with a
+            # sentence the customer can act on, and their credit is untouched.
+            secs = analyze.probe_duration(tmp)
+            if secs is not None and secs > analyze.MAX_SECONDS:
+                # Logged like every other outcome. A refusal is a thing an operator needs to be
+                # able to see -- if the cap is set too low, the only evidence is these lines.
+                print(f"[too long] {name}: {secs/60:.1f} min "
+                      f"(limit {analyze.MAX_SECONDS/60:.0f})", flush=True)
+                return self._json(413, self._too_long(secs))
             # ---- THE GATE ----
             # Below the cache check on purpose: a cache hit does no work, so
             # charging for it would be charging for a dictionary lookup. Above
             # everything expensive, so nothing is spent before payment is.
             # The ref is per ATTEMPT rather than per track, so a refund below
             # cannot leave a track permanently free to re-analyse.
+            #
+            # A VERSION BUMP IS NOT A REASON TO CHARGE SOMEONE AGAIN. These bytes having a
+            # stale entry means the analysis was already bought here once; the pipeline
+            # changing afterwards is our decision, not the customer's, and the pricing page
+            # promises the FILE is free the second time. So the work is redone -- they get the
+            # better analysis -- and the gate is skipped. Same rule for free and for paid,
+            # which is also how a plain cache hit already behaves: free to everyone, not just
+            # to whoever paid first.
             key = (self.headers.get("X-Render-Key") or "").strip()
             attempt = digest[:16] + ":" + secrets.token_hex(6)
-            if key:
+            if cache_stale(digest):
+                print(f"[reanalyse] {name} -> {digest[:12]} (older pipeline; not charged)", flush=True)
+            elif key:
                 if not billing.key_exists(key):
-                    del data
                     return self._json(402, {"error": "That render key is not recognised.",
                                             "code": "bad_key"})
                 if not billing.spend(key, "analyze " + name[:60], "an:" + attempt):
-                    del data
                     return self._json(402, {"error": "No credits left on this key.",
                                             "code": "no_credits", "balance": 0})
                 charged = (key, attempt)
             else:
                 if not billing.free_take(self._ip()):
-                    del data
                     return self._json(402, {
                         "error": f"That is your free "
                                  f"{'track' if billing.FREE_PER_DAY == 1 else 'tracks'} for today. "
                                  f"A credit unlocks the next one.",
                         "code": "free_used"})
                 freed = (self._ip(), billing.utc_day())
-            fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
-            with os.fdopen(fd, "wb") as fp: fp.write(data)
-            del data                                     # drop the upload copy before analysis allocates
-            print(f"[analyze] {name} ({n/1024:.0f} KB)", flush=True)
+            print(f"[analyze] {name} ({n/1024:.0f} KB{'' if secs is None else f', {secs/60:.1f} min'})", flush=True)
             _progress_set(job, {"stage": "queued", "p": 0.0, "next": 0.0, "eta": 0.0})
-            with _ANALYSIS:
+            with _Slot(job, secs, prio=bool(key) and billing.has_priority(key)):
                 d = analyze.build_director(tmp, progress=lambda pr: _progress_set(job, pr))
             cache_put(digest, d)
             # Built defensively and BEFORE the response. This used to index d['sections'],
@@ -392,6 +612,17 @@ class H(BaseHTTPRequestHandler):
             bpm = (d.get("tempo") or {}).get("bpm", "?")
             self._json(200, d)
             print(f"[done] {name}: {secs} sections, genre={genre} bpm={bpm}", flush=True)
+        except analyze.TooLong as e:
+            # The probe above catches this before the gate; this is the backstop firing, for a
+            # container whose header did not carry a duration. Same answer, same refund -- what
+            # must not happen is that it arrives as the generic "analysis failed", which tells a
+            # customer nothing and reads as our fault rather than a limit they can work around.
+            if charged:
+                billing.refund(charged[0], "refund: over the length limit", "rf:" + charged[1])
+            elif freed:
+                billing.free_refund(*freed)
+            print(f"[too long] {name}: {e}", flush=True)
+            self._json(413, self._too_long(e.seconds))
         except Exception as e:
             # A crash on our side must never cost the customer a credit -- and that has to
             # include the ones who have not paid yet, which for a long time it did not. The free

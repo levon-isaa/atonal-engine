@@ -10,3 +10,6 @@ testdata/
 # billing
 out/billing.db*
 .env
+
+# generated test fixtures
+tests/_fixtures/

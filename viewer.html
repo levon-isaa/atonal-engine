@@ -466,6 +466,19 @@ const RKEY = (function(){
   return {get,set};
 })();
 window.RKEY=RKEY;
+
+/* The server's length limit, as this page last learned it. Not a setting and not a copy of the
+   server's number -- a cache of the last 413, so an over-long file can be refused before it is
+   uploaded rather than after. Empty until the first refusal, which is the honest state: the
+   limit is configurable server-side and guessing it here would eventually refuse a track the
+   server would have accepted. Read in loadFile, written from the 413 handler. */
+const MAXMIN = (function(){
+  const K='atonal.maxmin';
+  const get = ()=>{ try{ const v=parseFloat(localStorage.getItem(K)); return v>0?v:0; }catch(e){ return 0; } };
+  const set = v=>{ try{ localStorage.setItem(K, String(v)); }catch(e){} };
+  return {get,set};
+})();
+window.MAXMIN=MAXMIN;
 const $=id=>document.getElementById(id);
 window.__errs=[];
 function __showErr(m){ let d=document.getElementById('__err'); if(!d){ d=document.createElement('div'); d.id='__err';
@@ -595,7 +608,7 @@ uniform sampler2D u_svg;            // R = signed distance, in object units, fro
 uniform sampler3D u_vol;            // baked 3D distance field of an imported mesh
 uniform float u_volOn,u_volPad,u_nEps,u_shaJit;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
-uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR;
+uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR,u_morphB;
 uniform int u_shaN;
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
@@ -1164,7 +1177,14 @@ vec3 formRot(vec3 p){
 float blendField(vec3 p,float a,float b,float m){
   if(u_morphU<0.5) return mix(a,b,m);            // legacy average, for A/B
   const float K=1.0;
-  float comp=K*0.5*(1.0-abs(2.0*m-1.0))*u_morphC;
+  float ax=abs(2.0*m-1.0);
+  // NORMALISED, because the soft-abs does not vanish at the ends on its own: at b=0.15
+  // 1-(sqrt(1+b*b)-b) is 0.139, not 0, so BOTH pure shapes came out dilated and the first
+  // step of the morph measured a 3.55x jump. Dividing by the value at ax=1 pins sb(0)=
+  // sb(1)=0 and sb(0.5)=1 for every b, and at b=0 it is still exactly the triangle.
+  float r0=sqrt(1.0+u_morphB*u_morphB)-u_morphB;
+  float sb=1.0-(sqrt(ax*ax+u_morphB*u_morphB)-u_morphB)/max(r0,1e-4);
+  float comp=K*0.5*sb*u_morphC;
   return smin3(a+K*m, b+K*(1.0-m), u_morphK)-comp;
 }
 /* THE MELT IS A DILATION, NOT A MIX WITH A BALL -- and the ball was the reported fault.
@@ -3894,7 +3914,35 @@ const shaTaps=()=>Math.round(SHA_FLOOR+(STEP.shaN-SHA_FLOOR)*Math.max(0,Math.min
    soft mass with the chevron only just readable. 0.20 fuses them into a single body while the
    chevron ridges stay in relief. Nothing facets at any of the three -- the dilation cannot
    produce facets, so the setting is a question of how much identity to keep, not of artefacts. */
-const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15};  window.MORPH=MORPH;
+/* `bump` rounds the TIP of the compensation curve. comp used to be a strict triangle,
+   0.5*(1-|2m-1|), whose derivative flips sign at m=0.5 -- a corner in the middle of every
+   transition. Measured on a pinned Rings->Truss sweep, per-step visual change either side
+   of the midpoint went 0.45 then 1.40: the morph stalls, then lurches, at 3.1x.
+   The curve is now a soft-abs, 1-(sqrt(ax*ax+b*b)-b), which at b=0 IS the triangle exactly
+   -- so this knob is backward compatible by construction -- and for b>0 rounds only the
+   tip, leaving the endpoint slope of 2 that gives the transition its soft start and stop.
+   sin(pi*m) and sin^2(pi*m) were tried first and both made the START abrupt, because their
+   endpoint slopes are pi and 0 rather than 2.
+
+   0.15 IS MEASURED, AND ON THREE SHAPE PAIRS, not one -- an earlier pass in this file was caught
+   tuning against a single fixture. Per-step visual change over a pinned sweep, worst step-to-step
+   ratio (the lurch) and the standard deviation of the rate (evenness):
+
+              lurch  base -> 0.15     evenness  base -> 0.15
+       2->3     2.54 -> 2.09            0.411 -> 0.294
+       0->1     4.17 -> 1.48            0.419 -> 0.314
+       4->5     3.63 -> 1.76            0.594 -> 0.442
+
+   Every pair improves on both. Larger values keep flattening the rate -- 0.32 reaches 0.268 on
+   2->3 -- but they buy it by hardening the entry and exit, which is the part that makes a change
+   of shape read as deliberate: `start` goes 0.36 at 0.10 to 1.09 at 0.32, where 1.0 is the
+   average rate and anything below it is a soft edge. 0.15 keeps both ends under 0.65 on all
+   three pairs while taking most of the evenness.
+
+   ALL OF IT MEASURED IN ONE PAGE LOAD. Comparing sweeps across loads is void: TFREEZE pins the
+   camera and section wherever they happened to be, and the same build measured 0.19 and 1.27 for
+   the same quantity on two loads. That confound wasted three comparisons before it was caught. */
+const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15, bump:0.15};  window.MORPH=MORPH;
 /* Kaleidoscope order and ring offset. off is the fraction of the reach the copies are pushed off
    the fold axis; kalEval derives their scale from it so the silhouette radius never changes.
    0.30 rather than something larger, chosen against the two profile extremes: a solid form (Wave)
@@ -3992,8 +4040,23 @@ let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
 let spinSwing=0, tumbleSwing=0, swirlSwing=0, swingPhi=0;
 let swAmpS=0, swAmpT=0, swAmpW=0;   // the three smoothed amplitudes; see the easing beside them
 const SWING_W=8.0;                  // t90 0.49s
-const BAR_BEATS=4;      // 4/4. Checked, not assumed: across all ten cached analyses the ratio of
-                        // beats to downbeats is 3.88..4.17, so this holds on every track here.
+/* THE FALLBACK ONLY. The bar's real length is now read per bar from the analyser -- see
+   swBarBeats below -- because this constant was checked against the wrong statistic. The old note
+   here said "the ratio of beats to downbeats is 3.88..4.17, so this holds on every track": that
+   is a per-TRACK average, and averages hide exactly what the amplitude cares about. Per BAR,
+   across the same ten cached analyses:
+
+       tmpqybuekfm.mp3  131bpm  218 bars   3.61 .. 4.36   10 bars (4.6%) outside 4.00+-0.25
+       tmpatx0t6s6.mp3  176bpm  183 bars   3.62 .. 4.43    5 bars (2.7%) outside
+
+   Both are real tracks; the synthetic fixtures are all 3.90..4.09 and would never have shown it.
+   The amplitude is linear in the bar's length, so an 11% short bar is an 11% error in the one
+   quantity BAR_SWING is defined to pin. Small, and on a few percent of bars -- but it is the
+   difference between a guarantee and an approximation, and the exact number was already in hand. */
+const BAR_BEATS=4;
+// Declared AFTER BAR_BEATS on purpose: it is initialised from it, and a const is not
+// hoisted -- reading it above this line is a temporal-dead-zone ReferenceError at load.
+let swBarK=-1, swBarBeats=BAR_BEATS;   // the current bar's length in beats; see the phrasing
 /* HOW HARD THE BAR PHRASES THE TURN, as a fraction of the turn's own rate. This is the number the
    removed camera sway did not have: at BAR_SWING the peak swing rate is exactly that multiple of
    the base rate, whatever the tempo, the ladder rung or flow are doing. Below 1 the turn can
@@ -4224,6 +4287,56 @@ const MODV={};                                 // this frame's summed value per 
    is locked to the grid the same way the form's rotation is -- an LFO on wall-clock time would
    drift against the track within a few bars, which is the whole reason Sketch offers 1/1..1/8
    rather than a frequency in hertz. */
+/* ============================ ONE TRACK, ONE FILM ============================
+   The page says "the same track always produces the same film", and the shape selection below
+   carries a note saying there is no Math.random left in it. Both were true of the SHAPE and of
+   nothing else: three live calls fed the visual -- the sample-and-hold on every beat, the
+   'Section step' source on every boundary, and rerollVariant's tilt and hue, which the comment
+   beside it describes as changing the FIELD.
+
+   MEASURED, the same track loaded twice and frozen at t=12.0s:
+
+        VART.tilt   0.177641  vs  0.194322
+        VART.hue    0.212115  vs  0.162022
+        SIG.snap    0.522426  vs  0.826864
+        SIG.sect    0.071156  vs  0.255064
+        frame hash  222402376 vs  439587333
+
+   The analysis was identical across both -- 4 sections, 175.99 bpm -- so it was only ever the
+   renderer. That is not just a broken sentence on the marketing page: EXPORT RE-RENDERS. Someone
+   who exports a clip at 1080p and then again at 4K was getting two different films.
+
+   POSITIONAL, NOT SEQUENTIAL. A seeded stream would be reproducible only if every draw happened
+   in the same order every time, which seeking, looping and export all break. So each value is a
+   pure hash of (track, what, where): beat index for the sample-and-hold, section start for the
+   per-section ones. Scrub backwards and the same bar rolls the same number.
+
+   The seed comes from the ANALYSIS, not the filename -- duration, bpm and the section list --
+   so it is stable across a rename and across the cache, and two different tracks still disagree.
+   Variety on demand is unaffected: rollAll() below still rolls, and still takes a seed. */
+let _tsDir=null, _tsVal=0;
+function trackSeed(){
+  let d=null;
+  // try/catch, not a null test: `director` is declared with `let` further down the file and
+  // rerollVariant() is called at load time above it, so touching it there is a TDZ
+  // ReferenceError rather than undefined. Before a track exists the seed is 0, deterministically.
+  try{ d=director; }catch(e){ return 0; }
+  if(d===_tsDir) return _tsVal;
+  _tsDir=d;
+  if(!d){ return (_tsVal=0); }
+  const t=d.tempo||{}, m=d.meta||{};
+  _tsVal=seedOf((m.duration||0)+'|'+(t.bpm||0)+'|'
+    +(d.sections||[]).map(x=>(+x.t0).toFixed(3)+':'+x.label).join(','));
+  return _tsVal;
+}
+/* A value in [0,1) from the track seed, a purpose and a position. The finalise steps are
+   murmur3's; without them the low bits of two adjacent positions stay visibly correlated, and
+   'a new number every beat' would come out as a slow ramp. */
+function hash01(salt, n){
+  let h=(trackSeed() ^ Math.imul(salt|0,0x9E3779B1) ^ Math.imul(n|0,0x85EBCA77))>>>0;
+  h^=h>>>16; h=Math.imul(h,0x7FEB352D); h^=h>>>15; h=Math.imul(h,0x846CA68B); h^=h>>>16;
+  return (h>>>0)/4294967296;
+}
 let beatPhase=0, snapV=0.5, snapAt=-1, sectRand=0.5, barOrigin=0;
 function modUpdate(dt,bpm){
   /* THE LFO CLOCK IS THE GRID'S CLOCK when there is one. `beatPhase += dt*bpm/60` is the same
@@ -4237,10 +4350,22 @@ function modUpdate(dt,bpm){
      place. barOrigin is the last beat the analyser called a downbeat, so SIG.bar crosses zero
      where the music's bar does. It is only ever set from events.downbeats; with no downbeats it
      stays 0 and the bar is as arbitrary as it was, which is the honest fallback. */
-  if(director && isPlaying) beatPhase = beatsAtTime(pos()) - barOrigin;
+  /* FOLLOW THE PLAYHEAD, NOT THE WALL CLOCK -- and `isPlaying` was the wrong test for that.
+     pos() is defined in every state: renderClock during an offline take, pausedAt when stopped,
+     the audio clock when playing. So whenever there IS a director the beat index can be derived,
+     and deriving it is the only version that is both correct and repeatable.
+     WHAT THE OLD CONDITION COST, in the case that matters most: startRender does
+     `renderClock = isPlaying ? pos() : pausedAt`, so a take started from a PAUSED playhead --
+     position the head, press Record, the ordinary way to export a chosen passage -- ran the whole
+     render on the free-running branch. The sample-and-hold's beat grid was then not locked to the
+     music at all, and it started from whatever beatPhase had drifted to during the live preview,
+     so two exports of the same passage disagreed. Measured under export conditions: SIG.snap
+     0.461757 vs 0.804456 across two loads with everything else already identical.
+     The free-running branch stays for the case it was written for: no track, nothing to follow. */
+  if(director) beatPhase = beatsAtTime(pos()) - barOrigin;
   else beatPhase += dt*Math.max(20,bpm)/60;
   const b=Math.floor(beatPhase);
-  if(b!==snapAt){ snapAt=b; snapV=Math.random(); }
+  if(b!==snapAt){ snapAt=b; snapV=hash01(1,b); }   // by BEAT INDEX, so scrubbing back re-rolls the same
   SIG.beat = 0.5+0.5*Math.sin(beatPhase*6.2831853);
   SIG.bar  = 0.5+0.5*Math.sin(beatPhase*6.2831853/4);
   SIG.snap = snapV; SIG.sect = sectRand; SIG.steady = 1;
@@ -4832,16 +4957,18 @@ const VAR ={tilt:0,hue:0};
 const VARi={tilt:0,hue:0};   // the variant's first pole; see the easing in frame()
 const VART={tilt:0,hue:0};
 let lastSecKey='';
-function rerollVariant(){
+function rerollVariant(where){
   // VARPIN neutralises the per-section random variant. It has to exist for the same reason POSE
   // does: the variant changes the FIELD, so it changes how many march steps a frame costs, and
   // two builds timed across separate page loads are otherwise being compared on two different
   // scenes. A frame-time A/B without this is not a comparison. (Learned the hard way: a 73 ms
   // vs 50 ms result that looked like a clean win was two different variants.)
   if(window.VARPIN||location.search.indexOf('varpin')>=0){ VART.tilt=0; VART.hue=0.5; return; }
-  const R=Math.random;
-  VART.tilt=(R()-0.5)*0.5;
-  VART.hue=R();
+  // `where` identifies the SECTION, not the visit: the same section of the same track lands on
+  // the same variant however many times it is played or seeked into. See ONE TRACK, ONE FILM.
+  const w=where|0;
+  VART.tilt=(hash01(2,w)-0.5)*0.5;
+  VART.hue=hash01(3,w);
 }
 /* SEGMENT COUNT, ON SECTION BOUNDARIES, FROM THE MUSIC.
    The reference's most visible motion is not its rotation, it is its DENSITY: over eight seconds
@@ -5903,6 +6030,21 @@ async function loadFile(file){
   let buf;
   try{ buf=await file.arrayBuffer(); audioBuffer=await ctx.decodeAudioData(buf.slice(0)); }
   catch(e){ showStat('Could not decode audio',true); hideStat(2600); return; }
+  /* THE LENGTH LIMIT IS CHECKED HERE TOO, and here it costs no upload at all.
+     The server refuses a track over ATONAL_MAX_MINUTES -- analysis is 0.036s and 4.95 MB of RSS
+     per SECOND of audio, so an hour-long set is 19 GB and blocks every other customer behind the
+     single analysis slot. It refuses cheaply, before charging, but it can only refuse a file it
+     has already received: at 300MB that is minutes of someone's upstream spent to be told no.
+     We already know the answer -- decodeAudioData just gave us the exact duration -- so once the
+     limit is known, ask locally and never send the file.
+     LEARNED FROM THE SERVER'S OWN 413 rather than hard-coded or fetched at startup: the limit is
+     configurable and this page must not carry a second copy of it that can drift. Unknown on a
+     first run, which costs one upload and is then right for every file after. */
+  if(MAXMIN.get() && audioBuffer.duration > MAXMIN.get()*60){
+    showStat('That track is '+(audioBuffer.duration/60).toFixed(0)+' minutes long and the limit is '
+      +MAXMIN.get()+'. Trim it, or split it into parts and analyse those.',true);
+    hideStat(9000); $('drop').style.display=''; return;
+  }
   // ---- upload + analyse, with a real progress bar ----
   // The bar is driven by two different real signals, not by a timer pretending to be one:
   // the upload leg comes from XHR's own byte counter, and the analysis leg from the server,
@@ -5934,6 +6076,7 @@ async function loadFile(file){
         if(e.lengthComputable) setProg((e.loaded/e.total)*UPLOAD_SHARE,'Uploading…');
       };
       xhr.upload.onload = ()=>{
+        shown=UPLOAD_SHARE;            // the analysis leg starts here, and never below it
         setProg(UPLOAD_SHARE,'Analysing…');
         // Poll the side channel. The server reports where each stage STARTS and ENDS and how long
         // it expects to take, and the client eases between the two — the single longest stage
@@ -5968,9 +6111,15 @@ async function loadFile(file){
              47% of the whole wait spent frozen, and it never reached 100 at all. The cause is
              upstream: harmonic/percussive is announced at 1.58s and takes 5.02s here (the other
              stages are over-announced by the same factor in the other direction, which is why
-             the first half races). The weights are ratios measured on one track, and how much
-             work the non-HPSS stages do depends on the material, so they cannot be right for
-             everything -- which means the client has to stay honest when they are wrong.
+             the first half races). The weights are ratios, and they have since been
+             RE-MEASURED -- see STAGE_W in analyze.py. What used to be claimed here, that the
+             non-HPSS stages depend on the material and so could never be right, is wrong:
+             across three materials and a 3x change in duration HPSS's share moves only
+             0.728..0.776. The announced numbers were simply out of date. The worst-case gap
+             between announced and elapsed is now 2.4% where it was 22.0%, so this ease corrects
+             a far smaller error than it was written for -- and it stays, because an estimate
+             that is 2% wrong still ends a stage early, and a bar that has arrived is still a
+             bar that has stopped.
 
              x/(x+1) never reaches 1, so there is always somewhere left to go and the bar always
              moves. At the announced time it is 75% of the way across the stage; at twice that
@@ -5979,13 +6128,28 @@ async function loadFile(file){
              the last quarter arrives as a step at the stage change. A forward step reads as
              progress. A stationary bar reads as a hang, and this file has the number for how long
              that hang was. */
-          const el=(performance.now()-stageT0)/1000;
-          const x=seen.eta>0 ? 3*el/seen.eta : 1e9;
-          const eased=seen.p + (seen.next-seen.p)*(x/(x+1));
-          // Monotonic by construction, belt as well as braces: a progress bar that retreats reads
-          // as a fault even when the number behind it is correct.
-          shown=Math.max(shown, UPLOAD_SHARE + eased*(1-UPLOAD_SHARE));
-          setProg(shown,'Analysing'+(seen.stage&&seen.stage!=='queued'?' — '+seen.stage:'')+'…');
+          /* WAITING IS NOT ANALYSING, AND THE BAR MUST NOT PRETEND OTHERWISE.
+             The server runs one analysis at a time, so a second upload arriving during someone
+             else's blocks. It used to report that as stage "queued", which this label stripped,
+             leaving "Analysing…" over a bar that could not move because nothing was being
+             analysed -- a hang, by every signal the page gives. The server now says how many
+             tracks are in front and roughly how long they will take; the countdown is the proof
+             of life the bar cannot be, so the bar HOLDS at the upload share rather than creeping
+             through a stage that has not begun. It moves when the work does. */
+          if(seen.stage==='waiting'){
+            const n=seen.ahead|0, w=Math.max(0,Math.round(seen.eta||0));
+            setProg(shown, n<1 ? 'Waiting for the analyser…'
+              : 'Waiting — '+(n===1?'1 track':n+' tracks')+' ahead of yours'
+                +(w>0?', about '+fmt(w):'')+'…');
+          } else {
+            const el=(performance.now()-stageT0)/1000;
+            const x=seen.eta>0 ? 3*el/seen.eta : 1e9;
+            const eased=seen.p + (seen.next-seen.p)*(x/(x+1));
+            // Monotonic by construction, belt as well as braces: a progress bar that retreats reads
+            // as a fault even when the number behind it is correct.
+            shown=Math.max(shown, UPLOAD_SHARE + eased*(1-UPLOAD_SHARE));
+            setProg(shown,'Analysing'+(seen.stage&&seen.stage!=='queued'?' — '+seen.stage:'')+'…');
+          }
         },300);
       };
       xhr.onload = ()=>{
@@ -6006,6 +6170,8 @@ async function loadFile(file){
                  ? '  That render key was not recognised.'
                  : '  Credits are at site/pricing.html; set one with RKEY.set(\'atk_...\').';
             }
+            // Remember the limit so the next over-long file is refused before it is uploaded.
+            if(xhr.status===413 && j.code==='too_long' && j.limit_minutes>0) MAXMIN.set(j.limit_minutes);
           }catch(e){}
           reject(new Error(m));
         }
@@ -6653,7 +6819,7 @@ function frame(){
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
     moodTarget=s.palette||MO;
-    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant();
+    const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(Math.round(s.t0*1000));
       // requested, not fired: commitReform lands it on the next downbeat. A boundary always gets
       // its change, so the beat budget is reset rather than tested.
       /* A BOUNDARY GETS PRIORITY, NOT A FREE PASS. Resetting the limiter outright let two close
@@ -6691,7 +6857,7 @@ function frame(){
       const beatSec=60/((director&&director.tempo&&director.tempo.bpm)||120);
       if(lastBeatDown && lastBeatT>=s.t0-beatSec*0.25 && lastBeatT<=t+1e-6) commitReform(beatsAtTime(t));
       kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
-      sectRand=Math.random();                       // the matrix's 'Section step' source
+      sectRand=hash01(4,Math.round(s.t0*1000));     // the matrix's 'Section step' source, per SECTION
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
       /* ONE RUNG PER BOUNDARY, not a jump to wherever the mapping points. The mapping spans the
          whole 2..8 the profiles allow, so two consecutive sections can ask for 3 and then 7 --
@@ -7203,7 +7369,17 @@ function frame(){
     const span=(k>=0 && k+1<D.length) ? D[k+1]-D[k] : 0;
     if(span>0.10 && span<8.0){
       const phi=Math.min(1,Math.max(0,(tt-D[k])/span)); swingPhi=phi;
-      const sw=Math.sin(2*Math.PI*phi), kk=BAR_SWING*BAR_BEATS;
+      /* THE BAR'S OWN LENGTH, not 4. The offset amplitude that makes peak-swing-rate/base-rate
+         come out at exactly BAR_SWING is linear in how many beats the bar spans, and `span` --
+         which the phase above already uses -- says what that is. Taken from beatsAtTime at the
+         two downbeats rather than from span*bpm/60, so it stays exact through a tempo that
+         drifts. Recomputed only when the bar changes, and it falls back to BAR_BEATS if the
+         analyser hands back something outside 1..12 beats. */
+      if(k!==swBarK){ swBarK=k;
+        let bb=BAR_BEATS;
+        try{ bb=beatsAtTime(D[k+1])-beatsAtTime(D[k]); }catch(e){}
+        swBarBeats=(bb>1 && bb<12) ? bb : BAR_BEATS; }
+      const sw=Math.sin(2*Math.PI*phi), kk=BAR_SWING*swBarBeats;
       /* THE AMPLITUDE IS SMOOTHED AND THE PHASE IS NOT, which is the whole trick. Differentiating
          A*sin(2pi*phi) gives the term this is sized for -- A*2pi*cos*dphi, whose ratio to the base
          rate is exactly BAR_SWING -- plus a term nobody sized, dA/dt*sin. A moves with rSpin and
@@ -7899,6 +8075,7 @@ function frame(){
   // window.MORPHU=0 restores the old mix() blend for comparison; see evalForm.
   gl.uniform1f(US('u_morphU'), (window.MORPHU===0)?0:1);
   gl.uniform1f(US('u_morphK'), MORPH.k); gl.uniform1f(US('u_morphC'), MORPH.comp);
+  gl.uniform1f(US('u_morphB'), MORPH.bump);
   gl.uniform1f(US('u_morphBlob'), MORPH.blob); gl.uniform1f(US('u_morphR'), MORPH.r);
 
   gl.uniform1i(US('u_shaN'),shaTaps());   // governor-scaled; see SHA_FLOOR

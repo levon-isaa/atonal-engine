@@ -42,10 +42,14 @@ FREE_PER_DAY = int(os.environ.get("ATONAL_FREE_PER_DAY", "2"))
 # accept an inline amount, so the charged price always comes from the Paddle
 # price id in ATONAL_PRICE_<PACK>. If the two ever disagree, Paddle is right and
 # this is a stale label; see checkout_url.
+# `priority` is the pricing page's "Priority queue" line, and it is here rather than only in the
+# markup so the claim and the behaviour cannot drift apart -- server.py reads this same flag to
+# order the analysis queue. It was markup only for a while, which meant the Pack of 50 advertised
+# a feature that did not exist anywhere in the code.
 PACKS = {
     "single": {"credits": 1,  "amount": 600,   "label": "Single track"},
     "ten":    {"credits": 10, "amount": 4500,  "label": "Pack of 10"},
-    "fifty":  {"credits": 50, "amount": 17500, "label": "Pack of 50"},
+    "fifty":  {"credits": 50, "amount": 17500, "label": "Pack of 50", "priority": True},
 }
 CURRENCY = os.environ.get("ATONAL_CURRENCY", "eur")
 
@@ -114,10 +118,35 @@ def init():
               PRIMARY KEY(ip, day)
             );
             """)
+            # Fold any address stored before _norm_email existed into the same form, so the
+            # lookup in _grant_for_session keeps using the index and an older key is still
+            # found. Touches only rows that actually differ, and runs once per process.
+            c.execute("UPDATE keys SET email=LOWER(TRIM(email)) "
+                      "WHERE email IS NOT NULL AND email <> LOWER(TRIM(email))")
         _ready = True
 
 
 CLAIM_TTL = 24 * 3600
+
+
+def _norm_email(e):
+    """The form an address is stored and matched in: trimmed and lower-cased.
+
+    A REPEAT PURCHASE IS MATCHED BY EMAIL, so whatever the customer typed has to reduce to
+    one identity or _grant_for_session's whole promise fails. It was an exact string
+    compare, and Paddle hands back the address as entered -- so "Levon.Isaa@Example.com"
+    from a desktop and "levon.isaa@example.com" from a phone are two people to it.
+    REPRODUCED: three purchases differing only in case and a trailing space issued THREE
+    keys with 10 credits each. The customer had paid for 30 and the largest balance they
+    could see was 10, which is exactly the juggling the docstring below says not to do.
+
+    Lower-casing the local part is technically not RFC-safe -- "A@x.com" and "a@x.com" MAY
+    be different mailboxes -- but no mail provider in practice treats them so, and the
+    alternative here is not correctness, it is splitting a paying customer's balance across
+    keys they did not know they had.
+    """
+    e = (e or "").strip().lower()
+    return e or None
 
 
 def _hash(key: str) -> str:
@@ -152,6 +181,7 @@ def grant(key_hash: str, credits: int, reason: str, ref: str, email=None) -> boo
     init()
     now = time.time()
     with _conn() as c:
+        email = _norm_email(email)
         c.execute("INSERT OR IGNORE INTO keys(key_hash,email,created) VALUES(?,?,?)",
                   (key_hash, email, now))
         if email:
@@ -192,6 +222,22 @@ def spend(key: str, reason: str, ref: str) -> bool:
         except Exception:
             c.execute("ROLLBACK")
             raise
+
+
+def has_priority(key: str) -> bool:
+    """True when this key has ever bought a pack carrying `priority`.
+
+    Ever, not currently: someone who bought a Pack of 50, spent it and topped up with a
+    single does not lose the thing they paid for. The queue in server.py reads this.
+    """
+    init()
+    want = tuple("purchase:%s:" % p for p, v in PACKS.items() if v.get("priority"))
+    if not want:
+        return False
+    with _conn() as c:
+        rows = c.execute("SELECT reason FROM ledger WHERE key_hash=? AND delta>0",
+                         (_hash(key),)).fetchall()
+    return any((r[0] or "").startswith(want) for r in rows)
 
 
 def refund(key: str, reason: str, ref: str):
@@ -403,8 +449,8 @@ def _grant_for_session(txn) -> dict:
     if credits <= 0:
         raise ValueError("transaction carries no credit count")
 
-    email = ((txn.get("customer") or {}).get("email")
-             or _customer_email(txn.get("customer_id")))
+    email = _norm_email((txn.get("customer") or {}).get("email")
+                        or _customer_email(txn.get("customer_id")))
 
     key_plain, key_hash = None, None
     if email:
@@ -424,7 +470,12 @@ def _grant_for_session(txn) -> dict:
         key_plain = new_key()
         key_hash = _hash(key_plain)
 
-    grant(key_hash, credits, "purchase:" + sid, "paddle:" + sid, email=email)
+    # The PACK goes in the reason, because "what did this key buy" is a ledger fact and the
+    # ledger is append-only -- so priority cannot be granted or lost by an UPDATE somewhere.
+    # Old rows read "purchase:txn_..."; no pack is named "txn_...", so has_priority below cannot
+    # confuse the two and no migration is needed.
+    grant(key_hash, credits, "purchase:%s:%s" % (custom.get("pack") or "?", sid),
+          "paddle:" + sid, email=email)
     with _conn() as c:
         c.execute("INSERT OR REPLACE INTO claims(session_id,key_plain,key_hash,credits,created)"
                   " VALUES(?,?,?,?,?)", (sid, key_plain, key_hash, credits, time.time()))

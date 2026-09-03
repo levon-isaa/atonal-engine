@@ -22,11 +22,81 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 7
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
 DIRECTOR_FPS = 30     # continuous-curve output rate
+
+# ------------------------------------------------------------------ THE REAL CEILING
+# COST FOLLOWS SECONDS OF AUDIO, NOT BYTES OF UPLOAD, and until this existed the only limit
+# was a byte count. MEASURED on this machine, one analysis per fresh process:
+#
+#       audio     wall     peak RSS
+#         20s     3.51s      1588 MB
+#         80s     5.01s      2198 MB
+#        320s    13.76s      3486 MB
+#        640s    25.81s      4656 MB
+#
+# Both are linear in DURATION: 1495 MB fixed (the PANNs model and the libraries) plus
+# 4.95 MB and 0.036 s for every second of audio. Neither has any term in file size.
+#
+# server.py caps the upload at 300 MB, and its comment reasons from "a whole track is read
+# into memory", which is right -- but a byte cap only bounds duration for LOSSLESS audio.
+# A 128 kbps MP3 carries 16 KB per second (measured: 10.2 MB for 640 s), so 300 MB of it is
+# 5 hours 12 minutes -- and at the rates above that is ~94 GB of RSS and 11 minutes of
+# analysis. The process dies, and because server.py serialises analysis behind a single
+# semaphore it takes every other customer's request down with it.
+#
+# It is not only the hostile case. A one-hour DJ set is an entirely reasonable thing to try:
+# 19 GB and 2.2 minutes, during which nobody else can analyse anything.
+#
+# So the cap is on duration, it is checked from the container header in ~11 ms (see
+# probe_duration), and server.py checks it BEFORE taking a credit -- a track we refuse is
+# a track nobody should pay for.
+MAX_MINUTES = float(os.environ.get("ATONAL_MAX_MINUTES", "20"))
+MAX_SECONDS = MAX_MINUTES * 60.0
+
+
+class TooLong(ValueError):
+    """Raised instead of analysing something that would cost more than we allow.
+
+    Carries the numbers so the caller can say which track and by how much, rather than
+    the generic failure the customer would otherwise see.
+    """
+    def __init__(self, seconds, limit=None):
+        self.seconds = float(seconds)
+        self.limit = float(limit if limit is not None else MAX_SECONDS)
+        super().__init__("audio is %.1f min; the limit is %.1f min"
+                         % (self.seconds / 60.0, self.limit / 60.0))
+
+
+def probe_duration(path):
+    """Seconds of audio in `path`, or None when the container will not say.
+
+    ffmpeg with no output file reads the header and exits; measured at 11-18 ms on both a
+    56 MB wav and a 10 MB mp3, against a 350-440 ms full decode of the same files. Cheap
+    enough to run before anything is charged.
+
+    None is a real answer, not a failure: some streams carry no duration in the header. The
+    backstop in load_audio covers that case exactly, after the decode and before the arrays.
+    """
+    import imageio_ffmpeg
+    try:
+        r = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-i", path],
+                           capture_output=True, timeout=30)
+    except Exception:
+        return None
+    for line in r.stderr.decode("utf-8", "replace").splitlines():
+        i = line.find("Duration:")
+        if i < 0:
+            continue
+        try:
+            h, m, sec = line[i + 9:].split(",")[0].strip().split(":")
+            return int(h) * 3600 + int(m) * 60 + float(sec)
+        except ValueError:
+            return None                  # "N/A", or a shape we do not recognise
+    return None
 
 # ----------------------------------------------------------------------------- IO
 def load_audio(path):
@@ -42,6 +112,15 @@ def load_audio(path):
     try:
         subprocess.run([ff, "-y", "-i", path, "-ac", "2", "-ar", str(SR), "-f", "wav", tmp],
                        check=True, capture_output=True)
+        # THE BACKSTOP FOR THE DURATION CAP, and the reason it is here rather than only in the
+        # caller: probe_duration reads the SOURCE header, which can be absent or wrong, while
+        # this reads the decoded wav and cannot be either. sf.info is a header read -- 0.3 ms
+        # against a 60-90 ms sf.read of the same file -- so it costs nothing to be sure, and it
+        # runs BEFORE the arrays are allocated, which is the whole point: at 5 hours the read
+        # below is 3.3 GB of float32 in one call.
+        info = sf.info(tmp)
+        if info.samplerate and info.frames / float(info.samplerate) > MAX_SECONDS:
+            raise TooLong(info.frames / float(info.samplerate))
         data, sr = sf.read(tmp, dtype="float32", always_2d=True)   # (n, ch)
     finally:
         # ran only on success before, so every failed decode left a full-length wav behind —
@@ -55,6 +134,17 @@ def load_audio(path):
 
 # --------------------------------------------------------------------- utilities
 TEMPO_LO, TEMPO_HI = 70.0, 160.0    # the range essentially all dance/electronic music lives in
+# The octave check above beat_track. The ratio sits in a measured gap of more than 10x
+# (0.055 correct, 0.674 halved); the cap is what stops an 8th-note kick pattern being
+# doubled into a tempo nothing plays at.
+OCTAVE_MID_RATIO = 0.30
+OCTAVE_MAX_BPM = 210.0
+
+# The downbeat phase is decided per window of this many beats, with this cost for
+# changing between windows. Both are swept against a fixture whose bar marker shifts
+# mid-track; see the DOWNBEATS block.
+DOWNBEAT_WIN = int(os.environ.get("ATONAL_DB_WIN", "16"))        # 4 bars at 4/4
+DOWNBEAT_SWITCH = float(os.environ.get("ATONAL_DB_SWITCH", "1.2"))
 
 # How many structural boundaries to ASK the segmenter for, as one per this many seconds.
 # Named and module-level so it can be swept against a track of known structure rather than being
@@ -247,6 +337,39 @@ def layer1_signal(mono, stereo, sr, prog=None):
                                            start_bpm=128.0, trim=False)
     bpm = float(np.atleast_1d(tempo)[0])
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP)
+    # ---- OCTAVE CHECK ----
+    # The tracker locks to HALF the tempo above roughly 175 BPM. librosa scores the period
+    # against a log-normal prior around start_bpm, and at 128 the two candidates are nearly
+    # equidistant -- log2(180/128) is 0.49 and log2(90/128) is -0.51 -- so which one wins is
+    # close to a coin toss. MEASURED on a click ladder, everything from 70 to 174 came back
+    # exact and then:  178 -> 89.1,  180 -> 89.1,  190 -> 95.7,  200 -> 99.4. Not a reporting
+    # slip either: the GRID itself was at half, so the fit below faithfully reports the wrong
+    # metrical level and the client interpolates a grid with every other beat missing. That is
+    # drum and bass, hardcore, gabber and footwork -- a real part of the catalogue, not an edge.
+    #
+    # The evidence that settles it is already to hand: if the grid is at half tempo then every
+    # MIDPOINT between two beats is itself a beat, and carries onset strength to prove it. On
+    # the same ladder the separation is not marginal --
+    #     tracked correctly   mid/beat  0.000 .. 0.055
+    #     locked at half      mid/beat  0.674 .. 1.030
+    # so the threshold sits in a gap of more than a factor of ten. Measured on lo_onset, which
+    # is the low band (fmax 160Hz), so an offbeat hat cannot fake it; only a kick can.
+    #
+    # Capped, because a genuine 8th-note kick pattern would also light up the midpoints and
+    # doubling THAT would report 360 BPM. Nothing real needs the doubled reading above the cap.
+    if len(beats) >= 8:
+        _b = np.asarray(beats, dtype=int)
+        _mid = (_b[:-1] + _b[1:]) // 2
+        _in = lambda ix: ix[(ix >= 0) & (ix < len(lo_onset))]
+        _sb, _sm = _in(_b), _in(_mid)
+        _vb = float(np.mean(lo_onset[_sb])) if _sb.size else 0.0
+        _vm = float(np.mean(lo_onset[_sm])) if _sm.size else 0.0
+        _step = float(np.median(np.diff(beat_times))) if len(beat_times) > 2 else 0.0
+        if _vb > 1e-9 and _step > 1e-3 and (_vm / _vb) > OCTAVE_MID_RATIO \
+           and (120.0 / _step) <= OCTAVE_MAX_BPM:
+            beats = np.unique(np.concatenate([_b, _mid]))
+            beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP)
+            bpm *= 2.0
     # ---- HALF-BEAT PHASE CHECK ----
     # Tracking on the low band fixes most of the offbeat locking but not all of it, because the
     # dynamic program is scored on PERIODICITY and a grid shifted by exactly half a beat is just
@@ -349,18 +472,81 @@ def layer1_signal(mono, stereo, sr, prog=None):
     # into bars, the true one is the grouping whose first beats carry the most low-frequency
     # onset energy, because that is where the kick sits in almost all metered popular music.
     # Falls back to phase 0 when there is no evidence either way.
+    # THE KICK ALONE CANNOT FIND THE BAR IN FOUR-TO-THE-FLOOR, which is most of the catalogue
+    # this renders. When every beat carries the same kick, all four phases score the same
+    # low-band energy and the pick is made on noise. MEASURED on a 120bpm four-to-the-floor
+    # fixture whose bar is marked by a crash and a chord change -- both above the 160Hz band
+    # this was looking at -- with the true phase placed at each of the four offsets in turn:
+    # 2 of 4 correct, and the four phase scores within 25% of each other.
+    #
+    # So score the phase on the three things that actually mark a bar, not one of them:
+    #   the KICK      lo_onset, the low band -- what this always used
+    #   the CRASH     f["flux"], full-band onset -- a crash or an open hat is broadband
+    #   the CHORD     how far the chroma moves from the previous beat
+    # Each is standardised across beats before they are added, so no term dominates by having
+    # bigger units, and a track that only carries one of the three is still decided by it.
     db_times = []
     if len(beat_times) >= 8:
-        # the same low-band envelope the grid was tracked on, computed once above
-        lo = lo_onset
-        bf = np.clip(f["beat_frames"], 0, len(lo) - 1)
-        strength = lo[bf]
-        best, best_score = 0, -np.inf
-        for ph in range(4):
-            sc = float(np.mean(strength[ph::4])) if len(strength[ph::4]) else -np.inf
-            if sc > best_score:
-                best, best_score = ph, sc
-        db_times = [float(x) for x in beat_times[best::4]]
+        def _z(v):
+            v = np.asarray(v, dtype=np.float64)
+            sd = float(np.std(v))
+            return (v - float(np.mean(v))) / sd if sd > 1e-9 else np.zeros_like(v)
+        bfr = np.asarray(f["beat_frames"], dtype=int)
+        nb = len(bfr)
+        kick = lo_onset[np.clip(bfr, 0, len(lo_onset) - 1)]
+        flux = np.asarray(f["flux"], dtype=np.float64)
+        crash = flux[np.clip(bfr, 0, len(flux) - 1)]
+        ch = np.asarray(f["chroma"], dtype=np.float64)
+        cb = ch[:, np.clip(bfr, 0, ch.shape[1] - 1)]
+        cb = cb / (np.linalg.norm(cb, axis=0, keepdims=True) + 1e-9)
+        chord = np.zeros(nb, dtype=np.float64)
+        if nb > 1:
+            chord[1:] = np.linalg.norm(np.diff(cb, axis=1), axis=0)
+            chord[0] = chord[1]
+        score = _z(kick) + _z(crash) + _z(chord)
+        # ---- THE PHASE CAN CHANGE, AND USED TO BE CHOSEN ONCE FOR THE WHOLE TRACK ----
+        # One odd bar -- a dropped beat, an inserted half bar, an edit -- shifts every downbeat
+        # after it, and a single global phase then has to be wrong on one side of that point or
+        # the other. MEASURED on a fixture whose bar marker shifts by one beat halfway through:
+        # 16/16 downbeats before the shift, 0/16 after. Half the track, and it is the half the
+        # listener has already settled into.
+        #
+        # So the phase is decided per window of DOWNBEAT_WIN beats, with a Viterbi over the four
+        # states and a cost for changing. The cost is the whole design: without it the phase
+        # follows every noisy window and the bar grid flaps, which is worse than being wrong
+        # consistently. With it, a change has to be paid for by sustained evidence, which is
+        # exactly what a real edit provides and what noise does not.
+        nb = len(beat_times)
+        W = max(4, int(DOWNBEAT_WIN))
+        nwin = max(1, int(np.ceil(nb / float(W))))
+        emis = np.zeros((nwin, 4), dtype=np.float64)
+        for w in range(nwin):
+            idx = np.arange(w * W, min(nb, (w + 1) * W))
+            vals = []
+            for ph in range(4):
+                sel = idx[(idx % 4) == ph]
+                vals.append(float(np.mean(score[sel])) if sel.size else None)
+            fill = min([v for v in vals if v is not None], default=0.0)
+            emis[w] = [fill if v is None else v for v in vals]
+        cost = emis[0].copy()
+        back = np.zeros((nwin, 4), dtype=int)
+        arange4 = np.arange(4)
+        for w in range(1, nwin):
+            new = np.empty(4, dtype=np.float64)
+            for ph in range(4):
+                cand = cost - DOWNBEAT_SWITCH * (arange4 != ph)
+                j = int(np.argmax(cand))
+                back[w, ph] = j
+                new[ph] = emis[w, ph] + cand[j]
+            cost = new
+        ph = int(np.argmax(cost))
+        phases = [0] * nwin
+        phases[nwin - 1] = ph
+        for w in range(nwin - 1, 0, -1):
+            ph = int(back[w, ph])
+            phases[w - 1] = ph
+        db_times = [float(beat_times[i]) for i in range(nb)
+                    if (i % 4) == phases[min(i // W, nwin - 1)]]
     f["downbeat_times"] = db_times
     f["beat_times"]  = beat_times.tolist()
     # tempo stability: dynamic tempo std (API name moved across librosa versions)
@@ -421,8 +607,40 @@ def layer1_signal(mono, stereo, sr, prog=None):
 #
 # tagging keeps a small weight rather than zero: on a short track, or a machine where the model
 # load dominates, there is still a real wait there.
-STAGE_W = {"load":0.01, "spectrum":0.01, "features":0.26, "beats":0.12,
-           "separate":0.46, "bands":0.01, "tagging":0.02, "finalise":0.01}
+#
+# RE-MEASURED, AND THE OLD NUMBERS WERE A LONG WAY OUT. The table above is one track; these are
+# six runs across two durations (60s, 180s) and three materials with very different onset
+# densities, timing each stage from the progress callbacks themselves. Share of wall clock:
+#
+#     stage       announced   median    min     max
+#     load           0.01      0.034   0.027   0.044
+#     spectrum       0.01      0.014   0.012   0.016
+#     features       0.26      0.162   0.150   0.174
+#     beats          0.12      0.021   0.019   0.022
+#     separate       0.46      0.752   0.728   0.776
+#     bands          0.01      0.007   0.007   0.007
+#     tagging        0.02      0.000   0.000   0.000
+#     finalise       0.01      0.009   0.007   0.010
+#
+# HPSS is three quarters of the run, not half, and `beats` was announced at nearly six times what
+# it costs. That is what made the bar race through the first half and then crawl: viewer.html's
+# ease was written against exactly this, and measured the freeze it caused.
+#
+# THE SPREAD IS WHY THESE CAN BE TRUSTED NOW. A previous pass declined to retune, on the grounds
+# that only synthetic audio was available and its HPSS-to-everything ratio need not be a real
+# track's. But `separate` moves only 0.728..0.776 across a 3x change in duration AND across three
+# materials whose per-band onset counts differ by more than 2x -- so the ratios are set by the
+# size of the spectrogram, not by what is in it, which is the thing that was actually in doubt.
+#
+# Measured end to end, worst-case gap between the announced fraction and the true elapsed
+# fraction at any stage boundary: 22.0% before, 2.4% after, on three tracks.
+#
+# tagging stays at 0.02 despite measuring 0.000: PANNs finishes entirely under HPSS here, and the
+# comment above is still right that it need not elsewhere. A stage that costs nothing loses
+# nothing by being announced small; one that occasionally costs something and is announced at
+# zero has no room to report it at all.
+STAGE_W = {"load":0.03, "spectrum":0.015, "features":0.16, "beats":0.02,
+           "separate":0.74, "bands":0.01, "tagging":0.02, "finalise":0.01}
 STAGE_LABEL = {"load":"decoding audio", "spectrum":"spectrum",
                "features":"spectral features", "separate":"harmonic / percussive",
                "beats":"tempo & beats", "bands":"per-band onsets",
@@ -467,6 +685,40 @@ class Progress:
         self.done = min(1.0, self.done + wk)
 
 
+# How hard a structural boundary argues against a loudness one, as a multiplier on the
+# feature-space jump it sits on. 0 restores the old behaviour exactly (a flat 1.0), which is
+# what the sweep below was measured against.
+SEG_STRUCT_GAIN = float(os.environ.get("ATONAL_SEG_STRUCT_GAIN", "1.0"))
+
+
+def _struct_strength(sync, bounds):
+    """How much the beat-synchronous feature stack actually changes across each boundary.
+
+    Scored on the SAME shape as a novelty peak -- 1 + (this change / a typical change) -- so the
+    two are comparable quantities rather than a number against a constant. The typical change is
+    the median beat-to-beat step in the same space, which makes the score read as "this is N
+    times an ordinary moment", independent of how loud or busy the track is.
+    """
+    S = np.asarray(sync, dtype=float)
+    if S.ndim != 2 or S.shape[1] < 4:
+        return [1.0] * len(bounds)
+    step = np.linalg.norm(np.diff(S, axis=1), axis=0)
+    med = float(np.median(step)) if step.size else 0.0
+    if not np.isfinite(med) or med <= 1e-9:
+        return [1.0] * len(bounds)
+    W = 8                                   # beats averaged each side; two bars at 4/4
+    out = []
+    for b in np.atleast_1d(bounds):
+        b = int(b)
+        a0, a1 = max(0, b - W), b
+        c0, c1 = b, min(S.shape[1], b + W)
+        if a1 - a0 < 2 or c1 - c0 < 2:
+            out.append(1.0); continue
+        jump = float(np.linalg.norm(S[:, c0:c1].mean(axis=1) - S[:, a0:a1].mean(axis=1)))
+        out.append(1.0 + SEG_STRUCT_GAIN * jump / med)
+    return out
+
+
 # ========================================================= LAYER 2: STRUCTURE
 def layer2_structure(f, sr):
     import librosa
@@ -480,10 +732,13 @@ def layer2_structure(f, sr):
     sync = librosa.util.sync(stack, beats, aggregate=np.mean)
     kmax = int(np.clip(f["duration"] / SEG_SECONDS_PER_BOUNDARY, SEG_KMAX_LO, SEG_KMAX_HI))
     bt = [0.0, f["duration"]]
+    struct_t, struct_s = [], []
     try:
         bounds = librosa.segment.agglomerative(sync, kmax)      # structural boundaries
         bframes = beats[np.clip(bounds, 0, len(beats) - 1)]
-        bt += librosa.frames_to_time(bframes, sr=sr, hop_length=HOP).tolist()
+        struct_t = librosa.frames_to_time(bframes, sr=sr, hop_length=HOP).tolist()
+        bt += struct_t
+        struct_s = _struct_strength(sync, bounds)
     except Exception:
         bt += np.linspace(0, f["duration"], kmax + 1).tolist()
     # add ENERGY-NOVELTY boundaries so hard build->drop / drop->breakdown changes land
@@ -491,10 +746,25 @@ def layer2_structure(f, sr):
     de = np.abs(np.gradient(smooth(e, 21)))
     thr = float(np.percentile(de, 92))
     wait = int(4 * sr / HOP)                       # >=4 s between novelty boundaries
-    nov, last = [], -10**9
-    for i in range(1, len(de) - 1):
-        if de[i] > thr and de[i] >= de[i-1] and de[i] >= de[i+1] and (i - last) > wait:
-            nov.append(i); last = i
+    # STRONGEST FIRST, NOT EARLIEST. The scan used to run left to right, keep the first peak over
+    # the threshold and then block the next four seconds -- so any ripple that happened to come
+    # first suppressed a genuine drop arriving two seconds later. The merge below already carries
+    # this exact argument for its own choice ("taking the earliest throws away a hard drop
+    # whenever a weak boundary happens to sit a few seconds before it, and the drop is the one
+    # edit in the track that has to land"); the picker feeding it was doing the opposite.
+    #
+    # It matters because the marginal peaks are not rare. On a fixture with a steady kick,
+    # measured: the two real level changes scored 7.6 and 14.0 times the threshold, and ten more
+    # peaks were kept at 1.00 to 1.66 -- the beat's own RMS ripple, which crosses a 92nd
+    # percentile easily because most of the distribution is quiet frames between beats.
+    # Ordering by height does not remove those, but it stops them from evicting anything real.
+    cand = [i for i in range(1, len(de) - 1)
+            if de[i] > thr and de[i] >= de[i-1] and de[i] >= de[i+1]]
+    nov = []
+    for i in sorted(cand, key=lambda j: -de[j]):
+        if all(abs(i - j) > wait for j in nov):
+            nov.append(i)
+    nov.sort()
     nov_t = librosa.frames_to_time(np.array(nov, dtype=int), sr=sr, hop_length=HOP).tolist()
     bt += nov_t
 
@@ -504,6 +774,13 @@ def layer2_structure(f, sr):
     strength = {}
     for t in bt:
         strength.setdefault(round(t, 2), 1.0)
+    # STRUCTURE GETS A STRENGTH OF ITS OWN. It used to be a flat 1.0 while a novelty peak scored
+    # 1 + de/thr -- and de > thr is the very test for being a peak, so novelty scored above 2.0
+    # ALWAYS and structure lost every contest it entered. The merge was not choosing between two
+    # kinds of evidence, it was preferring loudness unconditionally. See _struct_strength.
+    for t, sc in zip(struct_t, struct_s):
+        k = round(t, 2)
+        strength[k] = max(strength.get(k, 0.0), sc)
     for i, t in zip(nov, nov_t):
         k = round(t, 2)
         strength[k] = max(strength.get(k, 0.0), 1.0 + float(de[i] / max(thr, 1e-9)))
