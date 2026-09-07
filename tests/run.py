@@ -10,6 +10,10 @@ boundaries and the bar grid, each against a fixture whose answer is known by con
 Both are dependency-free and both exit non-zero on failure, so this is also the CI command.
 The analysis suite synthesises and then analyses about a dozen tracks, so it takes a couple of
 minutes on a cold cache and rather less after; the fixtures are cached under _fixtures/.
+
+render_bench.py is deliberately NOT in this list. It measures the RENDERER rather than the
+analysis, and needs a running server, Google Chrome, and three non-stdlib packages -- none of
+which belongs in the command CI runs. Invoke it directly:  python tests/render_bench.py
 """
 import os
 import subprocess
