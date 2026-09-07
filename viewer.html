@@ -3941,7 +3941,36 @@ const shaTaps=()=>Math.round(SHA_FLOOR+(STEP.shaN-SHA_FLOOR)*Math.max(0,Math.min
 
    ALL OF IT MEASURED IN ONE PAGE LOAD. Comparing sweeps across loads is void: TFREEZE pins the
    camera and section wherever they happened to be, and the same build measured 0.19 and 1.27 for
-   the same quantity on two loads. That confound wasted three comparisons before it was caught. */
+   the same quantity on two loads. That confound wasted three comparisons before it was caught.
+
+   AND NOW ALL SEVENTY-TWO PAIRS, because three was still three. This file has twice caught
+   itself tuning against one fixture, and the fix above -- measuring three pairs instead of one --
+   is the same argument one step along, not a different one. There are 9 modes, so 72 ordered
+   pairs; the other 69 had never been looked at, and any one of them could have been the outlier
+   that made a shape change read as a lurch.
+
+   None of them is. Swept with PAIRPIN + MIXPIN at 21 points, per-step change read back off a
+   centred 256x256 box (readPixels, not a screenshot -- 1512 full-frame PNGs over CDP wedged the
+   browser):
+
+       lurch      median 2.07   p90 2.19   min 1.83   max 2.20     a 20% band over all 72
+       evenness   median 0.417  p90 0.609  max 0.714
+       the three tuned pairs mean 2.05   |   the other 69 mean 2.04, worst 2.20
+
+   So the constants generalise and the three-pair tuning did not overfit. That is the whole
+   finding: nothing to change, and a risk this file keeps re-running now retired with a number.
+
+   THE RIG CHECKS ITSELF. The morph curve is time-symmetric, so a->b and b->a must agree on
+   lurch and swap start for end. Over the 36 reversed pairs the worst lurch disagreement is
+   0.0036 and start-vs-end 0.35. Under the pins the render is deterministic -- two grabs of an
+   unchanged pose differ by 0.0000 levels -- against a per-step change of 2.25 to 3.90.
+
+   TWO CAVEATS, so these numbers are not misread. The absolute values are NOT comparable to the
+   table above: a different sweep geometry gives a different scale, and only the SPREAD ACROSS
+   PAIRS is the claim here (the ordering does agree -- 0->1 is the best pair in both). And
+   `lurch` cannot separate a lurch from deliberate easing, since an eased transition has a
+   varying rate on purpose; it is a relative signal for comparing curves, never an absolute
+   defect measure. */
 const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15, bump:0.15};  window.MORPH=MORPH;
 /* Kaleidoscope order and ring offset. off is the fraction of the reach the copies are pushed off
    the fold axis; kalEval derives their scale from it so the silhouette radius never changes.
@@ -6366,6 +6395,9 @@ function frame(){
                                      captures otherwise, and that has silently invalidated
                                      comparisons in this file before.
        window.TFREEZE= seconds       pins the clock and sets dt to 0 (see below).
+       window.PAIRPIN= [a,b]         pins BOTH ends of a morph, which setMode cannot do under
+                                     TFREEZE -- see the note at the morph advance for the wrong
+                                     answer that costs.
        window.MIXPIN = 0..1          holds a morph at one point of the transition instead of
                                      letting it advance, so the melt can be SWEPT. Without it a
                                      morph can only be watched at whatever rate it runs, which is
@@ -7662,6 +7694,14 @@ function frame(){
      dt is already clamped to 50ms upstream, so bounding the step by dt/0.9 -- no faster than
      nine tenths of a second for the whole transition -- keeps the anti-teleport guarantee this
      cap exists for while removing the coupling to frame COUNT that never belonged in it. */
+  /* PAIRPIN puts BOTH ends of a morph where the measurement wants them, which MIXPIN alone
+     cannot do. setMode() only asks for a transition; it lands when mix reaches 1, and mix
+     advances on dt -- which TFREEZE sets to zero. So under the pins that make an A/B valid the
+     first morph never completes, `mode` keeps whatever it had, and a sweep of "a -> b" is
+     silently a sweep of "whatever was loaded -> b". That is not hypothetical: it is how the
+     first run of the all-pairs sweep came back, with every row identical for a given
+     destination and the source making no difference at all. */
+  if(window.PAIRPIN){ mode=window.PAIRPIN[0]; mode2=window.PAIRPIN[1]; phase=1; }
   else if(phase===1){
     /* MIXPIN holds the transition still instead of advancing it -- see the measurement hooks in
        frame(). It deliberately does NOT land the morph at 1.0: a sweep has to be able to sit on
@@ -7669,6 +7709,7 @@ function frame(){
        end the thing being measured. */
     if(window.MIXPIN!=null) mix=Math.max(0,Math.min(1,window.MIXPIN));
     else { mix+=Math.min(dBeats/morphBeats(), dt/0.9); if(mix>=1){ mix=0; mode=mode2; phase=0; } } }
+  if(window.PAIRPIN && window.MIXPIN!=null) mix=Math.max(0,Math.min(1,window.MIXPIN));
   /* THE MORPH'S RESOLUTION STEP, applied on the two edges of the transition and nowhere else --
      see MORPH_RSCALE. Driven off `phase` rather than off mix, so it is exactly one step down when
      the morph starts and one back up when it lands; applyScale reallocates, which is fine twice
