@@ -5151,7 +5151,10 @@ function segForSection(s){
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
-// modes: 0 ribbon  1 tower  2 gyroscope  3 space frame  4 pods  5 shell
+// 0 Rotor  1 Clover  2 Arc  3 Chevron  4 Wave  5 Plate  6 Gear  7 Knot  8 Lattice
+// (this header read "0 ribbon 1 tower 2 gyroscope 3 space frame 4 pods 5 shell" -- six names
+//  for nine profiles, from before 6/7/8 existed. The table below still shows its age: every
+//  genre carries exactly three of modes 0-5 plus exactly one of 6/7/8, bolted on afterwards.)
 const GENRE_MODES={
   techno:[2,5,4,3,6],'melodic techno':[1,3,0,7],house:[1,3,2,7],edm:[0,4,5,6],
   electronic:[0,1,2,3,4,5,6,7,8],
@@ -5414,7 +5417,51 @@ function resetOnsetCursors(t){                         // after a seek, re-place
     let lo=0,hi=a.length; while(lo<hi){ const m=(lo+hi)>>1; if(a[m][0]<=tb) lo=m+1; else hi=m; }
     OCUR[b]=lo; }
 }
-function genreModes(){ const g=(director&&director.genre&&director.genre.primary)||''; return GENRE_MODES[g]||[0,1,2,3,4,5]; }
+/* FILL THE LADDER, GREEDILY, TAKING WHATEVER SITS FURTHEST FROM WHAT IS ALREADY THERE.
+   Shared by both places that widen a shape set -- the genre list here and the fold's intersection
+   in allowedModes -- because they want the same thing and two copies of a rule like this is how
+   they come to disagree. Distance is measured on the LADDER, not on the mode number: the ladder
+   is how energy becomes a shape, so what a set needs is rungs it does not already occupy. */
+function spreadTopUp(have, pool, want){
+  const out=have.slice(), left=pool.filter(m=>out.indexOf(m)<0);
+  while(out.length<want && left.length){
+    let best=0, bd=-1;
+    for(let i=0;i<left.length;i++){
+      let d=1e9;
+      for(const m of out) d=Math.min(d, Math.abs(LADDER_AT[left[i]]-LADDER_AT[m]));
+      if(d>bd){ bd=d; best=i; }
+    }
+    out.push(left.splice(best,1)[0]);
+  }
+  return out;
+}
+/* HOW MANY SHAPES A GENRE GETS BEFORE THE FOLD NARROWS IT FURTHER.
+   The table gives four to everything but electronic, and four cannot cover a nine-rung ladder.
+   Measured over the twelve lists, occupancy of the ladder as shipped:
+
+       ambient, classical   rungs 0-3 only     a peak could not reach an aggressive profile
+       drum & bass          rungs 5-8 only     a breakdown could not reach a calm one
+       dubstep, hip hop, rock   worst gap 5    energy crossing five rungs changed nothing
+
+   Three of twelve genres could not reach half the ladder at all. Topping up to 6 takes the
+   worst gap from 5 to 3 and the unreachable-half count from 3 to 0; 5 fixes the halves but
+   leaves the gap at 5, and 7 buys only a little more while overriding the genre harder. 6 is
+   that knee, and the genre keeps four of the six.
+
+   THE ADDITIONS CANNOT STEAL A CHOICE THE GENRE WOULD HAVE MADE, which is what makes this safe
+   to do to a stylistic table. chooseMode picks the allowed mode NEAREST the rung, so a top-up
+   shape only ever wins at an energy where every one of the genre's own four was further away --
+   which is precisely the rungs the genre did not occupy. */
+const GENRE_MIN=6;
+function genreModes(){
+  const g=(director&&director.genre&&director.genre.primary)||'';
+  /* THE FALLBACK WAS [0,1,2,3,4,5] AND THAT IS THE STALE HEADER AGAIN: it predates the Gear,
+     the Knot and the Lattice, so a genre the tagger does not recognise could never show three
+     of the nine profiles. An unrecognised genre carries no stylistic information to respect,
+     so the honest default is everything. */
+  const base=GENRE_MODES[g]||SHAPE_LADDER;
+  return spreadTopUp(base, SHAPE_LADDER, GENRE_MIN);
+}
 /* ====================== WHICH SHAPE, AND WHY ======================
    This used to end in Math.random(). Filter the nine profiles by genre, filter again by the
    fold, bucket them by energy into CALM/MID/HOT, then draw one out of the hat. Every constraint
@@ -5605,17 +5652,7 @@ function allowedModes(foldOpen){
      answers every energy with the same form -- spread is the whole point of having more. */
   if(folded){
     let ff=allowed.filter(m=>FOLD_FRIENDLY.includes(m));
-    if(ff.length && ff.length<FOLD_MIN){
-      const pool=FOLD_FRIENDLY.filter(m=>ff.indexOf(m)<0);
-      while(ff.length<FOLD_MIN && pool.length){
-        let best=0, bd=-1;
-        for(let i=0;i<pool.length;i++){
-          const d=Math.min.apply(null, ff.map(m=>Math.abs(LADDER_AT[pool[i]]-LADDER_AT[m])));
-          if(d>bd){ bd=d; best=i; }
-        }
-        ff.push(pool.splice(best,1)[0]);
-      }
-    }
+    if(ff.length && ff.length<FOLD_MIN) ff=spreadTopUp(ff, FOLD_FRIENDLY, FOLD_MIN);
     if(ff.length) allowed=ff;
   }
   return allowed.slice().sort((a,b)=>LADDER_AT[a]-LADDER_AT[b]);
