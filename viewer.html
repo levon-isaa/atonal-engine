@@ -4782,7 +4782,27 @@ const KAL_DEAD=0.05;    // hold rather than turn round inside this much error
 const KAL_DUTY=0.22;    // the fold's threshold is set here on the track's own energy curve
 const KAL_HYST=0.10;    // ...and it closes this far BELOW the level that opened it
 const KAL_HOLD=6.0;     // seconds a bloom must last once committed
-const KAL_REST=3.0;     // ...and seconds it must stay shut before another
+/* THE REST IS DERIVED FROM THE DUTY, because as two independent constants they contradicted each
+   other and the dwell won. kalOpen is calibrated to the (1-KAL_DUTY) quantile of the track's own
+   energy, so energy is above the threshold 22% of the time -- but a 6s HOLD turns each brief
+   excursion into a 6s bloom, and a 3s REST lets it re-trigger the moment that expires. The
+   ceiling on duty is therefore HOLD/(HOLD+REST) = 6/9 = 66.7%, whatever the threshold says.
+
+   MEASURED on a real trance upload, 16392 frames over 299s, before this changed:
+
+       kalHeld 66.4%      kalAmt>0.35 78.4%      kalAmt p50 0.853
+       fully closed (kalAmt<0.02): 0.0% of the time -- it never once shut
+
+   66.4% against a predicted ceiling of 66.7%: the fold was not responding to the music at all,
+   it was sitting on its own dwell ratio. That is why it read as the resting state rather than as
+   a gesture, and it is what pinned the Auto Director to the fold-friendly vocabulary for whole
+   tracks (see FOLD_MIN).
+
+   REST = HOLD*(1-DUTY)/DUTY makes the ceiling equal the duty the threshold was calibrated for,
+   so the two constants now say the same thing and the ENERGY decides where inside that budget
+   the blooms land. A drop still overrides it -- `forced` bypasses the rest in kalStep -- because
+   a drop is exactly where an accent belongs. */
+const KAL_REST=KAL_HOLD*(1-KAL_DUTY)/KAL_DUTY;   // ...and seconds it must stay shut before another
 const KAL_FLOOR=0.34;   // open means open: the curve drives this..1, never 0..this
 let kalOpen=0.7, kalFull=0.9;          // the two levels, calibrated per track below
 let kalHeld=false, kalSince=-1e9;      // the state, and when it last changed
@@ -7280,6 +7300,18 @@ function frame(){
        live curve then drives KAL_FLOOR..1 inside it, lifted by epicness and pinned to full on a
        drop -- see kalCalibrate for the measurement that made it a state rather than a threshold,
        and the note above kalMode for why any nonzero value costs a full bloom. */
+    /* THE DROP'S OVERRIDE IS AN ACCENT, NOT A TENANCY. kalBoost was latched per SECTION --
+       `s.label==='drop' ? 1.0 : 0.0` -- and `forced` bypasses BOTH the hysteresis and the dwell,
+       so the fold was pinned wide open for the entire length of every drop section, twenty or
+       thirty seconds at a time. That is not an override of the rules for a moment, it is the
+       rules not applying for a third of the track. With the rest derived from the duty the
+       measured share only fell 66.4% -> 45.2%, and this is the rest of the gap.
+       Decayed over KAL_HOLD, the minimum bloom, so a drop still opens the fold instantly and at
+       full amount -- it drives the amount as well as the gate -- and then hands back to the
+       energy, which either sustains the bloom on its own merits or lets it shut. The
+       anticipatory boost re-arms every frame while a drop is within KAL_SECS, so the lead-in
+       that makes the fold ARRIVE on the drop is untouched. */
+    if(kalBoost>0) kalBoost=Math.max(0, kalBoost - dt/KAL_HOLD);
     kalDrive=kalStep(energy, epic, t, pulseS*0.16 + HITS.low*0.12);
     /* IN-SECTION CHANGE, ON MUSICAL DEPARTURE. secERef is where the section's energy was when
        it last produced a shape; when the live curve has moved far enough from that, the form is
@@ -7332,7 +7364,7 @@ function frame(){
          earlier. */
       const beatSec=60/((director&&director.tempo&&director.tempo.bpm)||120);
       if(lastBeatDown && lastBeatT>=s.t0-beatSec*0.25 && lastBeatT<=t+1e-6) commitReform(beatsAtTime(t));
-      kalBoost = s.label==='drop' ? 1.0 : 0.0;      // a drop pins the drive to full
+      if(s.label==='drop') kalBoost=1.0;            // a drop opens it at once; see the decay
       sectRand=hash01(4,Math.round(s.t0*1000));     // the matrix's 'Section step' source, per SECTION
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
       /* ONE RUNG PER BOUNDARY, not a jump to wherever the mapping points. The mapping spans the
@@ -7952,6 +7984,25 @@ function frame(){
   { const st=dt/KAL_SECS, e=kalTS-kalAmt;
     if(Math.abs(e)>KAL_DEAD)
       kalAmt=Math.max(0,Math.min(1, kalAmt+Math.max(-st,Math.min(st,e)))); }
+  /* SHUT MEANS SHUT, AND THE DEADBAND WAS STOPPING IT ONE STEP SHORT.
+     kalTS approaches kalT exponentially, so on the way down it asymptotes toward 0 without
+     arriving; the deadband then holds kalAmt wherever it was when the error fell under
+     KAL_DEAD. MEASURED across 299s with the fold behaving as an accent: kalAmt p05 0.038 and
+     the share of frames under 0.02 was 0.0% -- it parked just above zero and stayed there for
+     the whole track.
+     That is not a cosmetic remainder. map() takes the two-evaluation path for ANY u_kal over
+     0.002 -- evalForm AND kalEval, the doubled scene pass the governor's KFL note is about --
+     so a fold stranded at 0.04, which is far too small to see, was costing the frame as much as
+     a fold that is actually doing something. The renderer paid for the kaleidoscope 100% of the
+     time and showed it 26%.
+     So when the drive is genuinely at zero the deadband does not apply and the fold closes the
+     rest of the way at the ordinary rate. Not a snap to 0 below some threshold, which is what
+     this was first written as: at kalAmt 0.051 against a target of 0.001 the error is exactly
+     KAL_DEAD, the slew above declines to move, and a threshold of "< KAL_DEAD" misses it by a
+     thousandth -- measured, p50 sat at 0.051 and only 47% of frames reached zero. Running the
+     existing rate limit down to 0 has no magic number in it and no visible step, because it is
+     the same speed the fold closes at everywhere else. */
+  if(kalT<=0.0005){ kalAmt=Math.max(0, kalAmt-dt/KAL_SECS); kalTS=kalAmt; }
   /* THE MIRROR'S OWN MOTION. Advanced every frame on the beat grid rather than latched per
      section -- see the note above kalBase. Scaled by energy so a quiet passage turns slowly and a
      loud one churns, and gated on the fold being at least partly open: with kalAmt at 0 there is
