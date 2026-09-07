@@ -5331,7 +5331,27 @@ const FOLD_FRIENDLY=[0,1,6,7,8];
    only five members: asking for 4 would override the genre on nine of twelve genres, which
    stops being a top-up and becomes ignoring the genre. 3 lifts every genre off 1 and 2 while
    leaving electronic's 5 and the two 3s untouched. See allowedModes. */
-const FOLD_MIN=3;
+/* WHEN THE HARD CONSTRAINT BINDS, USE ALL OF WHAT IT ALLOWS.
+   This was 3, chosen against a note recording that "4 of 6 shape decisions in one track were
+   taken with the fold open" -- a minority, so a floor of 3 only had to rescue the genres whose
+   intersection with FOLD_FRIENDLY was 1 or 2. MEASURED on a real trance upload, 16392 frames
+   over 299s of playback:
+
+       kalAmt p50 0.853       open (>0.35) 78.4% of the time       kalHeld 66.4%
+       fully closed (kalAmt < 0.02): 0.0% of the time -- it is never shut
+
+   The fold is not an accent on this material, it is the resting state, so the fold-friendly
+   subset governs the WHOLE piece rather than a few passages. With the floor at 3 the intersection
+   of trance's six modes with FOLD_FRIENDLY's five is four, that is above the floor, and the
+   Auto Director therefore had a four-shape vocabulary for the entire track -- measured, the
+   allowed set was exactly [0,1,7,8] at all 13 decisions.
+
+   The two constraints are not equally hard, and the note in allowedModes already says so: the
+   genre list is a stylistic preference and fold-friendliness is a measured fact about what
+   survives the wedge. So when the fold binds, the preference yields entirely and the vocabulary
+   is all five fold-friendly profiles rather than whichever of them the genre also liked.
+   FOLD_FRIENDLY.length rather than 5, so this cannot drift out of step with the list itself. */
+const FOLD_MIN=FOLD_FRIENDLY.length;
 let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 // Object-space reach per mode — the radius that actually sets the silhouette, read off each
 // SDF's own constants:
@@ -5802,7 +5822,7 @@ function allowedModes(foldOpen){
      answers every energy with the same form -- spread is the whole point of having more. */
   if(folded){
     let ff=allowed.filter(m=>FOLD_FRIENDLY.includes(m));
-    if(ff.length && ff.length<FOLD_MIN) ff=spreadTopUp(ff, FOLD_FRIENDLY, FOLD_MIN);
+    if(ff.length<FOLD_MIN) ff=spreadTopUp(ff, FOLD_FRIENDLY, FOLD_MIN);
     if(ff.length) allowed=ff;
   }
   return allowed.slice().sort((a,b)=>LADDER_AT[a]-LADDER_AT[b]);
@@ -5922,9 +5942,18 @@ let lastReformSec=-1e9;
      beats at all.
 
      BREATH AND FLASH follow the ladder DISTANCE -- a change across the whole vocabulary
-     announces itself, a step to the neighbouring rung does not. Centred so the median change
-     (0.375 of the ladder, measured over a real track's decisions) reproduces today's numbers,
-     so this redistributes emphasis rather than adding it.
+     announces itself, a step to the neighbouring rung does not. Centred on 0.375 so that an
+     average change reproduces today's numbers, i.e. this redistributes emphasis rather than
+     adding it.
+     THAT CENTRE IS THE MEAN AND NOT THE MEDIAN, which is what this note first claimed. Measured
+     properly over 13 decisions on a real trance upload, the distribution is BIMODAL rather than
+     centred at all -- 0.125 x7, then 0.500, 0.625 x2, 0.750 x2, 0.250 -- with p50 0.125 and mean
+     0.337. So the typical change is a neighbouring step given 0.73 of the old emphasis, the
+     occasional leap across the vocabulary gets 1.39, and the total is very close to unchanged
+     because 0.337 is near the 0.375 the curve is centred on. The behaviour is the intended one;
+     the description of it was wrong, and a median of 0.125 would have looked like a 27% cut in
+     emphasis to anyone who checked. Recorded rather than retuned, because the mean is the right
+     statistic for whether a per-event emphasis is neutral overall.
 
    BOTH ARE LATCHED AT THE TRIGGER, and that is not an optimisation. morphBeats() was called
    every frame; leaving it that way with a musical input means the rate changes mid-flight, and
