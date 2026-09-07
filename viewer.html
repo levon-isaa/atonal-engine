@@ -5756,12 +5756,52 @@ let lastReformSec=-1e9;
    so the one duration that was actually chosen only holds at one tempo. Picking whichever of
    1, 2 or 4 bars lands closest to 4 seconds keeps the transition bracketed by the music, which
    is the whole point of counting it in beats, and keeps it the length it was designed to be. */
-function morphBeats(){
+/* ...AND HOW LONG IT TAKES IS THE ONLY THING THE CHANGE ITSELF SAYS. Everything about a shape
+   change was identical whichever moment it landed on: the same duration, the same easing, the
+   same 12% breath, the same bloom lift. The track's biggest drop and a quiet breakdown
+   transitioned the same way. The trigger already carries the energy, the section and its label,
+   and how far the form is about to travel on the ladder -- all of it was used to pick the
+   DESTINATION and then thrown away, so the transition carried no information at all.
+
+   Two levers, one input each, rather than one blended formula nobody can reason about:
+
+     DURATION follows the rung -- a loud arrival snaps, a quiet one melts. The rung and not the
+     raw energy, because rung is ranked within the track (see shapeRung), so "loud" means loud
+     for THIS piece rather than loud in absolute terms; a whole quiet album would otherwise melt
+     every time. Still quantised to a whole number of bars, which is the point of counting in
+     beats at all.
+
+     BREATH AND FLASH follow the ladder DISTANCE -- a change across the whole vocabulary
+     announces itself, a step to the neighbouring rung does not. Centred so the median change
+     (0.375 of the ladder, measured over a real track's decisions) reproduces today's numbers,
+     so this redistributes emphasis rather than adding it.
+
+   BOTH ARE LATCHED AT THE TRIGGER, and that is not an optimisation. morphBeats() was called
+   every frame; leaving it that way with a musical input means the rate changes mid-flight, and
+   a morph that accelerates and decelerates as the curve moves under it is exactly the fault
+   this file has removed four times (see RATE_TARGETS). Latched, the rate is a constant per
+   transition -- a different constant each time, which is the whole idea. */
+const MORPH_SECS={fast:2.2, slow:6.0};      // the ends of the range, before bar quantisation
+let morphB=8;        // this transition's length in beats, latched
+let morphJump=0.375; // this transition's ladder distance 0..1, latched -- the median is the default
+function morphBeatsFor(rung){
   const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
+  const k=Math.max(0,Math.min(1,rung/(SHAPE_LADDER.length-1)));
+  const want=MORPH_SECS.slow+(MORPH_SECS.fast-MORPH_SECS.slow)*k;
+  /* THREE BARS IS ALSO A WHOLE NUMBER OF BARS. The set was 1, 2 and 4 bars, which is fine for
+     hitting ONE target but cannot resolve a range: at 120bpm those are 2.0s, 4.0s and 8.0s, so
+     a 2.2..6.0s span collapses onto just two of them -- 6.0 is equidistant from 4 and 8 and the
+     tie keeps 8, giving rungs 0 through 6 the identical duration. Measured before adding 12:
+     [8,8,8,8,4] beats across the ladder, which is the old constant with one exception rather
+     than a range. With 3 bars in the set it is [12,12,8,8,4] at 120, [16,12,12,8,8] at 176. */
   let best=8, err=1e9;
-  for(const b of [4,8,16]){ const e=Math.abs(b*60/bpm-4.0); if(e<err){ err=e; best=b; } }
+  for(const b of [4,8,12,16]){ const e=Math.abs(b*60/bpm-want); if(e<err){ err=e; best=b; } }
   return best;
 }
+function morphBeats(){ return morphB; }
+/* The emphasis a change is given, from how far it travelled. 0.6+1.05*jump is 1.0 at the median
+   jump, so an ordinary change looks exactly as it did and only the extremes move. */
+function morphEmph(){ return 0.6+1.05*morphJump; }
 function requestReform(energy,beatNow,sec){
   if(beatNow-lastReformBeat < REFORM_MIN_BEATS) return;
   const nowSec=(typeof pos==='function')?pos():0;
@@ -5790,8 +5830,23 @@ function commitReform(beatNow){
   lastReformBeat=beatNow; lastReformSec=(typeof pos==='function')?pos():0;
   const e=reformWant.energy, sc=reformWant.sec; reformWant=null; triggerReform(e,sc);
 }
-function triggerReform(energy,sec){ const nm=chooseMode(energy,sec); if(nm===mode&&phase===0) return; mode2=nm; mix=0; phase=1; }
-function setMode(m){ if(m===mode&&phase===0) return; mode2=m; mix=0; phase=1; }   // manual morph to a chosen style
+function triggerReform(energy,sec){
+  const nm=chooseMode(energy,sec); if(nm===mode&&phase===0) return;
+  // the same rung chooseMode just used -- see morphBeatsFor for why it is the rung and not energy
+  latchMorph(shapeRung(energy,!sec), mode, nm);
+  mode2=nm; mix=0; phase=1; }
+/* A HAND-PICKED SHAPE IS NOT A MUSICAL EVENT, so it takes the middle of the range rather than
+   whatever the track happens to be doing when the menu is used. The ladder distance is real
+   either way. */
+function setMode(m){ if(m===mode&&phase===0) return;
+  latchMorph((SHAPE_LADDER.length-1)*0.5, mode, m);
+  mode2=m; mix=0; phase=1; }
+function latchMorph(rung,from,to){
+  morphB=morphBeatsFor(rung);
+  const a=LADDER_AT[from], b=LADDER_AT[to];
+  morphJump=(a===undefined||b===undefined)?0.375
+           : Math.abs(a-b)/(SHAPE_LADDER.length-1);
+}
 /* AUTO IS THE DEFAULT, and the Shape select agrees with it -- its first option is the selected
    one now, where `value="4" selected` used to pin the menu to Wave. The two halves of that were
    consistent with each other and wrong together: the menu said Wave, this said false, and so the
@@ -7856,8 +7911,9 @@ function frame(){
   { const wantMS=(phase===1 && !RENDER.pinScale)?MORPH_RSCALE:1.0;
     if(wantMS!==morphScale){ morphScale=wantMS; applyScale(); } }
   const prog=(phase===1)?mix:0;
-  const reform=1.0-0.12*Math.sin(prog*Math.PI);       // subtle 'breath' during the morph
-  flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*Math.sin(prog*Math.PI));  // gentle bloom lift, not a strobe
+  const emph=(phase===1)?morphEmph():1.0;              // see morphEmph -- 1.0 at the median change
+  const reform=1.0-0.12*emph*Math.sin(prog*Math.PI);  // subtle 'breath' during the morph
+  flash=Math.max(flash*Math.exp(-3.0*dt), 0.22*emph*Math.sin(prog*Math.PI));  // bloom lift, not a strobe
   // HUD
   $('hSec').textContent=secLabel; $('hMood').textContent=moodName; $('hIntent').textContent=intent;
   if(director){ const d=director.meta.duration,c=Math.min(d,pos());
