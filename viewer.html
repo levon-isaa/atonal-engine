@@ -1325,6 +1325,41 @@ float evalForm(vec3 p){
   float r=pow(sin(m*3.14159265), 2.5)*u_morphBlob*u_morphR;
   float s=u_morphR/(u_morphR+r);
   vec3 q=p/s;                                  // exactly p while r is 0
+  /* IT DISSOLVES IN PLACE, AND TWO WAYS OF GIVING IT A DIRECTION WERE TRIED AND REJECTED.
+     A transition is symmetric in time and space: the field melts where it stands and reassembles
+     where it stands, so there is no handover to follow between the two shapes. Both attempts are
+     recorded here with their numbers, because both are the obvious idea and will occur again.
+
+     A TWIST. Turn the outgoing profile's domain by tw*m and the incoming one's by tw*(m-1), so
+     both sweep the same angle and the arriving shape settles into the place the leaving one is
+     vacating. A rotation is an ISOMETRY, so unlike the front below it costs nothing: measured at
+     32.30 / 29.85 / 31.10 ms for 0 / 34 / 69 degrees, i.e. no change, and mix 0 stayed exact to
+     0.0000. It still does not earn its place. On the per-step change metric this file already
+     uses to justify the easing curve, peak/mean over 32 steps went 3.93->4.73, 2.46->2.13,
+     2.06->1.90, 2.13->3.06 across four pairs -- two better, two worse -- and dead steps rose in
+     three of the four. It rotates the blended blob rather than staging a handover, because at
+     any instant BOTH shapes occupy the same space; and the form is already turning on two axes,
+     so 22-49 degrees over several seconds reads as a speed change rather than as intent.
+
+     A SWEEPING FRONT, which is the thing that would actually work -- a band of blend parameter
+     crossing the form, so one side is fully the old shape and the other fully the new, and
+     different parts change at different times. It was built and measured. blendField adds K*ml
+     and K*(1-ml) to the two fields, so a spatially varying ml puts K*|grad ml| = K/(w*EXR*R)
+     into the gradient; the field stops being a conservative underestimate and has to be divided
+     by that bound, which is march steps:
+
+         front width w      0 (off)    0.9     0.6     0.4
+         frame ms p50         29.3    38.2    39.6    49.7      34fps -> 20fps
+         peak/mean 4->0       4.37    5.34    6.21    6.90
+         peak/mean 3->8       2.11    4.92    5.70    6.46
+
+     So it costs up to 1.7x the frame AND concentrates the change further rather than spreading
+     it -- the burst simply moves to wherever the front is crossing the densest part of the form.
+     Rejected on both counts, not just on cost.
+
+     What is left, and is not attempted here, is staging the change in something other than the
+     field: the light, the colour or the camera can carry a direction without touching the
+     gradient. That is a different kind of change and wants its own measurement. */
   float a=evalMode(q,u_mode);
   if(mx<=0.001) return a;                      // r is 0 here, so this is evalMode(p,u_mode)
   return (blendField(q, a, evalMode(q,u_mode2), m) - r)*s;
@@ -5914,6 +5949,7 @@ function morphBeatsFor(rung){
   return best;
 }
 function morphBeats(){ return morphB; }
+
 /* The emphasis a change is given, from how far it travelled. 0.6+1.05*jump is 1.0 at the median
    jump, so an ordinary change looks exactly as it did and only the extremes move. */
 function morphEmph(){ return 0.6+1.05*morphJump; }
@@ -8506,6 +8542,7 @@ function frame(){
   gl.uniform1f(US('u_morphB'), MORPH.bump);
   gl.uniform1f(US('u_morphBlob'), (window.BLOBPIN!==undefined)?window.BLOBPIN:fuseBlob(mode,mode2));
   gl.uniform1f(US('u_morphR'), MORPH.r);
+
 
   gl.uniform1i(US('u_shaN'),shaTaps());   // governor-scaled; see SHA_FLOOR
   gl.uniform1f(US('u_shaJit'), (window.SHAJIT!==undefined)?window.SHAJIT:1.0);
