@@ -3,6 +3,7 @@
 
     python tests/render_bench.py clock     # is the drawn motion smooth, and by how much
     python tests/render_bench.py morph     # every shape pair's transition, all 72
+    python tests/render_bench.py edges     # how rough is the silhouette, and where
     python tests/render_bench.py all
 
 WHY THIS FILE EXISTS. Every measurement in viewer.html had to be rebuilt by hand before it
@@ -329,6 +330,95 @@ def bench_morph(c, url, modes=9, n=21):
 
 
 # ------------------------------------------------------------------ entry
+# ------------------------------------------------------------------ silhouette quality
+# The default framebuffer is undefined once the frame has been presented, so a readPixels from
+# Runtime.evaluate returns a cleared buffer -- measured as every arm of a sweep coming back
+# byte-identical with a whole-box RMSE of exactly 0.000, which is what sent this down a blind
+# alley the first time. The read has to happen in the SAME TASK as the draw. frame() reschedules
+# itself at its top, so wrapping requestAnimationFrame survives, and the grab runs after frame()
+# returns and before the compositor takes it.
+_GRAB_HOOK = """
+  const _raf=window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame=cb=>_raf(t=>{ cb(t);
+    if(window.__WANT){ const W=glc.width,H=glc.height;
+      const x0=(W>>1)-320,y0=(H>>1)-220,w=640,h=440;
+      const px=new Uint8Array(w*h*4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+      gl.readPixels(x0,y0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,px);
+      let s=''; for(let i=0;i<w*h;i++) s+=String.fromCharCode(px[i*4]);
+      window.__GOT={w:w,h:h,r:btoa(s)}; window.__WANT=false; } });
+  return 1;
+"""
+_GRAB = """
+  window.QLOCK=true; rscale=%f; DX.sharpen=%f; applyScale();
+  await new Promise(r=>setTimeout(r,700));
+  window.__GOT=null; window.__WANT=true;
+  for(let i=0;i<300 && !window.__GOT;i++) await new Promise(r=>setTimeout(r,20));
+  return JSON.stringify(window.__GOT);
+"""
+
+
+def _grab(c, scale, sharpen=0.0):
+    import base64
+    import numpy as np
+    d = json.loads(c.js(_GRAB % (scale, sharpen), timeout=90))
+    a = np.frombuffer(base64.b64decode(d["r"]), np.uint8).astype(float)
+    return a.reshape(d["h"], d["w"])
+
+
+def _boxblur(a, k):
+    """A control, not a filter: if plain blur scored well the metric below would be measuring
+    softness rather than reconstruction, and could not arbitrate between two AA filters."""
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view
+    g = np.exp(-((np.arange(k) - k // 2) ** 2) / (2 * (k / 4.0) ** 2))
+    g /= g.sum()
+    w = sliding_window_view(np.pad(a, k // 2, mode="edge"), (k, k))
+    return (w * np.outer(g, g)).sum(axis=(2, 3))
+
+
+def bench_edges(c, url):
+    """How far is the silhouette from a properly resolved one, and does the error have a
+    direction to it?
+
+    Ground truth is a 2.2x march resolved by the post pass to the SAME canvas size, so this is
+    a like-for-like comparison of output pixels and not of buffers. Every arm comes from one
+    page load behind TFREEZE: comparing across loads is void, because the pause lands at a
+    different point in the track and the section, material and contrast all move with it.
+    """
+    import numpy as np
+    load_track(c, url)
+    pin(c)
+    c.js(_GRAB_HOOK)
+    ref = _grab(c, 2.20)
+    gx = np.diff(ref, axis=1)[:-1, :]
+    gy = np.diff(ref, axis=0)[:, :-1]
+    band = (np.abs(gx) + np.abs(gy)) > 18.0
+    ang = np.degrees(np.arctan2(np.abs(gx), np.abs(gy) + 1e-9))   # 0 = horizontal edge
+    naxis = band & ((ang < 20) | (ang >= 70))
+    diag = band & (ang >= 20) & (ang < 70)
+    print("  silhouette band %.2f%% of box   near-axis %d px   diagonal %d px"
+          % (100.0 * band.mean(), naxis.sum(), diag.sum()))
+
+    def rmse(img, m):
+        e = (img - ref)[:-1, :-1]
+        return float(np.sqrt((e[m] ** 2).mean()))
+
+    print("\n  rscale   all edges   near-axis   diagonal")
+    for sc in (0.80, 0.92, 1.00, 1.10, 1.25):
+        img = _grab(c, sc)
+        print("   %.2f     %7.3f     %7.3f    %7.3f"
+              % (sc, rmse(img, band), rmse(img, naxis), rmse(img, diag)))
+    print("\n  The resolve switches from FXAA to a real 4-tap tent above ssRatio 1.05, which is")
+    print("  why 1.00 -> 1.10 is a step and not a slope. See the governor's HEADROOM/SS_MIN.")
+
+    raw = _grab(c, 1.00)
+    print("\n  metric control -- blur is not reconstruction, so it must score WORSE:")
+    for k in (3, 5, 7):
+        print("    native + %dx%d gaussian   %7.3f" % (k, k, rmse(_boxblur(raw, k), band)))
+    print("    native, unblurred        %7.3f" % rmse(raw, band))
+
+
 def main():
     what = (sys.argv[1] if len(sys.argv) > 1 else "all").lower()
     try:
@@ -342,7 +432,8 @@ def main():
     url, truth, bpm = serve_fixture()
     print("fixture: %s  (%.0f bpm, boundaries %s)" % (url, bpm, truth))
     rc = 0
-    for name, fn, q in (("clock", bench_clock, ""), ("morph", bench_morph, "?readback")):
+    for name, fn, q in (("clock", bench_clock, ""), ("morph", bench_morph, "?readback"),
+                        ("edges", bench_edges, "")):
         if what not in ("all", name):
             continue
         print("\n== %s ==" % name)
