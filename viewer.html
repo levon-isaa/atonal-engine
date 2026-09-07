@@ -555,6 +555,7 @@ uniform float u_spin;
 // note above formScale), which left the uniform declared and uploaded with nothing reading it.
 uniform float u_tilt,u_iridHue,u_mode,u_mode2,u_mix,u_reform;
 uniform float u_edgeVar,u_thickVar,u_chamf;   // shape refinement; see extr()
+uniform float u_faceLean;                     // leans the SPIN AXIS toward the profile normal; see formRot
 /* HARD-SURFACE LOOK. Three levers, all zero in every other look, so this costs nothing when off.
    The target is what makes a flat-shaded product render legible: each face holds ONE tone, and
    the faces meet at a line rather than a fillet. Measured against a reference doing exactly that,
@@ -1143,10 +1144,56 @@ float evalMode(vec3 p,float m){
    Z FIRST. The profile is drawn in xy and extruded along z, so u_swirl turns the form about its
    own symmetry axis -- and it is the axis the kaleidoscope folds about, which means the fold
    travels with the form instead of the form travelling through the fold. */
+/* THE FORM IS A PLATE, AND u_spin IS THE ONE AXIS THAT TURNS ITS EDGE TO THE CAMERA.
+   Every profile is extr(profile2D(p.xy), p, exDepth()) -- drawn in xy, extruded along z -- so
+   the object is a disc of radius EXR=1.15 and half-depth 0.30..0.35: a 3.5:1 plate whose whole
+   identity, the clover lobes, the gear teeth, the lattice weave, lives on the xy FACE. u_swirl
+   turns it about its own normal and is always readable. u_spin turns it about y, perpendicular
+   to that normal, and sweeps the face through the view direction twice per revolution -- and
+   u_spin is the FASTEST axis and the one the section ladder drives, 5.8s to 30s per turn.
+
+   MEASURED on a real analysis, 2671 frames, computing the face normal in world space and
+   dotting it with the camera's view direction: |n.v| below 0.15 for 22.7% of the time, below
+   0.30 for 35.7%, and an edge-on pass every 5.0 seconds. At those poses the form renders as a
+   featureless rim -- a tyre seen side-on -- with none of the profile visible.
+
+   NO CHOICE OF AXIS GIVES A FLOOR, and the tempting arithmetic that says otherwise is wrong.
+   Rotating about an axis at angle a from the normal carries the normal round a cone of
+   half-angle a, so n.v sweeps [cos 2a, 1] and a <= 45deg never reaches zero. That predicts a
+   lean of 55deg holds a floor of 0.34. IT DOES NOT: measured p05 0.034, still fully edge-on.
+   The cone argument assumes one moving thing and there are three -- u_tilt is its own free
+   revolution about x, equally perpendicular to the normal, and the CAMERA orbits about y as
+   well, so what decides edge-on is a relative angle that all three sweep. Every combination
+   tried, on one recorded take so each arm sees identical music (running them in sequence
+   samples different sections and different spin rates -- that confound produced a
+   non-monotonic first answer):
+
+       shipped                          p01 0.010   below 0.15  15.3%   below 0.30  32.4%
+       lean 55 (the "floor" above)      p01 0.008               21.3%               34.2%
+       tumble bounded +/-30             p01 0.015               10.8%               25.1%
+       spin AND tumble bounded +/-20    p01 0.040                3.7%               20.0%
+       yaw locked to the camera         p01 0.011               15.3%               31.6%
+
+   Nothing reaches a floor. Bounding BOTH out-of-plane axes to +/-20deg comes closest and that
+   is no longer this design -- it is a form that nods rather than turns, and it still does not
+   guarantee a face because the camera keeps orbiting past the edge on its own.
+
+   SO THIS IS A MITIGATION AND NOT A FIX, and it is set to what was measured rather than to
+   what would look decisive. A lean of 20-30deg cuts rim-dominant time by about 40% -- below
+   0.15 from 15.3% to 9.4%, below 0.30 from 32.4% to 23.3% -- by keeping the spin axis from
+   lying exactly in the plate's plane. Past 40deg it gets worse again, which is why 25 rather
+   than more. Removing edge-on ENTIRELY means either bounding the out-of-plane rotation (a
+   different motion design) or making the profiles less than 3.5:1 (a different look); both are
+   decisions about what the product should be, not defects to be patched.
+
+   u_faceLean leans the spin axis out of y toward z by conjugation, which costs exactly one
+   extra 2D rotation: Rx(L) Ry(spin) Rx(-L) = the lean folded into the existing tilt plus one
+   rotation back. At 0 this is bit-identical to the three lines it replaces.  */
 vec3 formRot(vec3 p){
   p.xy*=rot(u_swirl);
-  p.yz*=rot(u_tilt);
+  p.yz*=rot(u_tilt - u_faceLean);
   p.xz*=rot(u_spin);
+  p.yz*=rot(u_faceLean);
   return p;
 }
 /* The mode pair and the morph between them, factored out of map() so the kaleidoscope below can
@@ -4154,6 +4201,15 @@ const BAR_SWING=0.50;   window.BAR_SWING=BAR_SWING;
    with the track. A multiplier keeps the lock and still lets the whole thing be slowed to a
    crawl or stopped. Zero is a legitimate setting: it is how you hold a pose. */
 const MOT={spin:1, tumble:1, swirl:1, orbit:1}; window.MOT=MOT;
+/* HOW FAR THE SPIN AXIS LEANS TOWARD THE FORM'S OWN NORMAL. See formRot for the geometry and
+   the measurement; the short version is that every profile is a 3.5:1 plate and u_spin is the
+   axis that turns its edge to the camera, 22.7% of the time on a real track.
+   25 IS MEASURED, not chosen for looking decisive: it cuts rim-dominant time by about 40%
+   (below 0.15, 15.3% -> 9.4%) and past 40deg the number gets worse again. It does NOT remove
+   edge-on -- see formRot for why nothing that only moves an axis can, and for the five
+   configurations tried. 0 is the previous behaviour exactly, bit-identical.
+   window.FACE_LEAN.deg = n from the console re-uploads on the next frame. */
+const FACE_LEAN={deg:25, get rad(){ return this.deg*Math.PI/180; }}; window.FACE_LEAN=FACE_LEAN;
 /* SELF-SPIN. A constant turn about the form's own axis, ADDED to whatever the Director is doing
    rather than replacing it -- so the object is always visibly rotating around itself, and the
    music modulates that rather than owning it outright.
@@ -7857,6 +7913,7 @@ function frame(){
   // the section's held lean plus the tumble, as ONE angle -- see TUMBLE_BEATS for why they are
   // not two uniforms
   gl.uniform1f(US('u_tilt'),tilt);
+  gl.uniform1f(US('u_faceLean'),FACE_LEAN.rad);
   gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_swirl'),swirlA);
   /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
