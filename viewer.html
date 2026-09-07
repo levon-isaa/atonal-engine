@@ -5174,6 +5174,11 @@ const CALM=[3,2,8], MID=[1,3,7], HOT=[0,4,5,6];
    smooth strokes and do not. (The Rotor was built for this line: the Triskelion it replaced was
    in this list on the strength of its arms, and its arms are what the wedge cuts off.) */
 const FOLD_FRIENDLY=[0,1,6,7,8];
+/* THE FEWEST SHAPES THE FOLD MAY LEAVE THE DIRECTOR. 3 rather than 4 because FOLD_FRIENDLY has
+   only five members: asking for 4 would override the genre on nine of twelve genres, which
+   stops being a top-up and becomes ignoring the genre. 3 lifts every genre off 1 and 2 while
+   leaving electronic's 5 and the two 3s untouched. See allowedModes. */
+const FOLD_MIN=3;
 let mode=4, mode2=4, mix=0, phase=0, flash=0;        // phase 0 idle, 1 morphing
 // Object-space reach per mode — the radius that actually sets the silhouette, read off each
 // SDF's own constants:
@@ -5576,7 +5581,43 @@ function allowedModes(foldOpen){
      arrived yet. kalHeld is the decision itself. foldOpen overrides both, for a caller that knows
      from the analysed curve what the fold is about to do -- see kalOpenShare. */
   const folded = (foldOpen!==undefined) ? foldOpen : (kalHeld || kalAmt>0.35);
-  if(folded){ const ff=allowed.filter(m=>FOLD_FRIENDLY.includes(m)); if(ff.length) allowed=ff; }
+  /* AND IT MAY NOT NARROW THE VOCABULARY TO NOTHING. The fallback below used to fire only when
+     the intersection was EMPTY, which treats "one shape left" as a valid choice. It is not a
+     choice at all, and it is the common case rather than the exotic one -- the genre lists are
+     four modes each and FOLD_FRIENDLY is five, so intersecting them leaves, per genre:
+
+         electronic 5 | trance 3  cinematic 3 | dance 2  d&b 2  ambient 2  classical 2
+         pop 2  rock 2  (unlisted) 2 | dubstep 1  hip hop 1
+
+     Median 2 of 9. On a dubstep or hip hop track every folded passage was pinned to the Gear
+     and the director decided nothing; on eight more genres it picked between two. Measured on
+     a real analysis, 4 of 6 shape decisions in one track were taken with the fold open, so this
+     is not a corner of the run.
+
+     Topped up from FOLD_FRIENDLY rather than from the genre, because the two constraints are
+     not equally hard: the genre list is a stylistic preference, while fold-friendliness is the
+     measured fact that a profile whose interest is its OUTLINE has nothing left inside the
+     wedge (see FOLD_FRIENDLY). Relaxing the preference keeps the form legible; relaxing the
+     fold rule brings back the bland petal.
+
+     Chosen for LADDER SPREAD, greedily taking the candidate furthest from what is already in
+     the set. The ladder is how energy becomes a shape, so a set clustered on adjacent rungs
+     answers every energy with the same form -- spread is the whole point of having more. */
+  if(folded){
+    let ff=allowed.filter(m=>FOLD_FRIENDLY.includes(m));
+    if(ff.length && ff.length<FOLD_MIN){
+      const pool=FOLD_FRIENDLY.filter(m=>ff.indexOf(m)<0);
+      while(ff.length<FOLD_MIN && pool.length){
+        let best=0, bd=-1;
+        for(let i=0;i<pool.length;i++){
+          const d=Math.min.apply(null, ff.map(m=>Math.abs(LADDER_AT[pool[i]]-LADDER_AT[m])));
+          if(d>bd){ bd=d; best=i; }
+        }
+        ff.push(pool.splice(best,1)[0]);
+      }
+    }
+    if(ff.length) allowed=ff;
+  }
   return allowed.slice().sort((a,b)=>LADDER_AT[a]-LADDER_AT[b]);
 }
 /* What share of a span the fold will be open for, read off the analysed curve rather than off the
