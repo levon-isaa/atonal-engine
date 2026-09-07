@@ -6366,6 +6366,11 @@ function frame(){
                                      captures otherwise, and that has silently invalidated
                                      comparisons in this file before.
        window.TFREEZE= seconds       pins the clock and sets dt to 0 (see below).
+       window.MIXPIN = 0..1          holds a morph at one point of the transition instead of
+                                     letting it advance, so the melt can be SWEPT. Without it a
+                                     morph can only be watched at whatever rate it runs, which is
+                                     why the MORPH constants were tuned on three shape pairs out
+                                     of seventy-two -- see the sweep at MORPH.
        window.QLOCK  = true          freezes the quality governor.
        window.DIAG   = 2, 8, 9       renders a shading intermediate instead of the image:
                                      2 geometric normal, 8 ambient occlusion, 9 AO contoured so
@@ -6720,7 +6725,39 @@ function frame(){
        the render clock and pulling it toward the transport (bounded, seek-snapped) moved frame
        luminance jerk from p50 11146 to 11326 and p90 38743 to 35702 -- inside the spread between
        repeat takes of one build. Recorded because it is a real defect with a known size, and the
-       next person to have evidence that it matters should not have to find it again. */
+       next person to have evidence that it matters should not have to find it again.
+
+       THAT EVIDENCE WAS LOOKED FOR AND IT SAYS LEAVE IT. Frame luminance was the wrong
+       instrument -- it is dominated by the key, the bloom and the beat pulse, none of which this
+       touches -- so the defect was measured where it actually lands, on the ANGLE OF THE FORM,
+       against the wall clock rather than against the transport (a cadence-independent fit, which
+       matters because a hidden tab is throttled to about 1fps and a headless one free-runs).
+
+         ctx.currentTime steps, 888 frames    every one a multiple of 5.333ms = 256 samples/48kHz
+             21.33 x251   16.00 x231   26.67 x204   32.00 x99   10.67 x48   5.33 x10
+         residual vs a linear wall-clock fit  +/-2.4ms, ptp 5.64ms (one quantum), rms 1.49ms
+         slope                                1.000021 -- no drift, the error is pure quantisation
+
+       Fitting a local CUBIC in wall time (so the bar swing, the ladder's ramps and any real
+       acceleration are absorbed, leaving only what steps at the frame scale):
+
+             formSpin 0.0548 deg rms      formTumble 0.0200      formSwirl 0.0221
+             spinOut  0.0615 deg rms  <- what is drawn, swing included
+
+       THE RENDERER ADDS NOTHING TO IT. Each axis's judder is the clock residual times that
+       axis's own rate: 1.49ms x 0.613 rad/s predicts 0.052 deg for spin against 0.055 measured,
+       and tumble turns 2.5x slower and judders 2.7x less. One cause, no second one to find.
+
+       AND IT IS SUB-PIXEL, which is the number the luminance test was groping for. u_fov is a
+       true vertical FOV (f=0.5/tan(fov/2), uv.y spans +/-0.5), so at 712px the scale is 397
+       px/rad; a spin of alpha moves a surface point at reach 1.15 by 1.15*alpha, which at camera
+       distance 4.44 subtends 0.259*alpha -- 103 px per radian, and 150 at the closest and widest
+       camera preset (slow_push, dist 3.4, fov 1.35). So the drawn judder is 0.11-0.16 px rms and
+       peaks under 1.2 px. Not a fix worth a clock rewrite: pulling the read point off the
+       transport trades a bounded sub-pixel error for a class of drift and seek bugs.
+       Re-open this only for something whose error is NOT proportional to a rate -- a hard cut,
+       a latch, a threshold crossing -- because that is where a 5ms quantum lands a whole frame
+       late instead of a fifth of a pixel out. */
     const t=pos()+visLead();
     energy=sampleCurve('energy',t); tension=sampleCurve('tension',t); arousal=sampleCurve('arousal',t);
     darkness=sampleCurve('darkness',t); bright=sampleCurve('brightness',t); valence=sampleCurve('valence',t);
@@ -7625,7 +7662,13 @@ function frame(){
      dt is already clamped to 50ms upstream, so bounding the step by dt/0.9 -- no faster than
      nine tenths of a second for the whole transition -- keeps the anti-teleport guarantee this
      cap exists for while removing the coupling to frame COUNT that never belonged in it. */
-  else if(phase===1){ mix+=Math.min(dBeats/morphBeats(), dt/0.9); if(mix>=1){ mix=0; mode=mode2; phase=0; } }
+  else if(phase===1){
+    /* MIXPIN holds the transition still instead of advancing it -- see the measurement hooks in
+       frame(). It deliberately does NOT land the morph at 1.0: a sweep has to be able to sit on
+       the endpoint and still be in the transition, and letting it complete would swap mode and
+       end the thing being measured. */
+    if(window.MIXPIN!=null) mix=Math.max(0,Math.min(1,window.MIXPIN));
+    else { mix+=Math.min(dBeats/morphBeats(), dt/0.9); if(mix>=1){ mix=0; mode=mode2; phase=0; } } }
   /* THE MORPH'S RESOLUTION STEP, applied on the two edges of the transition and nowhere else --
      see MORPH_RSCALE. Driven off `phase` rather than off mix, so it is exactly one step down when
      the morph starts and one back up when it lands; applyScale reallocates, which is fine twice
