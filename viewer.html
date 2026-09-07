@@ -2948,6 +2948,38 @@ uniform float u_dbg;
 uniform vec3 u_inkA,u_inkB;
 float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
 float lum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}
+/* THE SILHOUETTE FILTER IS THE CHEAP 5-TAP FXAA, AND IT HAS A KNOWN, MEASURED WEAKNESS.
+   dir comes from (lnw+lne)-(lsw+lse) and (lnw+lsw)-(lne+lse) -- four DIAGONAL taps and nothing
+   on N/S/E/W -- and is then scaled by 1/(min(|dir.x|,|dir.y|)+eps). On a vertical silhouette the
+   first component is ~0 by construction, so the direction is set by the reciprocal of a quantity
+   that has gone to zero: the conditioning is worst exactly where the edge is straightest.
+   MEASURED, edge error against a 2.2x render at the same canvas size, binned by the orientation
+   of the reference gradient. Native march, sharpen off, one pinned pose, one page load:
+       edge runs      0-15   15-30   30-60   60-75   75-90   degrees
+       RMSE           4.09    3.85    4.00    7.99   13.53
+       near-axis (<20 or >70)  9.10 over 7050px     diagonal (20..70)  4.60 over 19891px
+   Twice the error on near-axis edges and three times on near-vertical ones, and this form is a
+   3.5:1 plate turning in front of the camera, so a near-vertical silhouette is most of what it
+   presents. That is a real defect with a known size.
+
+   IT WAS REPLACED WITH THE FULL ALGORITHM AND THE FULL ALGORITHM LOST. A faithful FXAA-3.11
+   reconstruction -- nine luma taps, a second-difference test for which way the edge runs, a
+   bounded walk to both ends of the span, the end-ownership check and the sub-pixel term -- was
+   written, debugged (the axis test was inverted first time; naming the x-difference "eh" when a
+   large x-difference means a VERTICAL edge is what caused it) and A/B'd against this one on a
+   single pinned frame with both arms in the same page load:
+       raw native, no AA   10.93        old 5-tap   4.58        new 9-tap   5.53
+   Sweeping the new filter's two terms only ever improved it toward 5.42; it never reached 4.58.
+   The metric was then checked against the obvious objection, that RMSE to a supersampled
+   reference just rewards blur. It does not -- blurring the raw image makes it monotonically
+   WORSE (3x3 7.79, 5x5 9.06, 7x7 10.41, 9x9 11.64), so the measure is genuinely rewarding
+   edge-aware reconstruction and the five-tap version genuinely wins on this content. The wide
+   directional blend it takes -- up to +/-4 texels along dir -- reconstructs a long silhouette
+   better than a correct half-texel offset does, which is not what the textbook predicts and is
+   why this note exists.
+   So it stays, the asymmetry stays with it, and the next person should not spend the day
+   rediscovering either. What HAS been demonstrated to move these edges is the march resolution;
+   see the governor, where the branch that buys it was found unreachable. */
 vec3 fxaa(vec2 uv,vec2 r){
   vec3 nw=texture(u_tex,uv+vec2(-1,-1)*r).rgb,ne=texture(u_tex,uv+vec2(1,-1)*r).rgb;
   vec3 sw=texture(u_tex,uv+vec2(-1,1)*r).rgb,se=texture(u_tex,uv+vec2(1,1)*r).rgb,m=texture(u_tex,uv).rgb;
@@ -4057,6 +4089,44 @@ const KALSET={seg:6, off:0.30, pump:0.055, core:0.075};  window.KALSET=KALSET;
    only passes through. */
 const KAL_PUMP_DECAY=3.4;
 let frameAvg=16, lastQ=0, QLOCK=false, lastDpr=0;   // QLOCK freezes the quality governor for profiling                            // adaptive quality (frame-time driven)
+/* THE HEADROOM GATE, ONE CONSTANT FOR EVERY BRANCH THAT SPENDS FRAMES ON QUALITY.
+   A vsync-locked frame reads the vsync interval no matter how much GPU is left over, so a
+   gate BELOW 16.7ms cannot be reached on a 60Hz panel however idle the machine is. The block
+   at the governor says exactly that -- "Threshold must sit ABOVE the vsync interval (16.7ms
+   @60Hz) or quality can never rise" -- and then four of the five raise branches were written
+   with 14.5. They were unreachable, permanently, on the commonest display there is.
+   MEASURED, headless at 1280x712, 3389 frames over 60s of a real upload:
+       frameAvg  p05 16.62  p50 16.70  p95 22.57  min 16.52     never once below 14.5
+       ssRatio   p05  0.68  p50  0.92  p95  1.00               0.0% of frames supersampled
+   So the march never reached native, let alone past it, and every frame shipped with
+   FXAA-only edges. That is the "edges look rough on my track" report.
+   17.4 is the same number the climb-to-native branch already uses and is the one raise branch
+   that demonstrably works. In dropped-frame terms it is about 4% at 60Hz: 0.96*16.7 +
+   0.04*33.3 = 17.4. The degrade gate at 18.0 is about 8%, so the band between them is 4-8%
+   dropped frames rather than the 14.5-18 that had 60fps sitting outside it entirely. */
+const HEADROOM=17.4;
+/* THE COST CLIFF ABOVE NATIVE IS LEARNED, NOT ASSUMED. Supersampling does not get gradually
+   dearer; it falls off a shelf when the march stops fitting in the frame. Measured on this
+   machine on the same upload, governor frozen, 6s per rung:
+       rscale 0.80  16.70ms      1.15  17.20ms
+       rscale 1.00  16.80ms      1.30  28.85ms
+   1.15 is 0.4ms over native and 1.30 is twelve. A fixed 0.06 walk crosses that shelf in three
+   ticks, eats a 12ms frame, walks back down at 0.08 and climbs again -- a four-second hunt
+   with a visible stall in every cycle, which would be a worse artefact than the softness it
+   replaced. So the first degrade above native records where the shelf was and the governor
+   stops there, re-probing occasionally in case a cheaper section has moved it. */
+/* AND IT IS NEVER LEFT IN THE DEAD ZONE, which the first version of it did on the first try.
+   The resolve switches on at ssRatio>1.05, so 1.00..1.05 costs march pixels and returns the
+   same FXAA edges -- strictly worse than native. Recording the shelf as rscale-0.06 put the
+   ceiling at 1.04 the moment a degrade landed from the opening jump at 1.10, and the raise
+   branch then clamped its own jump to 1.04 and parked there. MEASURED before this clamp: max
+   rscale 1.08, and the frames it did reach above 1.05 were 6.2% of a minute.
+   So the ceiling is two-valued rather than continuous: either it is worth supersampling here,
+   in which case the ceiling is at least 1.10, or it is not, in which case it is exactly 1.00
+   and the governor stays at native and spends nothing. SS_MIN is that threshold, and it is the
+   resolve's 1.05 plus a step, not a tuned number. */
+const SS_MIN=1.10;
+let ssCeil=99, ssRetry=0;
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
 /* THE COMPOSITION PRESETS, AND WHAT IS LEFT OF THEM. These were the arrangement of the form --
@@ -6797,6 +6867,16 @@ function frame(){
        compared against the earlier ones at a different pixel count, and every per-pixel statistic
        in that comparison was meaningless. Any A/B in this file's history taken with
        window.QLOCK set has the same hazard. */
+    /* THE CEILING RELAXES ON ITS OWN, and it has to sit OUTSIDE the chain below.
+       It began inside the raise branch, which is guarded by rscale < ceiling -- so the moment a
+       step landed exactly on the ceiling that branch stopped running and the probe it contained
+       could never fire again. The ceiling would then have been permanent, which is precisely the
+       failure it exists to prevent: the first loud bar of a track capping the other nine minutes.
+       Out here it is plain bookkeeping -- while the frame is comfortable, give the shelf back
+       0.06 every 20s and let the raise branch spend it or the degrade branch take it away again.
+       It is inside the 500ms tick and behind the same QLOCK, so a frozen governor stays frozen. */
+    if(!(QLOCK || window.QLOCK) && ssCeil<99 && now>ssRetry && frameAvg<HEADROOM){
+      ssCeil=(ssCeil<SS_MIN)?SS_MIN:ssCeil+0.06; ssRetry=now+20000; }
     if(QLOCK || window.QLOCK){}
     // A BANDED tier adapts like any other, but between its own floor and ceiling rather than
     // between 1.0 and SCAP. Same thresholds, so it behaves the way the rest of the governor does;
@@ -6805,8 +6885,15 @@ function frame(){
     // is to pick a lower tier, not to blur the panel the UI is drawn on.
     else if(SMIN>0){
       if(frameAvg>36.0 && rscale>SMIN){ rscale=Math.max(SMIN, rscale*Math.max(0.5,Math.sqrt(17.0/frameAvg))); applyScale(); }   // see the proportional step below
-      else if(frameAvg>18.0 && rscale>SMIN){ rscale=Math.max(SMIN,rscale-0.08); applyScale(); }
-      else if(frameAvg<14.5 && rscale<SMAX){ rscale=Math.min(SMAX,rscale+0.06); applyScale(); }
+      else if(frameAvg>18.0 && rscale>SMIN){
+        if(rscale>1.0){ const c=rscale-0.06; ssCeil=(c>=SS_MIN)?c:1.0; ssRetry=now+20000; }
+        const d=Math.max(SMIN,rscale-0.08);
+        rscale=(d>1.0&&d<SS_MIN)?Math.max(SMIN,1.0):d; applyScale(); }
+      // Ultra's whole band is above native, so it is ALL cliff country and the ceiling binds
+      // from the first tick. Without it the tier that exists to supersample was the one that
+      // hunted hardest, because its floor is 1.00 and it has nowhere cheap to retreat to.
+      else if(frameAvg<HEADROOM && rscale<Math.min(SMAX,ssCeil)){
+        rscale=Math.min(SMAX,ssCeil,Math.max(rscale+0.03,SS_MIN)); applyScale(); }
     }
     else if(TIERS[TIER].scale>0){}
     // The tier sets the CEILING the governor may climb to. Without this, Preview's dpr was
@@ -6892,7 +6979,13 @@ function frame(){
        convergence. Cost tracks the number of rays that HIT, so the only real lever is fewer
        rays -- which is rscale, which the governor already pulls. A shadow lever would have
        bought 2ms and cost the penumbra. */
-    else if(frameAvg>18.0 && rscale>SFLOOR){ rscale=Math.max(SFLOOR,rscale-0.08); applyScale(); }
+    else if(frameAvg>18.0 && rscale>SFLOOR){
+      // Only a degrade from ABOVE native says anything about the shelf. Dropping from 0.9 to
+      // 0.82 is the march running out of room at native, which is a different fact and must
+      // not be allowed to pin the ceiling down at 1.0 for the rest of the track.
+      if(rscale>1.0){ const c=rscale-0.06; ssCeil=(c>=SS_MIN)?c:1.0; ssRetry=now+20000; }
+      const d=Math.max(SFLOOR,rscale-0.08);
+      rscale=(d>1.0&&d<SS_MIN)?1.0:d; applyScale(); }
     /* SUB-NATIVE IS AN EMERGENCY, NOT A RESTING STATE -- and the dead band was keeping it there.
        Degrade over 18ms, restore under 14.5, so 14.5-18 is a band where nothing happens. Once
        rscale has been driven to the 0.82 floor the frame settles INSIDE that band (measured at
@@ -6914,15 +7007,30 @@ function frame(){
        at 21fps: with the degrade rule above now reachable at 18ms, that pair would have hunted
        against each other every 500ms -- shed pixels at 18, take them back at 48, forever. Both
        ends read the same 14.5ms headroom gate the rest of the governor uses. */
-    else if(frameAvg<14.5 && rscale>=1.0 && dprScale<DCAP && now-lastDpr>2000){
+    else if(frameAvg<HEADROOM && rscale>=1.0 && dprScale<DCAP && now-lastDpr>2000){
       lastDpr=now; dprScale=Math.min(DCAP,dprScale+0.06); resize(); }
     /* AND THE TAPS COME BACK LAST OF THE THREE, for the same reason they went first: this is the
        loss nobody can see, so it is the one worth living with longest. Only once the canvas is at
        full dpr and the march is at native -- restoring grain while the image is still upscaled
        would be spending the frame on the wrong thing. Smaller steps up than down (0.2 vs 0.25) so
        it settles instead of hunting against the 18/14.5 band. */
-    else if(frameAvg<14.5 && rscale>=1.0 && dprScale>=DCAP && shaScale<1){ shaScale=Math.min(1,shaScale+0.2); }
-    else if(frameAvg<14.5 && rscale<SCAP){ rscale=Math.min(SCAP,rscale+0.06); applyScale(); }
+    else if(frameAvg<HEADROOM && rscale>=1.0 && dprScale>=DCAP && shaScale<1){ shaScale=Math.min(1,shaScale+0.2); }
+    /* THE FIRST STEP ABOVE NATIVE IS A JUMP, NOT A WALK, and that is not impatience.
+        The resolve switches on at ssRatio>1.05: below it the post pass runs FXAA, above it a
+        real 4-tap tent over samples that exist. So 1.01..1.05 is a dead zone that costs march
+        pixels and returns nothing -- and a 0.03 walk spends two ticks inside it.
+        MEASURED, edge RMSE against a 2.2x reference over the 9.2% of the box that carries the
+        silhouette, one pinned pose, same page load:
+            rscale 0.80  7.61      1.00  5.95  <- FXAA      1.15  3.70
+            rscale 0.92  6.65      1.10  3.64  <- tent      1.25  3.12
+        Crossing 1.05 is worth 39%. Everything from there to 1.25 is worth another 14%. The
+        step that matters is the first one, so it is taken whole; the rest is walked at 0.03
+        under the learned ceiling, half the old step, so the one overshoot that finds the shelf
+        costs half as much as it used to.
+        p50 in normal running was 0.92 -- edge RMSE 6.65 -- so this is a little over a halving
+        of the silhouette error the report was about, not a marginal sharpening. */
+     else if(frameAvg<HEADROOM && rscale<Math.min(SCAP,ssCeil)){
+       rscale=Math.min(SCAP, ssCeil, rscale<1.05 ? SS_MIN : rscale+0.03); applyScale(); }
   }
   let energy=0.3,tension=0.2,arousal=0.3,darkness=0.4,bright=0.4,valence=0.5,flux=0.2, flashV=0, moodTarget=MO;
   let warmth=0.5, epic=0.3;
