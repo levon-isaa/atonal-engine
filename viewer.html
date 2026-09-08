@@ -4862,6 +4862,8 @@ const KAL_HOLD=6.0;     // seconds a bloom must last once committed
    a drop is exactly where an accent belongs. */
 const KAL_REST=KAL_HOLD*(1-KAL_DUTY)/KAL_DUTY;   // ...and seconds it must stay shut before another
 const KAL_FLOOR=0.34;   // open means open: the curve drives this..1, never 0..this
+const KAL_DUCK_TAU=0.55;  // how fast the fold gets out of a shape change's way; see kalT
+let kalDuck=1;
 let kalOpen=0.7, kalFull=0.9;          // the two levels, calibrated per track below
 let kalHeld=false, kalSince=-1e9;      // the state, and when it last changed
 /* THE DECISION ITSELF, lifted out of the frame loop so it can be replayed over a whole analysed
@@ -5938,6 +5940,27 @@ function chooseMode(energy, sec, opening, foldOpen){
     // ...unless the fold has since closed the door on it, in which case fall through and re-pick
     if(allowed.indexOf(m)>=0){ lastShapeE=energy; return shapeTap(m,rung,key,energy,allowed,true); }
   }
+  /* THE SUCCESSOR ALREADY TRACKS THE MUSIC, which is not what a first look at it suggests.
+     The ladder positions a real track visits are 8, 4, 2, 3, 8, 7, 1, 2, 3, 7, 8 -- leaps of 4,
+     5 and 6 rungs interleaved with single steps -- and read on their own that looks like a
+     shuffle. It is not. Put the energy change beside each one:
+
+         |d energy|   0.001  0.003  0.016  0.022  0.158  0.181  0.386  0.709  0.745
+         ladder jump    1      1      1      1      4      1      2      4      6
+
+     Five small changes in a row move exactly one rung; every leap of four or more belongs to a
+     |d energy| of 0.7, which on this track is the whole distance between a breakdown and a full
+     section. The sequence is bimodal because the MUSIC is bimodal.
+
+     A LEASH WAS BUILT FOR THIS AND REVERTED. It clamped the target to a neighbourhood of the
+     current rung whose radius grew with |d energy|, so the form would walk rather than teleport.
+     It produced a byte-identical sequence: the decisions that would have been leashed were
+     already single steps, and the ones that leapt had the energy to earn it. Untested machinery
+     guarding a case this material never produces, so it is not kept.
+     What the ladder does NOT encode is visual kinship -- it is an ordering by energy, so
+     adjacent rungs are similarly BUSY without being similarly shaped. If a change ever needs to
+     read as a transformation rather than a substitution, that is the thing to build, and it is a
+     different ordering rather than a different rule. */
   let i=0, bd=1e9;
   for(let j=0;j<allowed.length;j++){ const d=Math.abs(LADDER_AT[allowed[j]]-rung); if(d<bd){ bd=d; i=j; } }
   if(!opening && allowed[i]===mode && allowed.length>1){
@@ -8073,6 +8096,31 @@ function frame(){
   // SLEW, not a spring: at most one full scale per KAL_SECS in either direction, so the drive
   // can move as fast as it likes and the shape still takes 1.2s to travel. This is what makes a
   // live curve safe to steer with; nothing here can snap.
+  /* THE FOLD GETS OUT OF THE WAY OF A SHAPE CHANGE, AND COMES BACK ON THE NEW FORM.
+     MEASURED, 280s of a real track: 11 shape changes, 32 fold transitions, and the median gap
+     from a change to the nearest fold transition was 2.1s against a control of random moments at
+     2.3s. Statistically the same number -- the two biggest gestures the renderer has were
+     running past each other with no relationship at all. That is the "no logic by kaleido" half
+     of the report, and it is a coordination fault rather than a missing feature: both systems
+     already work, they just never look at each other.
+
+     A morph under an open fold is also the worst case for READING it. The kaleidoscope
+     multiplies the profile into a rosette, so a half-melted intermediate is shown six times over
+     instead of once; whatever legibility 437a62f bought is then divided among the copies.
+
+     So the fold ducks for the duration of a transition and returns after: the rosette collapses
+     to a single form, the form changes where you can see it, and the rosette re-blooms on the
+     new shape. A reveal, which is the oldest staging there is, and it costs nothing -- the fold
+     is a second evalMode per map() and the morph is a second one too, so ducking one while the
+     other runs pays for it rather than adding to it.
+
+     Driven off `phase` through the ordinary slew, NOT snapped: KAL_TAU_DN is 2.0s and the rate
+     limit is 1.2s, against a morph of 2.2-6.0s, so the retraction and the return are both
+     visible gestures in their own right rather than a cut. Nothing here touches kalHeld, so the
+     fold's own duty and its energy logic are untouched -- this changes what is DRAWN during a
+     transition, not when the fold decides to bloom. */
+  { const want=(phase===1)?0:1;
+    kalDuck += (want-kalDuck)*(1-Math.exp(-dt/KAL_DUCK_TAU)); }
   const kalT=Math.max(0,Math.min(1,((kalMode==='on')?1:(kalMode==='off')?0:kalDrive)+MV('kal')));
   /* A RATE LIMIT IS NOT A SMOOTHER, AND ON ITS OWN IT MADE THE FOLD CHURN.
      The note above is right that nothing here can SNAP, and that was never the fault. kalDrive is
@@ -8126,6 +8174,18 @@ function frame(){
      existing rate limit down to 0 has no magic number in it and no visible step, because it is
      the same speed the fold closes at everywhere else. */
   if(kalT<=0.0005){ kalAmt=Math.max(0, kalAmt-dt/KAL_SECS); kalTS=kalAmt; }
+  /* THE DUCK IS A CEILING ON THE DRAWN AMOUNT, applied AFTER the slew rather than folded into
+     the target. Routed through kalT it inherits the fold's own timing -- KAL_TAU_DN is 2.0s and
+     the rate limit another 1.2 -- and a short transition is over before the fold has moved:
+     measured that way, four of six open-fold morphs retracted fully but two only reached 0.603
+     and 0.222 from 0.944 and 0.641. As a ceiling it keeps its own KAL_DUCK_TAU, so the retract
+     and the return are both about half a second whatever the fold is doing, and every
+     transition gets the same gesture regardless of its length.
+     A ceiling and not an assignment: it can only ever take the fold DOWN, so it cannot open one
+     that the energy has not asked for, and kalHeld -- the decision, the duty, the whole
+     energy-driven state machine -- is untouched. On release the ceiling lifts over the same
+     half second and kalAmt climbs back at the fold's ordinary rate. */
+  if(kalDuck<0.999){ kalAmt=Math.min(kalAmt,kalDuck); kalTS=Math.min(kalTS,kalDuck); }
   /* THE MIRROR'S OWN MOTION. Advanced every frame on the beat grid rather than latched per
      section -- see the note above kalBase. Scaled by energy so a quiet passage turns slowly and a
      loud one churns, and gated on the fold being at least partly open: with kalAmt at 0 there is
