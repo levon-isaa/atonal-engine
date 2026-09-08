@@ -4289,6 +4289,7 @@ const CAM={
 const SH={count:8,thick:0.1};        // the two that still reach the frame; see COMPS
 const MO=[0.95,0.48,0.62];          // idle default = the Director's "rose" colourway
 const MOi=[MO[0],MO[1],MO[2]];      // the palette's first pole; see the easing in frame()
+const CAM_LEAD=4.2;   // the camera's own settling time; see the pre-roll at camTarget
 const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
 /* THE CAMERA'S MIDDLE STAGE. CM is the second pole of a critically damped pair and CMi is the
    first; see the easing itself, below springTo, for why the camera needs two and what the rates
@@ -6566,6 +6567,14 @@ function currentSection(t){
   for(let i=0;i<s.length;i++) if(t>=s[i].t0&&t<s[i].t1) return s[i];
   return s[s.length-1];
 }
+/* THE SECTION AFTER THIS ONE, for the camera's pre-roll. Guarded exactly as currentSection is,
+   and for the same reason: this runs every frame inside the render loop. */
+function nextSection(t){
+  const a=director&&director.sections;
+  if(!a||!a.length) return null;
+  for(let i=0;i<a.length;i++) if(a[i].t0>t) return a[i];
+  return null;
+}
 function nextPrediction(t){
   // Guarded to the same depth as currentSection() and curveOr(). This runs every frame inside
   // the render loop, so a director without an events object threw once per frame and stopped the
@@ -7578,6 +7587,34 @@ function frame(){
     }
     secLabel=s.label; moodName=s.mood; intent=s.intent||'';
     compTarget=COMPS[s.composition]||COMPS.radial; camTarget=CAM[s.camera]||CAM.orbit;
+    /* THE CAMERA LEAVES EARLY SO IT ARRIVES ON THE BOUNDARY, which is the rule the fold already
+       follows two blocks down -- "the fold takes KAL_SECS to complete, so it has to LEAVE that
+       early to ARRIVE on the drop". Nothing applied it to the camera, so camTarget changed AT the
+       boundary and the damped pair spent its settling time getting there afterwards.
+
+       MEASURED on a real upload, time for CM.dist to close 90% of the gap to its new preset,
+       over every section boundary in 240s:
+
+           12.6s pull_back 4.13   27.5s tracking 4.15   42.4s pull_back 4.14
+           75.9s tracking  4.15   98.4s orbit    4.17  118.8s pull_back 4.14
+          163.6s orbit     4.16  179.9s pull_back 4.15  205.9s tracking 4.17
+
+           median 4.15s, and flat at 4.15 whatever the size of the move -- it is the pair's
+           settling time, not a function of distance.
+
+       At 176bpm a bar is 1.36s, so the camera was arriving three bars after the drop it was
+       supposed to be answering: the cut lands, and the framing is still travelling. CAM_LEAD is
+       that measured settling time, so the move starts exactly early enough to finish on the
+       boundary rather than after it.
+
+       It aims at the NEXT section's preset, not at some blend: the damped pair is what smooths
+       this, and ramping the target as well would be two smoothers in series with no way to
+       reason about the result. Sections come from the analysis, so the lookahead is reading a
+       known timeline rather than predicting one -- if the boundary exists at all it will arrive
+       when it says. */
+    { const nx=nextSection(t);
+      if(nx){ const eta=nx.t0-t;
+        if(eta>0 && eta<CAM_LEAD) camTarget=CAM[nx.camera]||camTarget; } }
     moodTarget=s.palette||MO;
     const key=s.t0+'|'+s.label; if(key!==lastSecKey){ lastSecKey=key; rerollVariant(Math.round(s.t0*1000));
       // requested, not fired: commitReform lands it on the next downbeat. A boundary always gets
