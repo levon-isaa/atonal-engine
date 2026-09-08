@@ -6075,6 +6075,35 @@ const REFORM_MIN_BEATS=32;
    always had, while a slow track keeps its own longer spacing (the beat rule still binds below
    about 137bpm). Both gates must pass. */
 const REFORM_MIN_SECS=14;
+/* ONE KNOB FOR HOW OFTEN THE FORM CHANGES AND HOW LONG IT TAKES.
+   Reported twice as "too quick", and twice answered with measurements showing the intervals were
+   21-24s and the form mid-change 13-15% of playback. Those numbers are right and they are not
+   the point: how often a form should change is a judgement, the measurements only say what the
+   current judgement IS, and the person watching it has made a different one. So it becomes a
+   setting instead of an argument.
+
+   IT SCALES THE SPACING ONLY, and the first version scaled the transition length with it on the
+   reasoning that the two are one perception and their ratio would hold. MEASURED, that is simply
+   false: at 1.8 the changes fell from 11 to 8 and the transitions stretched to 10.9s, and the
+   share of playback spent MID-CHANGE went 13.4% -> 25.2%. Fewer events, but the form in flux a
+   quarter of the time instead of an eighth -- which is the opposite of settling down, and would
+   have read as MORE restless rather than less however few the changes were.
+   A transition of four or five seconds is already gentle; what "too quick" is describing is how
+   OFTEN, so that is the only thing this moves. Longer gaps, same gentleness, and the form holds
+   still for more of the track rather than less. MORPH_SECS keeps its own range and is a separate
+   setting for whoever wants the melt itself slower.
+
+   MEASURED on the 176bpm upload the report came from, 250s of playback each:
+
+       SHAPE_PACE   spacing floor   changes   interval p50   transition p50   mid-change
+         1.0            14s            11         21.0s           4.1s          13.4%
+         1.8            25s             8         27.0s           4.7s          10.6%   <- shipped
+
+   Fewer changes, the same gentleness, and the form holding still for more of the track rather
+   than less. Live on window, so it can be dialled while a track plays; higher is calmer. */
+const SHAPE_PACE_DEF=1.8;   window.SHAPE_PACE=SHAPE_PACE_DEF;
+function pace(){ const v=window.SHAPE_PACE;
+  return (typeof v==='number' && isFinite(v)) ? Math.max(0.25,Math.min(4,v)) : SHAPE_PACE_DEF; }
 const REFORM_MAX_WAIT=4;         // beats a pending change may wait for its downbeat
 let lastReformSec=-1e9;
 /* THE MELT IS A WHOLE NUMBER OF BARS, chosen for how long that is. 8 beats is two bars, which
@@ -6174,9 +6203,10 @@ function morphEmph(){ return 0.6+1.05*morphJump; }
 const REFORM_MIN_DE=0.08;      // energy move a boundary must show to be worth a new shape
 const REFORM_IDLE_SECS=45;     // ...unless nothing has changed for this long
 function requestReform(energy,beatNow,sec){
-  if(beatNow-lastReformBeat < REFORM_MIN_BEATS) return;
+  const P=pace();
+  if(beatNow-lastReformBeat < REFORM_MIN_BEATS*P) return;
   const nowSec=(typeof pos==='function')?pos():0;
-  if(nowSec-lastReformSec < REFORM_MIN_SECS) return;
+  if(nowSec-lastReformSec < REFORM_MIN_SECS*P) return;
   /* BOTH PATHS, not just the boundary. Gated on `sec` this covered boundary requests only, and
      three of ten changes still fired at |d energy| of 0.019, 0.000 and 0.040 -- they had come in
      through the in-section departure instead. That path measures its move against secERef, the
@@ -7555,8 +7585,8 @@ function frame(){
       // A boundary gets priority on BOTH gates, at half spacing each -- relaxing only the beat
       // one would leave the seconds floor blocking every boundary change on a fast track,
       // which is the opposite of what the priority is for.
-      if(autoShape){ lastReformBeat=Math.min(lastReformBeat, beatsAtTime(t)-REFORM_MIN_BEATS/2);
-                     lastReformSec =Math.min(lastReformSec,  t-REFORM_MIN_SECS/2);
+      if(autoShape){ lastReformBeat=Math.min(lastReformBeat, beatsAtTime(t)-REFORM_MIN_BEATS*pace()/2);
+                     lastReformSec =Math.min(lastReformSec,  t-REFORM_MIN_SECS*pace()/2);
                      requestReform(s.energy, beatsAtTime(t), s); }
       secERef=s.energy;
       // held for the same downbeat the shape change lands on; see commitReform
