@@ -4290,6 +4290,39 @@ let swBarK=-1, swBarBeats=BAR_BEATS;   // the current bar's length in beats; see
    never stop and never reverse, which is the property the sway failed. The sway's own ratio,
    measured after the fact, was 4.4. */
 const BAR_SWING=0.50;   window.BAR_SWING=BAR_SWING;
+/* THE PHRASE, WHICH IS THE LEVEL THE MOTION HAD NOTHING AT ALL.
+   MEASURED on a real trance upload, folding the DRAWN spin rate onto the track's own downbeat
+   grid at four different lengths, normalised to its own mean (11161 frames, 193 downbeats):
+
+       1 bar     1.45 1.20 0.83 0.56 0.54 0.81 1.17 1.44    p2p 91.0%
+       4 bars    1.03 1.01 1.04 1.01 0.99 0.98 0.98 0.96    p2p  7.6%
+       8 bars    1.05 1.08 1.05 1.04 0.99 0.96 0.92 0.90    p2p 17.7%
+       16 bars   1.15 1.10 1.03 1.00 1.00 0.99 0.92 0.82    p2p 33.5%
+
+   The bar is strongly phrased -- that is BAR_SWING doing its job. Above it there is nothing
+   SHAPED: the 8 and 16 bar rows are monotone declines, which is the section's eased rate change
+   drifting through the window, not an arc. So the form pulses once a bar and drifts once a
+   section, twenty or thirty seconds apart, with the 4-8-16 bar phrase -- the unit this music is
+   actually written in -- entirely empty. It answers every bar the same way however far into a
+   build it is, which is what "headless movement" describes.
+
+   THE SAME CONSTRUCTION AS BAR_SWING, one level up, and for the same reasons: an OFFSET on the
+   angle rather than a term in the integration, so it returns to exactly zero at every phrase
+   start and cannot drift a single bit; sized so peak-swing-rate/base-rate is exactly
+   PHRASE_SWING independent of tempo, rung and flow; and monotonic, which is the rule the removed
+   camera sway broke. The two swings compose: worst case the rate multiplier is
+   1 - BAR_SWING - PHRASE_SWING = 0.28, still firmly positive, so the turn still never reverses
+   and never stops. That bound is the reason PHRASE_SWING is well under BAR_SWING, and the
+   reversal count is measured rather than assumed.
+
+   ANCHORED TO THE SECTION, not to the track's first downbeat. Phrases begin where sections do;
+   counting 8-bar groups from an arbitrary origin would put the arc out of phase with the music
+   about half the time, which is worse than having no arc at all. secT0Now is stashed at the
+   section boundary for exactly this. */
+const PHRASE_BARS=8;
+const PHRASE_SWING=0.22;   window.PHRASE_SWING=PHRASE_SWING;
+let secT0Now=-1, swPhAnchor=0, swPhSecT0=-1e9;   // swPhSecT0 < -1e8 means "not yet anchored"
+let spinPhr=0, tumblePhr=0, swirlPhr=0, swAmpPS=0, swAmpPT=0, swAmpPW=0;
 /* ---- KALEIDOSCOPE, DRIVEN BY THE TRACK ----
 
    THE FIRST RULE FIRED ON SECTIONS LABELLED "drop" AND NOTHING ELSE, and on most real tracks that
@@ -7380,6 +7413,7 @@ function frame(){
       const beatSec=60/((director&&director.tempo&&director.tempo.bpm)||120);
       if(lastBeatDown && lastBeatT>=s.t0-beatSec*0.25 && lastBeatT<=t+1e-6) commitReform(beatsAtTime(t));
       if(s.label==='drop') kalBoost=1.0;            // a drop opens it at once; see the decay
+      secT0Now=s.t0;                                // where the phrase grid is anchored; see PHRASE_BARS
       sectRand=hash01(4,Math.round(s.t0*1000));     // the matrix's 'Section step' source, per SECTION
       filtFolds=Math.max(3,Math.round(4+s.energy*5));   // Facets: re-cut once per section
       /* ONE RUNG PER BOUNDARY, not a jump to wherever the mapping points. The mapping spans the
@@ -7917,8 +7951,35 @@ function frame(){
         swAmpT  += (kk*rTum *0.55/Math.max(1e-3,MOTP.tumble) - swAmpT )*ks;
         swAmpW  += (kk*rSwi *0.30/Math.max(1e-3,MOTP.swirl)  - swAmpW )*ks; }
       spinSwing=swAmpS*sw; tumbleSwing=swAmpT*sw; swirlSwing=swAmpW*sw;
-    } else { spinSwing=0; tumbleSwing=0; swirlSwing=0; }
-  } else { spinSwing=0; tumbleSwing=0; swirlSwing=0; }
+      /* THE PHRASE ARC. Same shape, PHRASE_BARS times longer, so the bar pulse now rides on an
+         8-bar breath instead of on a flat line. See PHRASE_BARS for the measurement that says
+         there was nothing here.
+         THE ANCHOR IS SET ONCE PER TRACK AND NEVER MOVED. It was first written to re-anchor at
+         every section boundary, so that bar 0 of a phrase would be bar 0 of the section -- which
+         is musically what you want and is a DISCONTINUITY: the offset is amp*sin(2pi*pbar/N),
+         re-anchoring changes pbar by an arbitrary amount, and the angle therefore jumps in one
+         frame. MEASURED, and this is how it was caught: 10 reversals in 11188 frames at up to
+         -1638 deg/s, against the -0.0 deg/s BAR_SWING achieves. A jolt once a section is exactly
+         the fault this whole mechanism is built to avoid.
+         Anchored instead to the first downbeat of the track's first section, once. Sections in
+         this material fall on 8 and 16 bar multiples, so the phrase stays in step with most
+         boundaries anyway -- and where it does not, being half a phrase out is a far smaller
+         fault than a jump. */
+      if(swPhSecT0<-1e8 && D.length){
+        const t0=(director.sections&&director.sections.length)?director.sections[0].t0:D[0];
+        let a=0,b=D.length-1,ka=0;
+        while(a<=b){ const m=(a+b)>>1; if(D[m]>=t0){ ka=m; b=m-1; } else a=m+1; }
+        swPhAnchor=ka; swPhSecT0=t0; }
+      const pbar=(((k-swPhAnchor)%PHRASE_BARS)+PHRASE_BARS)%PHRASE_BARS;
+      const psw=Math.sin(2*Math.PI*(pbar+phi)/PHRASE_BARS);
+      const pkk=PHRASE_SWING*swBarBeats*PHRASE_BARS;
+      { const ks=1-Math.exp(-SWING_W*dt);
+        swAmpPS += (pkk*rSpin/Math.max(1e-3,MOTP.spin)          - swAmpPS)*ks;
+        swAmpPT += (pkk*rTum *0.55/Math.max(1e-3,MOTP.tumble)   - swAmpPT)*ks;
+        swAmpPW += (pkk*rSwi *0.30/Math.max(1e-3,MOTP.swirl)    - swAmpPW)*ks; }
+      spinPhr=swAmpPS*psw; tumblePhr=swAmpPT*psw; swirlPhr=swAmpPW*psw;
+    } else { spinSwing=0; tumbleSwing=0; swirlSwing=0; spinPhr=0; tumblePhr=0; swirlPhr=0; }
+  } else { spinSwing=0; tumbleSwing=0; swirlSwing=0; spinPhr=0; tumblePhr=0; swirlPhr=0; }
   /* SYNC READOUT, console-only. tBeats is where the MUSIC is, in beats, straight off the audio
      clock; spinBeats is where the FORM is, in the same unit. Their difference is the sync error,
      and if the two clocks are the same clock it can only be the constant it started at. */
@@ -7943,7 +8004,8 @@ function frame(){
          spin alone is the bar-locked clock. Reading them apart is how you check the two things
          this is supposed to guarantee -- that the swing returns to zero on every downbeat, and
          that the rate never goes negative. See BAR_SWING. */
-      spinSwing:spinSwing, spinOut:formSpin+spinSwing, swingPhi:swingPhi, rSpinNow:rSpin,
+      spinSwing:spinSwing, spinPhr:spinPhr,
+      spinOut:formSpin+spinSwing+spinPhr, swingPhi:swingPhi, rSpinNow:rSpin,
       tumbleSwing:+tumbleSwing.toFixed(5), swirlSwing:+swirlSwing.toFixed(5),
       camAng:+camAng.toFixed(4), kalSpin:+kalSpin.toFixed(4),   // the two on the wall clock
       pSpin:+MOTP.spin.toFixed(2), pTum:+MOTP.tumble.toFixed(2), pSwi:+MOTP.swirl.toFixed(2),
@@ -8099,7 +8161,8 @@ function frame(){
   // all three -- tumble is a second axis now, so pinning the first two no longer pins the pose.
   if(window.POSE){ formSpin=window.POSE.spin; camAng=window.POSE.cam;
                    formTumble=window.POSE.tumble||0; formSwirl=window.POSE.swirl||0;
-                   spinSwing=0; tumbleSwing=0; swirlSwing=0; }   // the pin has to hold the phrasing too
+                   spinSwing=0; tumbleSwing=0; swirlSwing=0;
+                   spinPhr=0; tumblePhr=0; swirlPhr=0; }   // the pin has to hold BOTH levels of phrasing
   /* CAMERA KICK OFF. A decaying angular offset on the camera from every low and sub onset is the
      same trembling as the scale punch, applied to the frame instead of the form -- and a shaking
      CAMERA is worse, because it moves the background too, so the whole image judders. Left at 0
@@ -8120,13 +8183,13 @@ function frame(){
   const TAU=6.283185307179586;
   userEl = ((userEl % TAU) + TAU) % TAU; if(userEl > Math.PI) userEl -= TAU;
   userAz = ((userAz % TAU) + TAU) % TAU; if(userAz > Math.PI) userAz -= TAU;
-  const spin = formSpin + spinSwing;   // see the bar phrasing above
+  const spin = formSpin + spinSwing + spinPhr;   // bar phrasing + phrase arc; see PHRASE_BARS
   /* THE COMBINED LEAN, COMPUTED ONCE. u_tilt is uploaded to the scene pass and to the motion
      blur, and map() and objP() both read it -- the note at TUMBLE_BEATS is explicit that those
      have to agree or the surface texture slides through the geometry. Two call sites that each
      rebuild the sum is how they come to disagree, so there is one sum and both read it. */
-  const tilt = VAR.tilt + formTumble + tumbleSwing;
-  const swirlA = formSwirl + swirlSwing;
+  const tilt = VAR.tilt + formTumble + tumbleSwing + tumblePhr;
+  const swirlA = formSwirl + swirlSwing + swirlPhr;
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
   // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
   // genuinely neither shape; the longer that state is held the more it reads as one form flowing
