@@ -367,7 +367,19 @@ def layer1_signal(mono, stereo, sr, prog=None):
     _hp = {}
     def _hpss_worker():
         try:
-            H, P = librosa.effects.hpss(mono)
+            # KERNEL 21, NOT THE DEFAULT 31. hpss is the whole analysis -- measured at 9.09s
+            # against 1.66s for the stft, onset strength, chroma and beat tracker COMBINED, so
+            # the thread it runs on has nothing left to hide it behind. Its cost is two median
+            # filters over a 10752x1025 spectrogram and the kernel is what sizes them.
+            # Swept on a real 250s upload, envelopes correlated against the default:
+            #     31  8.90s  1.01x  h 1.0000  p 1.0000      9  2.57s  3.49x  h 0.834  p 0.851
+            #     21  6.25s  1.43x  h 0.9819  p 0.9648      5  1.42s  6.32x  h 0.894  p 0.831
+            # 15 and below land in the range this file already rejected for decompose.hpss
+            # (perc 0.84, harm 0.57 -- see the note above). 21 does not: it holds both envelopes
+            # above 0.96 for 30% off the longest call in the pipeline. The key is read off H
+            # below, so the 12-of-12 key identification in test_analysis.py is the check that
+            # matters here, not the correlation.
+            H, P = librosa.effects.hpss(mono, kernel_size=21)
             _hp["h"] = librosa.feature.rms(y=H, hop_length=HOP)[0]
             _hp["p"] = librosa.feature.rms(y=P, hop_length=HOP)[0]
             # THE KEY IS READ OFF H, NOT OFF THE MIX -- see layer2c_tonality for the numbers.

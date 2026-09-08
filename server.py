@@ -719,6 +719,29 @@ if __name__ == "__main__":
               f"Restart without ATONAL_HOST to go back to loopback-only.", flush=True)
     print(f"ATONAL Director server on http://127.0.0.1:{PORT}   (PANNs: {tagger.available()})",
           flush=True)
+    # THE FIRST UPLOAD SHOULD NOT PAY FOR THE IMPORTS. analyze imports librosa lazily, and
+    # librosa in turn pulls numba and compiles: profiled on a cold process, 2.42s of a 12.57s
+    # analysis was import machinery, 19% of it, and every bit of that landed on whoever uploaded
+    # first. It is the same wall-clock either way for the process, but it is charged to a person
+    # rather than to the boot.
+    # Daemon so it can never hold the server open, and swallowing everything: a warm-up that
+    # fails must not stop a server that would otherwise work -- the imports will simply happen
+    # on demand as they did before.
+    # MEASURED end to end, cache cleared, first upload after boot: 12.14s without, 10.13s with.
+    # One run each -- the account ran out of credits before it could be repeated, so treat the
+    # 2.0s as the size of the effect rather than a tight figure. It agrees with the 2.42s of
+    # import machinery cProfile attributes to a cold analysis, which is the mechanism.
+    # ATONAL_NO_WARM=1 disables it, which is how that A/B was taken and is worth keeping: it is
+    # the only way to measure what this saves.
+    def _warm():
+        try:
+            import librosa                       # noqa: F401
+            import numpy as _np
+            librosa.effects.hpss(_np.zeros(2048, dtype=_np.float32))   # forces the numba compile
+        except Exception:
+            pass
+    if os.environ.get('ATONAL_NO_WARM')!='1':
+        threading.Thread(target=_warm, daemon=True).start()
     for s in servers[1:]:
         threading.Thread(target=s.serve_forever, daemon=True).start()
     try:
