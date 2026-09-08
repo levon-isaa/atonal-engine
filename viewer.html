@@ -5815,7 +5815,36 @@ function genreModes(){
    Quiet breakdowns are strokes, loud grooves are arms, both drops are the Gear, and the two
    0.40 breakdowns are the same Lattice. Four of the seventeen fire no change at all, because
    the music was repeating and so was the picture. */
-const SHAPE_LADDER=[2,3,8,1,7,5,4,0,6];
+/* THE LADDER IS ORDERED BY WHAT THE SHAPE LOOKS LIKE, WHICH IT WAS NOT.
+   Rule 2 above is "louder goes up the ladder", and that only reads as anything if going up the
+   ladder LOOKS like more. It did not. The order was [2,3,8,1,7,5,4,0,6] -- and the worked example
+   under those rules names Clover, Triskelion, Arc and Chevron, profiles this renderer no longer
+   has, so the ordering predates the current nine and was never re-derived when they replaced it.
+
+   MEASURED: surface detail inside the silhouette, rim eroded off, grain and sharpen disabled,
+   averaged over three mass/depth settings so the ranking belongs to the PROFILE rather than to
+   one track's parameters -- and repeated on two uploads at different tempi and genres, which
+   agreed at both ends.
+
+       Stack 2.20   Pods 2.60   Rings 2.98   Apert 3.69   Truss 3.81
+       Gear 3.89    Knot 4.86   Latt 5.15    Rotor 6.08
+
+       Spearman rho against the shipped order: 0.25
+
+   Barely correlated. The Lattice -- the busiest form there is, a dense grid -- sat at rung 2,
+   so a quiet breakdown got the most crowded shape in the set; Pods, nearly the plainest, sat at
+   rung 6. Rendered in order the ladder ran arc, chevron, grid, blob, two rings, plate, wave,
+   spike, ring: no progression a viewer could ever perceive. The decisions were never random --
+   they are a strict monotone function of energy, and measured as such -- but the thing they are
+   monotone IN was invisible, which is indistinguishable from random when you are watching it.
+
+   ONLY THE ORDER CHANGES. The set is the same nine, every mode id is untouched, and
+   FOLD_FRIENDLY and GENRE_MODES name modes rather than positions so they carry over unaltered.
+   What moves is which rung each profile answers to.
+   The middle three are within 0.2 of each other -- Apert 3.69, Truss 3.81, Gear 3.89 -- so their
+   relative order is not really determined by this measurement and should not be defended as if
+   it were. The two ends are, and they are what the rule depends on. */
+const SHAPE_LADDER=[1,4,2,5,3,6,7,8,0];
 const LADDER_AT=(()=>{ const o={}; SHAPE_LADDER.forEach((m,i)=>{o[m]=i;}); return o; })();
 let _eSort=null, _eFor=null;
 function energySorted(){
