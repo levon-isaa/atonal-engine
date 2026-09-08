@@ -4780,7 +4780,21 @@ const KAL_DEAD=0.05;    // hold rather than turn round inside this much error
    piece still reaches 1.0 and still gets its blooms. That is a property of the analysis, not
    something this decision can recover, and an absolute threshold on a normalised curve would
    only look like one. */
-const KAL_DUTY=0.22;    // the fold's threshold is set here on the track's own energy curve
+/* THE ONE KNOB FOR HOW MUCH KALEIDOSCOPE THERE IS. It sets the quantile of the track's own
+   energy curve that opens the fold, and KAL_REST is derived from it below, so this single number
+   moves the threshold and the spacing together and the realised duty tracks it closely:
+
+       KAL_DUTY   threshold    REST     ceiling on duty     measured kalHeld
+         0.22     78th pct    21.3s          22%                 20.4%
+         0.35     65th pct    11.1s          35%                 32.7%
+
+   0.22 was the value the constant had always carried, and it was never reachable until the three
+   faults at KAL_REST and kalBoost were fixed -- the fold ran at 66%. With those fixed and 0.22
+   honoured, it read as too sparse: about one bloom per drop, which is a defensible gesture and
+   not the one this looks like it wants. 0.35 is a little over half again as much fold, still far
+   from the resting state it used to be, and it is a LOOK setting rather than a measured optimum:
+   the number is the user's to move, and the table above says what moving it costs. */
+const KAL_DUTY=0.35;    // the fold's threshold is set here on the track's own energy curve
 const KAL_HYST=0.10;    // ...and it closes this far BELOW the level that opened it
 const KAL_HOLD=6.0;     // seconds a bloom must last once committed
 /* THE REST IS DERIVED FROM THE DUTY, because as two independent constants they contradicted each
