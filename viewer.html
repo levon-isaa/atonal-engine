@@ -6074,19 +6074,64 @@ function morphBeatsFor(rung){
      tie keeps 8, giving rungs 0 through 6 the identical duration. Measured before adding 12:
      [8,8,8,8,4] beats across the ladder, which is the old constant with one exception rather
      than a range. With 3 bars in the set it is [12,12,8,8,4] at 120, [16,12,12,8,8] at 176. */
-  let best=8, err=1e9;
-  for(const b of [4,8,12,16]){ const e=Math.abs(b*60/bpm-want); if(e<err){ err=e; best=b; } }
-  return best;
+  /* AND IT MAY NOT COME OUT FASTER THAN THE RANGE IT IS PICKING FROM. The nearest bar count to
+     `want` can undershoot MORPH_SECS.fast badly at a quick tempo: at 146bpm the options are
+     1.64 / 3.29 / 4.93 / 6.58 seconds, and a want of 2.2 is NEARER to 1.64 than to 3.29, so the
+     fastest transitions were running at 1.64s -- 25% under the fast end of a range whose whole
+     purpose is to bound them. Measured on a real track: durations of 1.6s alongside 3.3 and 4.9.
+     That is the "changes quick" report, in the one place the design says it should not be.
+     So options below the floor are not candidates. If a tempo is so quick that none qualify,
+     the longest is taken, which is the direction that errs toward the settled end. */
+  let best=-1, err=1e9;
+  for(const b of [4,8,12,16]){
+    const sec=b*60/bpm;
+    if(sec < MORPH_SECS.fast-1e-6) continue;
+    const e=Math.abs(sec-want); if(e<err){ err=e; best=b; } }
+  return (best<0) ? 16 : best;
 }
 function morphBeats(){ return morphB; }
 
 /* The emphasis a change is given, from how far it travelled. 0.6+1.05*jump is 1.0 at the median
    jump, so an ordinary change looks exactly as it did and only the extremes move. */
 function morphEmph(){ return 0.6+1.05*morphJump; }
+/* A BOUNDARY IS NOT A REASON ON ITS OWN -- THE MUSIC HAS TO HAVE MOVED.
+   Every section boundary requested a new shape, and the two floors above only decide how SOON
+   the next one may be, never whether it is warranted. So a boundary between two sections that
+   sound the same still turned the form into something else. MEASURED across 11 changes on a
+   real track, the energy change since the previous shape decision:
+
+       0.001  0.003  0.016  0.022  0.158  0.181  0.386  0.709  0.745
+
+   Five of nine under 0.03 -- the music was in the same place and the form changed anyway. That
+   is what "changes without any logic" describes, and it is not about pacing: the intervals are
+   already 23.8s median, comfortably past both floors. It is that a third to a half of the
+   changes had nothing behind them.
+
+   The gap in that distribution is wide and empty -- nothing at all between 0.022 and 0.158 --
+   so 0.08 is not a tuned number, it is the middle of a hole. Below it a boundary is allowed to
+   pass without changing the form.
+
+   AND A STATIC TRACK STILL CHANGES EVENTUALLY. An ambient piece can hold one energy for minutes,
+   and a form that then never changes is a worse fault than one that changes without reason. So
+   the requirement lapses after REFORM_IDLE_SECS and the boundary is taken on its own merits.
+   The in-section departure path is untouched: it already requires a sustained move by
+   construction, which is the whole reason it exists. */
+const REFORM_MIN_DE=0.08;      // energy move a boundary must show to be worth a new shape
+const REFORM_IDLE_SECS=45;     // ...unless nothing has changed for this long
 function requestReform(energy,beatNow,sec){
   if(beatNow-lastReformBeat < REFORM_MIN_BEATS) return;
   const nowSec=(typeof pos==='function')?pos():0;
   if(nowSec-lastReformSec < REFORM_MIN_SECS) return;
+  /* BOTH PATHS, not just the boundary. Gated on `sec` this covered boundary requests only, and
+     three of ten changes still fired at |d energy| of 0.019, 0.000 and 0.040 -- they had come in
+     through the in-section departure instead. That path measures its move against secERef, the
+     section's own reference, which is a different question from whether the music has moved
+     since the form last changed; a curve that wanders away from its section mean and back can
+     satisfy it while sitting exactly where the last decision was taken. The requirement is the
+     same whoever asks: if the music is where it was when this shape was chosen, the shape has
+     no reason to become another one. */
+  if(lastShapeE!==null && Math.abs(energy-lastShapeE) < REFORM_MIN_DE
+        && nowSec-lastReformSec < REFORM_IDLE_SECS) return;
   // sec is the SECTION this request came from, and only a boundary has one -- chooseMode keys its
   // repeat memory on it, and an in-section departure is not a repeat of anything.
   reformWant={energy, at:beatNow, sec:sec||null};
@@ -8119,7 +8164,15 @@ function frame(){
      visible gestures in their own right rather than a cut. Nothing here touches kalHeld, so the
      fold's own duty and its energy logic are untouched -- this changes what is DRAWN during a
      transition, not when the fold decides to bloom. */
-  { const want=(phase===1)?0:1;
+  /* THE REVEAL LANDS ON THE NEW SHAPE, NOT AFTER IT. Held at 0 for the whole of phase 1, the
+     fold only began returning once the morph had finished, so the rebloom trailed the arrival
+     and each change occupied far longer than it was: measured, the fold was disturbed for 5.0s
+     per change against a change of 3.3s -- half again as long, and 11 of those in 280s is a
+     conspicuous share of the track given over to a gesture ABOUT a change rather than to the
+     change. Releasing from mix 0.6 puts the rebloom inside the last third of the transition, so
+     the rosette is coming back as the new form settles instead of afterwards, which is both the
+     better staging and the shorter footprint. */
+  { const want=(phase===1)?Math.min(1,Math.max(0,(mix-0.60)/0.35)):1;
     kalDuck += (want-kalDuck)*(1-Math.exp(-dt/KAL_DUCK_TAU)); }
   const kalT=Math.max(0,Math.min(1,((kalMode==='on')?1:(kalMode==='off')?0:kalDrive)+MV('kal')));
   /* A RATE LIMIT IS NOT A SMOOTHER, AND ON ITS OWN IT MADE THE FOLD CHURN.
