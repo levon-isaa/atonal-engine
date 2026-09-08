@@ -170,6 +170,18 @@ def _progress_clear(job):
             _PROGRESS.pop(job, None)
 
 PORT = int(os.environ.get("ATONAL_PORT", "8770"))
+
+
+def _viewer_build():
+    """Short hash of viewer.html as it sits on disk right now. Recomputed per call: the file is
+    edited constantly and a value cached at import would be exactly the stale answer this exists
+    to detect."""
+    import hashlib
+    try:
+        with open(os.path.join(HERE, "viewer.html"), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:10]
+    except OSError:
+        return "?"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, "out", "cache")
 # The ceiling on the TRANSFER. It is not the ceiling on the work, which this comment used to
@@ -424,7 +436,14 @@ class H(BaseHTTPRequestHandler):
             # client already has its result by then, so "done" is the honest answer either way.
             return self._json(200, d or {"stage": "", "p": 1.0, "next": 1.0, "eta": 0.0, "done": True})
         if self.path.startswith("/health"):
-            self._json(200, {"ok": True, "panns": tagger.available()})
+            # BUILD IS A HASH OF THE FILE ACTUALLY ON DISK, so "am I looking at the current
+            # viewer?" has an answer that does not depend on trusting the browser. The page
+            # logs its own copy of this at load; if the two disagree, the tab is stale and the
+            # only fix is a reload -- Cache-Control: no-cache revalidates, it does not reload
+            # a page that is already open, and a viewer with a track playing is exactly the
+            # tab nobody thinks to refresh.
+            self._json(200, {"ok": True, "panns": tagger.available(),
+                             "build": _viewer_build()})
             return
         # Static serving, same-origin so the viewer can call /analyze without a preflight.
         path = unquote(self.path.split("?")[0])

@@ -440,6 +440,32 @@
 </div>
 
 <script>
+/* WHICH BUILD AM I LOOKING AT. This page is opened once and left open -- a viewer with a track
+   playing is the last tab anyone thinks to refresh -- and Cache-Control: no-cache revalidates a
+   FETCH, it does not reload a document already on screen. So an edited viewer can go unseen
+   indefinitely, and "nothing changed" is then a true report about a stale tab rather than about
+   the code. /health hashes viewer.html as it sits on disk; this compares that against the copy
+   actually running and says so, loudly, when they differ. */
+(function(){
+  const mine = document.currentScript && document.currentScript.parentNode ? null : null;
+  fetch('/health').then(r=>r.json()).then(h=>{
+    window.BUILD_ON_DISK = h.build;
+    return fetch('/viewer.html', {cache:'reload'}).then(r=>r.text()).then(async t=>{
+      const buf = new TextEncoder().encode(t);
+      const d = await crypto.subtle.digest('SHA-256', buf);
+      const hex = Array.from(new Uint8Array(d)).map(b=>b.toString(16).padStart(2,'0')).join('');
+      window.BUILD = hex.slice(0,10);
+      if(window.BUILD !== h.build){
+        console.warn('ATONAL: this tab is STALE. running '+window.BUILD+
+                     ', on disk '+h.build+' -- reload the page (Cmd-Shift-R).');
+      } else {
+        console.log('ATONAL build '+window.BUILD+' (current)');
+      }
+    });
+  }).catch(()=>{});
+})();
+</script>
+<script>
 const SERVER = location.hostname && location.protocol.startsWith('http')
   ? location.origin.replace(/:\d+$/, ':8770') : 'http://127.0.0.1:8770';
 
