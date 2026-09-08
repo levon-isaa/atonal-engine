@@ -6097,11 +6097,16 @@ const REFORM_MIN_SECS=14;
 
        SHAPE_PACE   spacing floor   changes   interval p50   transition p50   mid-change
          1.0            14s            11         21.0s           4.1s          13.4%
-         1.8            25s             8         27.0s           4.7s          10.6%   <- shipped
+         1.8            25s             8         27.0s           4.7s          10.6%
+         2.5            35s             5         46.8s           5.4s           6.5%   <- shipped
 
    Fewer changes, the same gentleness, and the form holding still for more of the track rather
-   than less. Live on window, so it can be dialled while a track plays; higher is calmer. */
-const SHAPE_PACE_DEF=1.8;   window.SHAPE_PACE=SHAPE_PACE_DEF;
+   than less -- the transition length barely moves across the whole range, because this does not
+   touch it. Live on window, so it can be dialled while a track plays; higher is calmer.
+   Every row above is measured on the same upload rather than modelled: the 2.5 row was first
+   written as an estimate of 6 changes and ~7%, which was close but was still a guess sitting in
+   a table of measurements. */
+const SHAPE_PACE_DEF=2.5;   window.SHAPE_PACE=SHAPE_PACE_DEF;
 function pace(){ const v=window.SHAPE_PACE;
   return (typeof v==='number' && isFinite(v)) ? Math.max(0.25,Math.min(4,v)) : SHAPE_PACE_DEF; }
 const REFORM_MAX_WAIT=4;         // beats a pending change may wait for its downbeat
