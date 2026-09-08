@@ -4242,6 +4242,7 @@ const HEADROOM=17.4;
    in which case the ceiling is at least 1.10, or it is not, in which case it is exactly 1.00
    and the governor stays at native and spends nothing. SS_MIN is that threshold, and it is the
    resolve's 1.05 plus a step, not a tuned number. */
+const SS_RESOLVE=1.05;   // the post pass switches FXAA -> 4-tap tent above this; see main()
 const SS_MIN=1.10;
 let ssCeil=99, ssRetry=0;
 
@@ -6153,6 +6154,32 @@ let lastReformSec=-1e9;
    transition -- a different constant each time, which is the whole idea. */
 const MORPH_SECS={fast:2.2, slow:6.0};      // the ends of the range, before bar quantisation
 let morphB=8;        // this transition's length in beats, latched
+/* ...AND ITS LENGTH IN SECONDS, LATCHED WITH IT, because the transition must not inherit the
+   audio clock's staircase. mix used to advance by dBeats, which comes off ctx.currentTime -- and
+   that moves in render quanta of 5.333ms (256 samples at 48kHz), not continuously. At a steady
+   60fps the music therefore advances 16.00ms on one frame and 21.33ms on the next: a +/-33% step
+   variation with nothing wrong anywhere, before a single frame has been dropped.
+
+   That staircase is already written up in this file and was measured as SUB-PIXEL -- for the
+   ROTATION, where it moves an angle. Nobody checked it against a blend parameter, which does not
+   move the form a fraction of a degree but transforms the whole of it.
+
+   MEASURED inside real transitions on a 176bpm upload, 1034 frames:
+
+       mix advanced per frame   p50 0.00382   p90 0.00953   max 0.02107   -> 5.5x spread
+       frame time               p50 18.5ms    p90 34.1ms    max 69.8ms    -> 3.8x spread
+
+   The blend lurches MORE than the frame times do, so dropped frames are not the whole of it --
+   the remainder is the clock. Both together are what "the shape still changes too quick" is
+   describing: the transition is five seconds long and the change inside it arrives in bursts.
+
+   morphB is already latched at the trigger so the rate cannot move under a running transition
+   (see the note there). Latching the SECONDS alongside it removes the quantisation as well: the
+   melt then runs on the wall clock at a rate fixed for its whole duration, which is what it was
+   always meant to be doing. The beat still decides how long it is and when it starts -- the
+   quantisation to whole bars is untouched -- it just no longer decides it 256 samples at a time. */
+let morphSecs=4.0;   // the same transition's length in seconds, latched
+const MORPH_DT_CAP=2.5/60;   // a stall may not become a jump; see the advance
 let morphJump=0.375; // this transition's ladder distance 0..1, latched -- the median is the default
 function morphBeatsFor(rung){
   const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
@@ -6260,6 +6287,8 @@ function setMode(m){ if(m===mode&&phase===0) return;
   mode2=m; mix=0; phase=1; }
 function latchMorph(rung,from,to){
   morphB=morphBeatsFor(rung);
+  { const bpm=(director&&director.tempo&&director.tempo.bpm)||120;
+    morphSecs=Math.max(0.2, morphB*60/bpm); }
   const a=LADDER_AT[from], b=LADDER_AT[to];
   morphJump=(a===undefined||b===undefined)?0.375
            : Math.abs(a-b)/(SHAPE_LADDER.length-1);
@@ -8530,7 +8559,25 @@ function frame(){
        the endpoint and still be in the transition, and letting it complete would swap mode and
        end the thing being measured. */
     if(window.MIXPIN!=null) mix=Math.max(0,Math.min(1,window.MIXPIN));
-    else { mix+=Math.min(dBeats/morphBeats(), dt/0.9); if(mix>=1){ mix=0; mode=mode2; phase=0; } } }
+    /* A DROPPED FRAME MAY NOT BECOME A JUMP. With the rate latched the melt is smooth in TIME,
+       and time is not what the eye reads -- it reads the difference between one drawn frame and
+       the next. A frame that takes 70ms advances the blend four times as far as one that takes
+       17, and that lands as a lurch however even the underlying curve is.
+       MEASURED, inside real transitions: the morph's cost is all in the TAIL. Frame time p50
+       18.3ms inside against 16.9 outside -- 1.4ms, nothing -- but p90 30.3 against 20.4 and p99
+       48.3 against 27.5. The two-evaluation blend does not slow the median frame, it produces
+       stalls; and c476b89's headroom gate latches its decision from the frame BEFORE the morph,
+       which is the fast one, so the insurance never fires against a cost that has not happened
+       yet.
+       Capping the step is the direct answer and costs only exactness of duration: past the cap
+       the melt simply takes fractionally longer in wall-clock terms rather than skipping ahead.
+       2.5 frames at 60Hz, so ordinary jitter passes through untouched and only a genuine stall
+       is clamped. The alternative -- reinstating the resolution step -- trades a lurch for the
+       image changing resolution and antialiasing mid-transition, which is the fault c476b89
+       exists to have removed. */
+    else { const mdt=Math.min(dt, MORPH_DT_CAP);
+           mix+=Math.min(mdt/Math.max(0.2,morphSecs), mdt/0.9);
+           if(mix>=1){ mix=0; mode=mode2; phase=0; } } }
   if(window.PAIRPIN && window.MIXPIN!=null) mix=Math.max(0,Math.min(1,window.MIXPIN));
   /* THE MORPH'S RESOLUTION STEP, applied on the two edges of the transition and nowhere else --
      see MORPH_RSCALE. Driven off `phase` rather than off mix, so it is exactly one step down when
@@ -8560,7 +8607,20 @@ function frame(){
      is the one thing worse than stepping once. A zoomed-in scene is already far outside the gate
      before the morph starts -- that case measured 52.7 ms per frame -- so it still gets its
      insurance, which is the case MORPH_RSCALE was written for. */
-  if(phase===1 && morphPhasePrev===0) morphStepWant=(frameAvg>HEADROOM);
+  /* ...OR WHEN THE STEP IS FREE OF THE ARTEFACT THAT GOT IT GATED. c476b89 gated this on
+     headroom because the step drops ssRatio through the resolve's 1.05 threshold and swaps the
+     4-tap tent for FXAA mid-transition. That objection only applies when the march is ABOVE the
+     threshold to begin with. Below it the frame is already resolving with FXAA, so stepping down
+     changes the resolution and nothing else -- and the insurance is then free of the reason it
+     was refused. SS_RESOLVE and not SS_MIN: the first version tested against SS_MIN, which is
+     1.10, so at a march sitting on exactly 1.10 the step fired and swapped the resolve anyway --
+     the precise artefact the gate exists to prevent, admitted by an off-by-one-constant.
+     It is worth having because the morph's cost is all in the tail: frame time inside a
+     transition measured p50 18.3ms against 16.9 outside, but p90 30.3 against 20.4 and p99 48.3
+     against 27.5. Those stalls are what make the blend advance unevenly, and the headroom gate
+     could not see them -- it latches from the frame BEFORE the morph, which is the fast one. */
+  if(phase===1 && morphPhasePrev===0)
+    morphStepWant=(frameAvg>HEADROOM) || (rscale<=SS_RESOLVE);
   morphPhasePrev=phase;
   { const wantMS=(phase===1 && !RENDER.pinScale && morphStepWant)?MORPH_RSCALE:1.0;
     if(wantMS!==morphScale){ morphScale=wantMS; applyScale(); } }
