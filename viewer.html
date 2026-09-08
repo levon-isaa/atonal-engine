@@ -3866,6 +3866,16 @@ const TIERS={
      was pinning it to one point on that dial for every machine. A floor of 1.15 keeps Ultra
      unambiguously the best tier (it never drops to where High's governor lives) while letting it
      climb to 1.60, which is BETTER than it ever reached before, on hardware that can hold it. */
+  /* ULTRA'S SMALLER MARCH STEPS ARE NEARLY INERT, so do not go looking there for its cost.
+     It steps at 1.25/1.55 where High steps at 1.45/1.75, which is more steps per ray and looks
+     like the obvious place to buy frames back. Ablated on a pinned scene at rscale 1.10, against
+     a 1.00/1.00 march at 2.2x as ground truth:
+         1.25/1.55  44.90 ms   RMSE 1.990 all / 6.749 silhouette
+         1.45/1.75  44.10 ms   RMSE 1.999 / 6.773
+         1.60/1.90  42.40 ms   RMSE 2.020 / 6.847
+     5.6% of the frame across the whole range, for 1.5% of the error. The cost is march PIXELS,
+     which is what the shadow-lever note already concludes: the only real lever is fewer rays,
+     and that is rscale. Left as it is because changing it buys nothing either way. */
   ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.00, scaleMax:1.60,
            dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, shutter:0,
            note:'Ultra — supersampled, adapts between 1.00x and 1.60x'},
@@ -7062,16 +7072,33 @@ function frame(){
     // Ultra's canvas stays native, and if the band's own floor cannot hold the frame the answer
     // is to pick a lower tier, not to blur the panel the UI is drawn on.
     else if(SMIN>0){
+      /* A SUPERSAMPLING BAND HAS TWO FLOORS, and conflating them left Ultra doing nothing.
+         scaleMin is the ABSOLUTE floor, for emergencies. The RESTING floor is SS_MIN, because
+         the resolve only switches on above ssRatio 1.05 -- so a band that settles at 1.00 is
+         running FXAA at native, which is precisely what High already does. Ultra was measured
+         sitting at exactly that: rscale p50 1.000, on its floor 93% of a 45s take, at 55.9 fps
+         against High's 55.2. Same speed, same antialiasing, more shadow taps. Not a tier.
+         The cause is the learned ceiling, which is mine and which is right for High: a degrade
+         from above native collapses ssCeil to 1.0 and holds it for 20s, and 1.0 is a perfectly
+         good resting place when the floor is 0.82. When the floor IS 1.00 it is a trap -- the
+         raise branch needs rscale < min(SMAX, ssCeil) and both sides are 1.00.
+         So for a band, neither the ceiling nor the ordinary degrade may go under BFLOOR. The
+         cost of holding it is small and was measured on a pinned scene, governor frozen:
+             rscale  1.00  40.3ms    1.10  43.5ms    1.20  47.1ms    1.35  55.0ms    1.60  63.7ms
+         8% of the frame between 1.00 and 1.10, and that 8% is the whole difference between FXAA
+         and the 4-tap tent -- worth 39% of the silhouette error by bench_edges. If a machine
+         cannot hold BFLOOR the answer is the one the tier note already gives: pick a lower tier.
+         The emergency branch keeps SMIN, so a genuinely unusable frame can still escape. */
+      const BFLOOR=Math.max(SMIN, Math.min(SMAX, SS_MIN));
       if(frameAvg>36.0 && rscale>SMIN){ rscale=Math.max(SMIN, rscale*Math.max(0.5,Math.sqrt(17.0/frameAvg))); applyScale(); }   // see the proportional step below
-      else if(frameAvg>18.0 && rscale>SMIN){
-        if(rscale>1.0){ const c=rscale-0.06; ssCeil=(c>=SS_MIN)?c:1.0; ssRetry=now+20000; }
-        const d=Math.max(SMIN,rscale-0.08);
-        rscale=(d>1.0&&d<SS_MIN)?Math.max(SMIN,1.0):d; applyScale(); }
+      else if(frameAvg>18.0 && rscale>BFLOOR){
+        if(rscale>BFLOOR){ const c=rscale-0.06; ssCeil=Math.max(BFLOOR,c); ssRetry=now+20000; }
+        rscale=Math.max(BFLOOR,rscale-0.08); applyScale(); }
       // Ultra's whole band is above native, so it is ALL cliff country and the ceiling binds
       // from the first tick. Without it the tier that exists to supersample was the one that
       // hunted hardest, because its floor is 1.00 and it has nowhere cheap to retreat to.
-      else if(frameAvg<HEADROOM && rscale<Math.min(SMAX,ssCeil)){
-        rscale=Math.min(SMAX,ssCeil,Math.max(rscale+0.03,SS_MIN)); applyScale(); }
+      else if(frameAvg<HEADROOM && rscale<Math.min(SMAX,Math.max(ssCeil,BFLOOR))){
+        rscale=Math.min(SMAX,Math.max(ssCeil,BFLOOR),Math.max(rscale+0.03,BFLOOR)); applyScale(); }
     }
     else if(TIERS[TIER].scale>0){}
     // The tier sets the CEILING the governor may climb to. Without this, Preview's dpr was
