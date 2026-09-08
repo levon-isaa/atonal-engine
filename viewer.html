@@ -3625,6 +3625,7 @@ let morphScale=1.0;
 // whole script with it, and it does not reproduce on a hot reload, only on a cold load.
 let scaleSettle=0;             // frames the governor must not measure -- see frameAvg
 const MORPH_RSCALE=0.74;           // linear; pixels fall to ~0.55 -- see the measurement above
+let morphStepWant=false, morphPhasePrev=0;   // latched at the phase edge; see the use site
 function applyScale(){
   scaleSettle=2;                 // see frameAvg: the governor may not measure its own resize
   const s=rscale*morphScale;
@@ -8177,7 +8178,28 @@ function frame(){
      stops the governor, and this sits outside it -- so a shape change during a take would drop
      the march to 0.74x and bake a visible quality step into the file at a moment the viewer is
      watching hardest. An offline render has no frame budget to protect in the first place. */
-  { const wantMS=(phase===1 && !RENDER.pinScale)?MORPH_RSCALE:1.0;
+  /* ...AND ONLY WHEN THE FRAME CANNOT ABSORB THE SPIKE. The step is INSURANCE against a known
+     2.45x cost, and insurance is worth paying only when the loss would hurt. That 2.45x was
+     measured ZOOMED IN, where nearly every ray hits and marches to convergence; at ordinary
+     framing, and with the fold now shut three quarters of the time, it is not there at all.
+     MEASURED during real playback, 8605 frames over 150s, six shape changes:
+
+         outside a morph   frame 16.90 ms      inside a morph   frame 17.10 ms
+
+     Two tenths of a millisecond. Meanwhile the step itself was costing plenty and all of it
+     visible: ssRatio 1.100 -> 0.814 for the whole transition, which since 7a3dad3 also crosses
+     the resolve's 1.05 threshold and swaps the 4-tap tent for FXAA -- so the image softened AND
+     changed its antialiasing at the exact moment the form began to change. The per-frame image
+     delta on the edge frame measured 11.8 against a baseline near 4.
+
+     So it is gated on frameAvg, the same headroom signal the governor uses, and LATCHED at the
+     phase edge: read every frame it would toggle mid-transition and reallocate repeatedly, which
+     is the one thing worse than stepping once. A zoomed-in scene is already far outside the gate
+     before the morph starts -- that case measured 52.7 ms per frame -- so it still gets its
+     insurance, which is the case MORPH_RSCALE was written for. */
+  if(phase===1 && morphPhasePrev===0) morphStepWant=(frameAvg>HEADROOM);
+  morphPhasePrev=phase;
+  { const wantMS=(phase===1 && !RENDER.pinScale && morphStepWant)?MORPH_RSCALE:1.0;
     if(wantMS!==morphScale){ morphScale=wantMS; applyScale(); } }
   const prog=(phase===1)?mix:0;
   const emph=(phase===1)?morphEmph():1.0;              // see morphEmph -- 1.0 at the median change
