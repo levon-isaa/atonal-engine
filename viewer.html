@@ -637,6 +637,7 @@ uniform float u_volOn,u_volPad,u_nEps,u_shaJit;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
 uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR,u_morphB;
 uniform int u_shaN;
+uniform float u_shaMode;          // <0 = shadows use the blend; else the one profile to march
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
 uniform float u_valence,u_warmth,u_epic;
@@ -1318,8 +1319,30 @@ float blendField(vec3 p,float a,float b,float m){
 
    q IS p WHENEVER r IS 0, so the one shared evalMode call serves the plain path and the melted
    path alike, and the early return below is exact rather than approximate. */
+/* THE SHADOW DOES NOT NEED THE BLEND, AND HALF THE MORPH'S COST IS IT PAYING FOR ONE.
+   mapD is what calcAO and calcSha march, it goes through map() and therefore through here, so
+   for the length of a transition every shadow step and every AO tap evaluates TWO profiles like
+   the primary march does. MEASURED at rscale 4.2 with the morph resolution step pinned off:
+
+       what the morph adds, shadow and AO on    +40.30 ms
+       what the morph adds, shadow and AO off   +20.20 ms
+
+   Half. And that spike is what drops the frames that make the blend advance unevenly -- the
+   lurch measured at 4c90428, whose residual was left as "the blend's own cost".
+
+   A shadow does not have to agree with the surface to the shape. It is soft, it is low contrast,
+   and during a transition the form itself is ambiguous. So the shadow marches ONE profile, the
+   dominant one, switching at mix 0.5 where the form is least committed either way.
+
+   gShaMode CARRIES IT WITHOUT A THIRD evalMode CALL SITE, which is the hard constraint above --
+   six inlined copies took the GPU process down. This is a file-scope variable, so it is ordinary
+   per-invocation state: mapD sets it, map and evalForm are unchanged in structure, the count of
+   evalMode calls in the source stays at two, and forcing mx to 0 means only ONE of them runs.
+   -1 restores exactly the old behaviour, which is what it holds outside a transition. */
+float gShaMode=-1.0;
 float evalForm(vec3 p){
-  float mx=(u_volOn>0.5 || u_svgOn>0.5) ? 0.0 : clamp(u_mix,0.,1.);
+  float mx=(gShaMode>=0.0) ? 0.0
+         : (u_volOn>0.5 || u_svgOn>0.5) ? 0.0 : clamp(u_mix,0.,1.);
   /* SLOW THROUGH THE MIDDLE, NOT THROUGH THE ENDS -- the opposite of the smootherstep that was
      here, and the reason transitions read as a jolt rather than a movement.
      u_mix is linear in beats, so this curve is the whole time-shaping of a morph. Smootherstep
@@ -1386,7 +1409,7 @@ float evalForm(vec3 p){
      What is left, and is not attempted here, is staging the change in something other than the
      field: the light, the colour or the camera can carry a direction without touching the
      gradient. That is a different kind of change and wants its own measurement. */
-  float a=evalMode(q,u_mode);
+  float a=evalMode(q,(gShaMode>=0.0)?gShaMode:u_mode);
   if(mx<=0.001) return a;                      // r is 0 here, so this is evalMode(p,u_mode)
   return (blendField(q, a, evalMode(q,u_mode2), m) - r)*s;
 }
@@ -1776,7 +1799,22 @@ float traceMesh(vec3 ro,vec3 rd,out vec3 nrm){
 vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*u_nEps;
   return normalize(e.xyy*map(p+e.xyy).x+e.yyx*map(p+e.yyx).x+e.yxy*map(p+e.yxy).x+e.xxx*map(p+e.xxx).x);}
 // map() returns a 0.5-scaled (deliberately conservative) field — undo that for ratio-based lighting
-float mapD(vec3 p){ return map(p).x*2.0; }
+/* BOTH THE SHADOW AND THE AO, which is not what the tap counts suggest. Placed here first,
+   then moved into calcSha alone on the reasoning that AO is FOUR taps against that loop's
+   up-to-48 steps and so was paying none of the cost and all of the visible price. Measured, that
+   is backwards: paired inside one page load, mid-morph,
+       shadow and AO on one profile   173.9 -> 113.9 ms   34.5% faster
+       shadow alone                   166.1 -> 148.0 ms   10.9% faster
+   so AO carries about two thirds of it. calcSha's two bounding-sphere returns are taken for most
+   shaded points, so its loop rarely runs anything like its budget, while AO's four taps run for
+   every lit pixel. Tap counts are not a cost model; the paired A/B is.
+   The price is visible and worth stating: rendered side by side at mix 0.30/0.45/0.55/0.70 the
+   forms are identical and the crevice shading is slightly flatter, RMSE 3.3 to 6.0 with local
+   peaks near 93. That is AO softening for the two to six seconds of a transition, in exchange
+   for a third of the frame at exactly the moment frames are being dropped -- which is what makes
+   the blend advance unevenly (see the lurch at 4c90428). Restored after, so nothing else in the
+   frame inherits the override. */
+float mapD(vec3 p){ gShaMode=u_shaMode; float d=map(p).x*2.0; gShaMode=-1.0; return d; }
 // ambient occlusion — crevices darken, gives the form real volume (4 extra taps)
 float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
   for(int i=1;i<=4;i++){ float h=0.04*float(i)*float(i);
@@ -1818,6 +1856,7 @@ float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
 // inside the 2.6 bounding sphere, so the test excluded almost nothing. Which surface was hit is
 // the thing that actually distinguishes the two cases, and the caller already knows it.
 float calcSha(vec3 p,vec3 l,int N){
+
   /* THE SAME BOUND THE PRIMARY MARCH USES, not a generous constant.
      R was 2.6 while the geometry is bounded by (1.55+u_bmarg)*formScale()+0.10 -- about 1.65 at
      the default scale, which is the number the primary march trusts to decide a ray misses the
@@ -9132,6 +9171,13 @@ function frame(){
 
 
   gl.uniform1i(US('u_shaN'),shaTaps());   // governor-scaled; see SHA_FLOOR
+  // The dominant profile during a transition, -1 otherwise. Snapping at mix 0.5 means the
+  // shadow changes shape once, at the moment the form is least committed to either.
+  // window.SHABLEND=1 forces the shadow back onto the blended field, so the two can be
+  // compared inside ONE page load. They have to be: measured across separate loads, the idle
+  // baseline alone moved 98.0ms to 70.8ms on this machine, which swamps the effect entirely.
+  gl.uniform1f(US('u_shaMode'),
+    (phase===1 && !window.SHABLEND) ? ((mix<0.5)?mode:mode2) : -1);
   gl.uniform1f(US('u_shaJit'), (window.SHAJIT!==undefined)?window.SHAJIT:1.0);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
