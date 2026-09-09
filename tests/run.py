@@ -6,6 +6,10 @@
 test_director.py checks the CONTRACT -- the shape of director.json, and that degenerate input
 does not produce NaNs or a crash. test_analysis.py checks the CONTENT -- tempo, section
 boundaries and the bar grid, each against a fixture whose answer is known by construction.
+test_billing.py checks the MONEY -- idempotency on a provider retry, a balance that cannot go
+negative under concurrent uploads, the free tier's refund, and the webhook signature. It runs
+against a throwaway database and never opens out/billing.db, and it is the fastest of the
+three: no audio is synthesised and nothing leaves the machine.
 
 Both are dependency-free and both exit non-zero on failure, so this is also the CI command.
 The analysis suite synthesises and then analyses about a dozen tracks, so it takes a couple of
@@ -20,7 +24,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUITES = ["test_director.py", "test_analysis.py"]
+SUITES = ["test_director.py", "test_analysis.py", "test_billing.py"]
 
 if __name__ == "__main__":
     failed = []

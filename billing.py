@@ -470,15 +470,38 @@ def _grant_for_session(txn) -> dict:
         key_plain = new_key()
         key_hash = _hash(key_plain)
 
+
+    # WHICH KEY THE MONEY LANDS ON IS DECIDED BY THE CLAIMS ROW, and it has to be decided
+    # before the grant rather than recorded after it. The docstring above promises the webhook
+    # and the success page can both call this and only one wins; the ledger's UNIQUE ref made
+    # the GRANT single, and nothing made the claims row single. Both callers read no claims row,
+    # both mint a fresh key, one wins the ledger and the other wins the INSERT OR REPLACE -- so
+    # the customer is shown a key with a balance of zero while the credits sit on a hash whose
+    # plaintext was a local variable in the thread that lost. Paid for and undeliverable.
+    # REPRODUCED before this was changed: two threads on one transaction id, 1 trial in 40 left
+    # the claimed key holding 0 of 50 credits. OR IGNORE plus a read-back inside one IMMEDIATE
+    # transaction makes the first writer the owner and the loser's key simply unused; the grant
+    # then goes to whoever the row says, so the two can no longer disagree. REPLACE is not
+    # wanted here in any case -- an existing row returns at the top of this function, so the
+    # only thing it ever overwrote was the winner.
+    with _conn() as c:
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("INSERT OR IGNORE INTO claims(session_id,key_plain,key_hash,credits,created)"
+                      " VALUES(?,?,?,?,?)", (sid, key_plain, key_hash, credits, time.time()))
+            row = c.execute("SELECT key_plain, credits, key_hash FROM claims WHERE session_id=?",
+                            (sid,)).fetchone()
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    key_plain, credits, key_hash = row[0], int(row[1]), row[2]
     # The PACK goes in the reason, because "what did this key buy" is a ledger fact and the
     # ledger is append-only -- so priority cannot be granted or lost by an UPDATE somewhere.
     # Old rows read "purchase:txn_..."; no pack is named "txn_...", so has_priority below cannot
     # confuse the two and no migration is needed.
     grant(key_hash, credits, "purchase:%s:%s" % (custom.get("pack") or "?", sid),
           "paddle:" + sid, email=email)
-    with _conn() as c:
-        c.execute("INSERT OR REPLACE INTO claims(session_id,key_plain,key_hash,credits,created)"
-                  " VALUES(?,?,?,?,?)", (sid, key_plain, key_hash, credits, time.time()))
     return {"key": key_plain, "credits": credits, "fresh": True, "key_hash": key_hash}
 
 
