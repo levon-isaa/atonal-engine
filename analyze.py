@@ -364,6 +364,55 @@ def layer1_signal(mono, stereo, sr, prog=None):
     # the spectrogram is worse again (sparse perc 0.95 -> 0.28 at 128 bins) and a mel-scaled
     # version worst of all, going ANTI-correlated on harmonic material at r=-0.32. The one-signal
     # result that said "equivalent" was luck.
+    # HPSS ACROSS CORES. It is the whole analysis -- 9.09s against 1.66s for the stft, onset
+    # strength, chroma and beat tracker combined -- and it was one call on one thread. Its cost
+    # is two median filters over the spectrogram, those are C and release the GIL, so plain
+    # threads actually scale here: measured on a 250s upload, 12 logical cores,
+    #     1 chunk 6.07s      4 chunks 1.83s (3.31x)      6 chunks 1.28s (4.74x)
+    # and the envelopes barely move -- harmonic r 0.9979, percussive 0.9973 against the single
+    # call. That is a tighter agreement than the kernel_size change already shipped (0.982), so
+    # it is well inside what this file treats as equivalent.
+    #
+    # SPLIT ALONG TIME WITH OVERLAP. The harmonic filter is a median ALONG time, so a seam with
+    # no overlap would see a truncated neighbourhood and differ there. 64 frames each side is
+    # three times the kernel, and only the interior of each chunk is kept.
+    #
+    # Chunks are sized so none is shorter than MIN_CHUNK_S: on a short upload the overlap would
+    # be most of the work and the seams most of the signal, so below that it stays one call.
+    def _hpss_parallel(y, kernel_size):
+        MIN_CHUNK_S = 20.0
+        nmax = min(6, max(1, int(len(y) / sr / MIN_CHUNK_S)))
+        if nmax < 2:
+            H, P = librosa.effects.hpss(y, kernel_size=kernel_size)
+            return H, P
+        n = len(y)
+        ov = 64 * HOP
+        outH = [None] * nmax
+        outP = [None] * nmax
+        def work(i):
+            a = max(0, i * n // nmax - ov)
+            b = min(n, (i + 1) * n // nmax + ov)
+            h, p = librosa.effects.hpss(y[a:b], kernel_size=kernel_size)
+            outH[i] = (a, h)
+            outP[i] = (a, p)
+        ts = [threading.Thread(target=work, args=(i,), daemon=True) for i in range(nmax)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        if any(o is None for o in outH):          # a worker failed; fall back rather than stitch a hole
+            return librosa.effects.hpss(y, kernel_size=kernel_size)
+        H = np.zeros(n, dtype=np.float32)
+        P = np.zeros(n, dtype=np.float32)
+        for i in range(nmax):
+            lo = i * n // nmax
+            hi = (i + 1) * n // nmax
+            a, h = outH[i]
+            H[lo:hi] = h[lo - a:hi - a]
+            a, p = outP[i]
+            P[lo:hi] = p[lo - a:hi - a]
+        return H, P
+
     _hp = {}
     def _hpss_worker():
         try:
@@ -379,7 +428,7 @@ def layer1_signal(mono, stereo, sr, prog=None):
             # above 0.96 for 30% off the longest call in the pipeline. The key is read off H
             # below, so the 12-of-12 key identification in test_analysis.py is the check that
             # matters here, not the correlation.
-            H, P = librosa.effects.hpss(mono, kernel_size=21)
+            H, P = _hpss_parallel(mono, 21)
             _hp["h"] = librosa.feature.rms(y=H, hop_length=HOP)[0]
             _hp["p"] = librosa.feature.rms(y=P, hop_length=HOP)[0]
             # THE KEY IS READ OFF H, NOT OFF THE MIX -- see layer2c_tonality for the numbers.
