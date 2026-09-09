@@ -39,8 +39,17 @@ _QCOND = threading.Condition()          # guards _WAITING, _RUNNING, _BUSY and _
 _WAITING = []                # _Slot objects waiting for the slot, in SERVICE order
 _RUNNING = None              # (started_at, audio_seconds) of the one holding it
 _BUSY = False                # is the slot taken
-_EST_FIXED = 2.8             # imports and the PANNs checkpoint: constant per analysis
-_EST_RATE = 0.036            # wall seconds per second of audio (measured: 3.51s at 20s, 25.81s at 640s)
+# RE-MEASURED after the analysis got 4x faster (see analyze's hpss notes: kernel 21, then split
+# across cores). The old pair -- 2.8s fixed and 0.036 s/s, from 3.51s at 20s and 25.81s at 640s --
+# now over-estimates a four-minute upload by about three times, and the queue ETA is the number a
+# waiting person reads. Measured on this host, warm process, same track truncated:
+#     60s audio 0.88s      120s 1.23s      240s 2.32s
+# which is 0.0080 s/s marginal on a fixed 0.40s. Seeded a little above that: the server's FIRST
+# analysis is colder than these (the boot warm-up covers the imports, not the numba compile that
+# the first real spectrogram triggers), and an ETA that reads short is worse than one that reads
+# long. _est_observe EWMAs toward the host from here, so this only has to be the right order.
+_EST_FIXED = 1.0             # imports and the PANNs checkpoint: constant per analysis
+_EST_RATE = 0.012            # wall seconds per second of audio (measured: 0.88s at 60s, 2.32s at 240s)
 
 
 def _est(secs):
