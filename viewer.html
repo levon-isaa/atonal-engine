@@ -7560,7 +7560,26 @@ function frame(){
        the note above is explicit that this is what made "every form look soft, permanently".
        So climbing back to native gets its own, much more willing gate, in small steps so it
        settles rather than hunts. Above native the original conservative thresholds still apply:
-       supersampling is a luxury and is bought only with genuine headroom. */
+       supersampling is a luxury and is bought only with genuine headroom.
+
+       THE 14.5 ABOVE IS STALE AND THE BAND IS NARROWER THAN IT READS. This gate is HEADROOM,
+       17.4, not 14.5: it was raised so it would be reachable under a 60Hz vsync at all, where a
+       frame that reads 16.7 can never satisfy 14.5. The dead band against the 18.0 degrade is
+       therefore 0.6ms, not 3.5ms, while one rscale step moves the frame by 3-5ms -- so the band
+       can sit inside the gap between two rungs' costs and neither satisfies it. Traced once, on
+       the 176bpm upload under load at second 15: 1.000 -> 0.920 -> 1.000 -> 0.920 -> 1.000,
+       four steps in 1.6s, the image alternating between resolved and upscaled twice a second.
+       A TIME-BASED HYSTERESIS WAS TRIED HERE AND MEASURED WORSE. Holding the march down for a
+       back-off after each degrade, doubling the wait whenever a restore was immediately undone
+       -- the same shape as the ssCeil re-probe above native. Three 60s runs each, same track,
+       same tier:
+           before   4.0 reversals,  0% of frames sub-native
+           after    5.3 reversals,  8% of frames sub-native
+       The flap is a transient that did not recur in any of the six runs, so the cool-down never
+       paid for itself and only made a degrade stickier -- 12-13% of two runs spent upscaled to
+       buy back a reversal that was not happening. Reverted. The narrow band is real and is
+       recorded here so the next person does not have to find it twice; what is NOT established
+       is that it costs anything in normal running. */
     else if(rscale<1.0 && frameAvg<17.4){ rscale=Math.min(1.0,rscale+0.04); applyScale(); }
     /* AND BACK UP IN THE OPPOSITE ORDER TO THE WAY DOWN. dpr is the coarsest lever and the last
        one spent, so it is the first one recovered -- but only once rscale is back at native,
