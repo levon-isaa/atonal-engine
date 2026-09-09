@@ -7933,7 +7933,14 @@ function frame(){
     // Cell in DEVICE pixels. dpr is applied here, once, so the screen keeps its physical size on
     // a retina panel instead of halving.
     const tight=1.0-energy*0.28-pulseS*0.10-HITS.low*0.08;
-    FILT.cell = Math.max(3, filtCellOf(FILT.mode)*dpr*dprScale*Math.max(0.45,tight)*Math.max(0.25,1+MV('cell')*0.7));
+    // FCELLPIN holds the cell in DEVICE PIXELS, for the filter arm of render_bench: the value
+    // that reaches the shader is the slider times four multipliers, so a measurement of where
+    // the subject stops being legible has to address the product, not the slider.
+    FILT.cell = (typeof window.FCELLPIN==='number' && isFinite(window.FCELLPIN)) ? window.FCELLPIN
+      // dprScale is NOT applied again here: `dpr` above already carries it (see resize), so the
+      // old `dpr*dprScale` squared it -- a canvas backed off to 0.66 shrank the cell to 0.44,
+      // and the physical dot size this line exists to hold constant moved with the load.
+      : Math.max(3, filtCellOf(FILT.mode)*dpr*Math.max(0.45,tight)*Math.max(0.25,1+MV('cell')*0.7));
     // The screen turns WITH the form. A fixed angle makes the halftone a sticker on the lens; the
     // form's own spin makes it belong to the object. Slowed 6x -- a screen turning at the speed of
     // the subject strobes against the pixel grid.
@@ -10741,11 +10748,16 @@ const ROLL_RECIPES=[
   // ---- PRINT: the two-colour families. Flat looks only -- a halftone of a glossy specular is a
   // screen of a highlight, which reads as a blown-out hole.
   {name:'Print', w:3, f(r){
-    setCtl('selFilt', pick(r,['1','1','2','6']));
+    /* THE CELL IS PER MODE, because the modes this recipe picks from do not share a floor.
+       ASCII's cell IS the glyph and stops resolving below about 8; the halftones want the
+       bottom of the range and are already seeded there. One number was being set for all four,
+       so it was either too coarse for the halftones or too fine for the type. */
+    const f=pick(r,['1','1','2','6']);
+    setCtl('selFilt', f);
     setCtl('selScene','field');
     setCtl('selMat',  pick(r,['clay','pearl']));
     setCtl('selFinish',pick(r,['matte','satin']));
-    setCtl('filtCell', Math.round(6+r()*16));
+    setCtl('filtCell', f==='6' ? Math.round(8+r()*5) : Math.round(3+r()*6));
   }},
   // ---- SENSOR: thermal. It reads depth, so it wants a subject with real depth in frame and a
   // scene with nothing else competing.
@@ -10758,11 +10770,13 @@ const ROLL_RECIPES=[
   }},
   // ---- POSTER: blocky, saturated, graphic.
   {name:'Poster', w:2, f(r){
-    setCtl('selFilt', pick(r,['3','3','5']));
+    const f=pick(r,['3','3','5']);
+    setCtl('selFilt', f);
     setCtl('selScene','field');
     setCtl('selPal',  pick(r,['acid','cyber','ultra','solar','blood']));
     setCtl('selMat',  pick(r,['clay','pearl','holo']));
-    setCtl('filtCell', Math.round(8+r()*22));
+    // Facets has no cell -- see filtRow -- so setting one here wrote a value nothing reads.
+    if(f!=='5') setCtl('filtCell', Math.round(4+r()*8));
   }},
   // ---- GLASS: the one family the filters are kept away from, because every one of them throws
   // away the refraction that is the entire point of the material.

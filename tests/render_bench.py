@@ -506,6 +506,79 @@ def bench_costs(c, url):
     print("  lever on that is rscale -- see the shadow-lever note in viewer.html.")
 
 
+# ------------------------------------------------------------------ the filter cell
+# WHY. "Filter cell is still too much, it looks like a mess." The cell that reaches the shader
+# is not the slider: it is the slider times dpr times dprScale times a contrast term times a
+# music term, so any judgement about where the subject survives has to be made on the PRODUCT,
+# in device pixels. FCELLPIN in viewer.html pins exactly that, so this sweeps the real quantity.
+#
+# THE METRIC IS SILHOUETTE RECOVERY, not similarity to the unfiltered frame. A halftone is
+# supposed to look nothing like its source close up -- that is what a halftone is -- so scoring
+# resemblance would condemn the filter at every setting. What the complaint is actually about is
+# the SUBJECT disappearing: past some cell the dots stop describing a shape. So the reference is
+# the unfiltered frame's foreground mask, and the score is how much of that mask you can still
+# recover from the filtered frame after a FIXED 3px blur -- fixed, and deliberately not scaled
+# with the cell, because a blur that grows with the cell would hand every setting the same score.
+
+
+def _mask(a):
+    """Foreground, by Otsu on the luma. Otsu rather than a fixed threshold because the palette
+    and the material change what 'background' is worth from run to run."""
+    import numpy as np
+    h, _ = np.histogram(a, bins=256, range=(0, 256))
+    p = h / max(h.sum(), 1)
+    om, cut = -1.0, 128
+    w0 = 0.0
+    m0 = 0.0
+    mt = float((np.arange(256) * p).sum())
+    for t in range(1, 255):
+        w0 += p[t]
+        m0 += t * p[t]
+        w1 = 1.0 - w0
+        if w0 < 1e-6 or w1 < 1e-6:
+            continue
+        v = (mt * w0 - m0) ** 2 / (w0 * w1)
+        if v > om:
+            om, cut = v, t
+    return a > cut
+
+
+def bench_filter(c, url):
+    """Where does the subject stop surviving the filter, in device pixels?"""
+    import numpy as np
+    load_track(c, url)
+    pin(c)
+    c.js(_GRAB_HOOK)
+    c.js("window.FCELLPIN=null; setCtl('selFilt','0'); return 1;")
+    ref = _mask(_grab(c, 1.0))
+    grow = _boxblur(ref.astype(float), 25)
+    BAND = (grow > 0.02) & (grow < 0.98)      # a fixed collar around the true silhouette
+    print("  reference subject covers %.1f%% of the box; the scored band is %.1f%% of it"
+          % (100.0 * ref.mean(), 100.0 * BAND.mean()))
+
+    names = {"1": "Halftone dots", "2": "Halftone lines", "3": "Pixelate", "6": "ASCII"}
+    cells = [3, 4, 6, 8, 10, 12, 14, 16, 20, 24, 30, 40]
+    out = {}
+    for m, label in names.items():
+        c.js("setCtl('selFilt','%s'); return 1;" % m)
+        row = []
+        for px in cells:
+            c.js("window.FCELLPIN=%d; return 1;" % px)
+            g = _boxblur(_grab(c, 1.0), 3)
+            got = _mask(g)
+            # SCORED IN A BAND AROUND THE SILHOUETTE, not over the whole box. The interior of a
+            # halftoned form is dots either way and agrees with the reference by accident, which
+            # swamped the first version of this: whole-box IoU fell from 0.81 to 0.56 across a
+            # 13x range of cell with no knee anywhere, and ASCII scored HIGHER as it got coarser.
+            # The damage the complaint is about is at the edge -- the outline stops describing a
+            # shape -- so the score is IoU restricted to a fixed 12px band around the true edge.
+            row.append(float((got & ref)[BAND].sum()) / max(float((got | ref)[BAND].sum()), 1.0))
+        out[label] = row
+        print("  %-15s " % label + " ".join("%5.2f" % v for v in row))
+    print("  %-15s " % "cell (device px)" + " ".join("%5d" % v for v in cells))
+    return out
+
+
 # ------------------------------------------------------------------ director rules
 # WHY THESE ARE HERE. One session changed about ten of the Director's behaviours -- the ladder's
 # order, the pacing, the phrase lock, the "a boundary is not a reason" gate, the fold's duty --
@@ -636,10 +709,22 @@ def bench_director(c, url):
     check("every decision had a musical reason", bad == 0,
           "%d of %d under dE %.3f without the idle lapse" % (bad, max(len(dec) - 1, 0), d["minDE"]))
 
-    # 6. the fold is an accent, not the resting state
+    # 6. the fold is an accent, not the resting state -- BUT ONLY WHERE THERE ARE ENOUGH
+    #    CHANGES TO SAY SO. This read `held <= 0.9` over however many changes a run happened to
+    #    produce, which on a 126s window is three. Three Bernoulli samples against a duty of
+    #    0.38 land all-folded by chance often enough that the same unchanged code gave 33% and
+    #    then 100% on consecutive runs: a red that means nothing. Rule 7 below measures the same
+    #    duty over every frame -- 7143 of them -- and is the assertion to trust. This one only
+    #    adds whether the fold is open at CHANGES specifically, which needs n where d**n is
+    #    rarer than the failure is worth: at 0.38 that is 8.
     held = float(np.mean([e["held"] for e in ev])) if ev else 0.0
-    check("fold is not pinned open at every change", held <= 0.9,
-          "open at %.0f%% of changes, duty target %.2f" % (100 * held, d["duty"]))
+    if len(ev) >= 8:
+        check("fold is not pinned open at every change", held <= 0.9,
+              "open at %.0f%% of %d changes, duty target %.2f" % (100 * held, len(ev), d["duty"]))
+    else:
+        check("fold is not pinned open at every change", True,
+              "(only %d changes: %.0f%% open, too few to tell from chance -- see rule 7)"
+              % (len(ev), 100 * held))
 
     # ---- the fold and the morph, which this session also changed and nothing covered ----
     A = d.get("agg") or {}
@@ -730,6 +815,7 @@ def main():
     rc = 0
     for name, fn, q in (("clock", bench_clock, ""), ("morph", bench_morph, "?readback"),
                         ("edges", bench_edges, ""), ("costs", bench_costs, ""),
+                        ("filter", bench_filter, "?readback"),
                         ("director", bench_director, "")):
         if what not in ("all", name):
             continue
