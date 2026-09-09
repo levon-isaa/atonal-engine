@@ -519,6 +519,8 @@ def bench_costs(c, url):
 # boundary and the phrase rule is satisfiable rather than accidentally impossible.
 _DIR_REC = """
   window.__L=[]; window.__PH=0; window.__D=[]; let lastShape=null;
+  window.__A={n:0,held:0,open:0,shut:0,inMorph:0,kalIn:0,kalOut:0,pm:0,step:0,stepSecs:4,
+              vocabFolded:99,vocabOpen:99};
   const rec=()=>{
     // EVERY DECISION, not every visible change. chooseMode writes __SHAPE on each call and
     // updates the energy the gate compares against -- including calls that return the shape
@@ -528,6 +530,24 @@ _DIR_REC = """
     if(window.__SHAPE && window.__SHAPE!==lastShape){
       lastShape=window.__SHAPE;
       window.__D.push({t:pos(), e:window.__SHAPE.energy, held:!!window.__SHAPE.held});
+    }
+    // Aggregates accumulated IN PAGE rather than shipping every frame: a 126s run is ~7500
+    // frames and only these summaries are wanted.
+    {
+      const A=window.__A;
+      A.n++;
+      if(kalHeld) A.held++;
+      if(kalAmt>0.35) A.open++;
+      if(kalAmt<0.02) A.shut++;
+      if(phase===1){ A.inMorph++; A.kalIn+=kalAmt;
+                     const st=mix-A.pm; if(st>0 && st>A.step){ A.step=st; A.stepSecs=morphSecs; } }
+      else { A.kalOut+=kalAmt; }
+      A.pm=mix;
+      if(typeof allowedModes==='function'){
+        const al=allowedModes().length;
+        if(kalHeld && al<A.vocabFolded) A.vocabFolded=al;
+        if(!kalHeld && al<A.vocabOpen) A.vocabOpen=al;
+      }
     }
     if(phase===1 && window.__PH===0){
       const s=window.__SHAPE||{};
@@ -541,7 +561,8 @@ _DIR_REC = """
   requestAnimationFrame(rec);
   await new Promise(r=>setTimeout(r,%d));
   const db=(dbSet?Array.from(dbSet):[]);
-  return JSON.stringify({ev:window.__L, dec:window.__D, db:db, grid:PHRASE_GRID,
+  return JSON.stringify({ev:window.__L, dec:window.__D, agg:window.__A, db:db, grid:PHRASE_GRID,
+    foldMin:FOLD_MIN, dtCap:MORPH_DT_CAP,
     minSecs:REFORM_MIN_SECS, minDE:REFORM_MIN_DE, idle:REFORM_IDLE_SECS,
     pace:pace(), fast:MORPH_SECS.fast, slow:MORPH_SECS.slow,
     duty:KAL_DUTY, bpm:(director&&director.tempo&&director.tempo.bpm)||0});
@@ -615,6 +636,50 @@ def bench_director(c, url):
     check("fold is not pinned open at every change", held <= 0.9,
           "open at %.0f%% of changes, duty target %.2f" % (100 * held, d["duty"]))
 
+    # ---- the fold and the morph, which this session also changed and nothing covered ----
+    A = d.get("agg") or {}
+    n = max(A.get("n", 0), 1)
+    print("  fold and transition, over %d frames" % n)
+
+    # 7. the fold is an accent. The duty is a target the energy threshold is calibrated to, so
+    #    this is a wide band -- it is checking that the mechanism works, not that a track hits
+    #    a number. Before 2fa6da9 this read 66% against a 22% target.
+    held = A.get("held", 0) / n
+    check("fold duty is near its target", held <= d["duty"] * 2.0 + 0.05,
+          "held %.0f%% against a target of %.0f%%" % (100 * held, 100 * d["duty"]))
+
+    # 8. and it actually shuts. It never did: measured at 0.0% before the deadband fix, because
+    #    an exponential approach to zero plus a deadband strands it just above.
+    check("fold reaches fully closed", A.get("shut", 0) / n > 0.05,
+          "%.0f%% of frames under kalAmt 0.02" % (100 * A.get("shut", 0) / n))
+
+    # 9. and it gets out of the way of a shape change (efc33f8)
+    if A.get("inMorph", 0) > 30 and (n - A.get("inMorph", 0)) > 30:
+        kin = A.get("kalIn", 0) / A["inMorph"]
+        kout = A.get("kalOut", 0) / (n - A["inMorph"])
+        check("fold ducks during a transition", kin <= kout + 0.02,
+              "mean kalAmt %.3f inside against %.3f outside" % (kin, kout))
+    else:
+        check("fold ducks during a transition", True, "(too few morph frames to judge)")
+
+    # 10. a stall may not become a jump (4c90428). The cap is on dt, so the bound on one
+    #     frame's mix step is MORPH_DT_CAP / that transition's length, plus a little slack for
+    #     the frame the cap itself lands on.
+    if A.get("step", 0) > 0:
+        bound = d["dtCap"] / max(A.get("stepSecs", 4.0), 0.2)
+        check("no single frame jumps the transition", A["step"] <= bound * 1.15,
+              "worst step %.5f against a bound of %.5f" % (A["step"], bound))
+    else:
+        check("no single frame jumps the transition", True, "(no transition observed)")
+
+    # 11. the vocabulary never collapses below the floor a folded passage is guaranteed
+    vf = A.get("vocabFolded", 99)
+    if vf < 99:
+        check("folded vocabulary respects FOLD_MIN", vf >= d["foldMin"],
+              "smallest allowed set while folded was %d, floor %d" % (vf, d["foldMin"]))
+    else:
+        check("folded vocabulary respects FOLD_MIN", True, "(fold never held)")
+
     if fails:
         raise AssertionError("director rules failed: " + ", ".join(fails))
 
@@ -629,8 +694,21 @@ def main():
     if not os.path.exists(CHROME):
         print("Chrome not found at %s (set ATONAL_CHROME)" % CHROME)
         return 2
-    url, truth, bpm = serve_fixture()
-    print("fixture: %s  (%.0f bpm, boundaries %s)" % (url, bpm, truth))
+    # A REAL TRACK WHEN ONE IS OFFERED. The generated fixture is right for the structural arms
+    # -- its bar grid and section boundaries are known by construction, and its downbeat grid is
+    # OFFSET from its sections, which is exactly the property that caught the phrase lock only
+    # covering one of two call sites. But fixtures do lie about material: this one peaks mid-bar
+    # where real music peaks on the beat, so a rule that holds here is not yet known to hold.
+    # ATONAL_BENCH_TRACK points any arm at a file in assets/ instead; a track already in the
+    # analysis cache costs nothing to re-run.
+    #     ATONAL_BENCH_TRACK=/assets/mine.mp3 python tests/render_bench.py director
+    real = os.environ.get("ATONAL_BENCH_TRACK", "").strip()
+    if real:
+        url, truth, bpm = real, None, 0
+        print("track: %s  (given by ATONAL_BENCH_TRACK, not the fixture)" % url)
+    else:
+        url, truth, bpm = serve_fixture()
+        print("fixture: %s  (%.0f bpm, boundaries %s)" % (url, bpm, truth))
     rc = 0
     for name, fn, q in (("clock", bench_clock, ""), ("morph", bench_morph, "?readback"),
                         ("edges", bench_edges, ""), ("costs", bench_costs, ""),
