@@ -2510,8 +2510,21 @@ void main(){
     vec3 keyC=mix(vec3(0.72,0.82,1.00), vec3(1.00,0.86,0.66), u_warmth);
     vec3 rimC=mix(vec3(0.28,0.48,1.00), vec3(1.00,0.46,0.28), u_valence);
     float NoL=max(0.,dot(n,L))*(1.0-u_furnace);   // furnace: uniform environment only, no sources
-    float occ=mix(1.0,calcAO(p,gn),u_dxs.x)*(1.0-u_furnace)+u_furnace;
-    float sha=(NoL>0.001)?mix(1.0,calcSha(p,L,u_shaN),u_dxs.y):1.0;   // the form: full budget
+    /* THESE TWO ABLATION SWITCHES DID NOT ABLATE ANYTHING. mix() evaluates both of its
+       arguments -- GLSL has no short-circuit -- so mix(1.0, calcAO(...), u_dxs.x) marched the
+       full ambient occlusion and then multiplied it by zero, and the shadow did the same. Setting
+       DXS.shadow=0 changed the picture and not the cost.
+       That matters beyond the tool, because this file's shadow-lever note concludes "turning the
+       shadow OFF ENTIRELY gave 50.1 -- about 4% of the frame" and then rules the shadow out as a
+       lever on that basis. It was measured through this switch, so it measured nothing being
+       turned off. Ablating the taps instead -- shaScale to its floor, which really does reduce
+       the march -- the same frame goes 53.70ms to 36.80ms: 31.5%, not 4%.
+       Branching on a uniform that is constant across the whole draw costs nothing: every
+       invocation takes the same side, so there is no divergence to pay for. In production both
+       are 1 and this is the path it always took. */
+    float occ=(u_dxs.x>0.5) ? calcAO(p,gn) : 1.0;
+    occ=occ*(1.0-u_furnace)+u_furnace;
+    float sha=(NoL>0.001 && u_dxs.y>0.5) ? calcSha(p,L,u_shaN) : 1.0;   // the form: full budget
     // diffuse body (fades out for metals) — occluded + self-shadowed.
     // Ambient is real environment irradiance (env sampled along the normal, fully rough)
     // rather than a flat constant: that is what makes unlit faces read as lit by a room.
@@ -3850,7 +3863,7 @@ const TIERS={
      This was tried before, reverted as "stop rendering below native", and the revert was right
      for HIGH -- where a soft frame is the whole product. It was wrong for Preview, whose tooltip
      already promises a coarser image. */
-  preview:{label:'Preview', scale:0, dpr:0.72, scaleMin:0.60, ss:0.80, shaN:96, near:1.45, far:1.75, shutter:0, sss:0,
+  preview:{label:'Preview', scale:0, dpr:0.72, scaleMin:0.60, ss:0.80, shaN:48, near:1.45, far:1.75, shutter:0, sss:0,
            note:'Preview — fast'},
   /* HIGH AND ULTRA GET A FLOOR BELOW NATIVE. Both used to bottom out at 1.00 -- High because the
      governor's floor was hard-coded there, Ultra because its band started at 1.15 -- so on a
@@ -3868,7 +3881,7 @@ const TIERS={
         rscale 1.15  edge RMSE 4.31     rscale 1.60  edge RMSE 3.06
      0.82 is below the bottom of that table and will be visibly softer. It is a floor, not a
      target: it exists for the case where the alternative is 15 fps. */
-  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.45, shaN:128, sss:1, near:1.45, far:1.75, shutter:0,
+  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.45, shaN:48, sss:1, near:1.45, far:1.75, shutter:0,
            note:'High — shadows, adaptive scale'},
   /* ULTRA IS A BAND, NOT A PIN. It used to fix rscale at 1.35 and switch the governor off
      entirely -- its own tooltip promised "no adaptation, will drop frames", and it delivered:
@@ -3903,7 +3916,7 @@ const TIERS={
      which is what the shadow-lever note already concludes: the only real lever is fewer rays,
      and that is rscale. Left as it is because changing it buys nothing either way. */
   ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.00, scaleMax:1.60,
-           dpr:1.00, ss:1.45, shaN:200, sss:1, near:1.25, far:1.55, shutter:0,
+           dpr:1.00, ss:1.45, shaN:64, sss:1, near:1.25, far:1.55, shutter:0,
            note:'Ultra — native floor, adapts up to 1.60x when the frame allows'},
 };
 /* THE IBL RIG. These three apply ONLY when a prefiltered HDRI is lighting the scene; the
@@ -4011,7 +4024,26 @@ function applyTier(name){
    The three Newton steps after the loop are why the surface survives a coarser march at all: they
    close the residual the larger step leaves, so what the bigger step costs is march ACCURACY, not
    surface accuracy. */
-const STEP={near:1.75,far:1.75,shaN:128,count:112};  // count = the march budget; see the u_steps upload
+/* SHADOW TAPS WERE THE BIGGEST COST IN THE FRAME AND WERE BUYING NOTHING VISIBLE.
+   This file's shadow-lever note rules the shadow out -- "turning the shadow OFF ENTIRELY gave
+   50.1 -- about 4% of the frame" -- and that measurement went through DXS.shadow, which did not
+   turn anything off: mix(1.0, calcSha(...), u_dxs.y) evaluates both arguments, so it marched the
+   full shadow and multiplied it by zero. With the switch made a real branch (see the shading),
+   the same ablation on a heavy frame is 54.35ms -> 31.20ms. Forty-two percent, not four.
+   What the taps buy, swept at a fixed pose:
+       shaN  200  74.20ms      96  48.20ms      32  37.00ms
+             128  53.80ms      64  42.40ms      16  34.40ms
+   and the image does not follow: RMSE against 200 taps runs 4.87 / 4.91 / 4.93 / 4.95 / 5.00 /
+   5.22 across that range, against a noise floor of 4.42 measured 200-against-200. Rendered and
+   compared by eye on the three most self-occluding profiles -- the Lattice's inter-bar shadowing,
+   the Gear's bore and teeth, the Truss's overlaps -- 32 taps and 200 taps are indistinguishable.
+   48 rather than 32, which is where SHA_FLOOR already sits: the FLOOR's cast shadow takes
+   min(u_shaN,40) -- "the floor never needed more" -- so 48 is the smallest budget that leaves
+   that untouched while giving the governor a rung of its own still to spend.
+   This takes the saving ALWAYS rather than only under load. At production resolution the frame
+   is vsync-capped either way, so it does not show as frame rate; it shows as headroom the
+   governor spends on rscale, which is edge quality. */
+const STEP={near:1.75,far:1.75,shaN:48,count:112};  // count = the march budget; see the u_steps upload
 window.STEP=STEP;   // live-tunable for step/budget A/B; see the u_steps upload
 /* SHADOW TAPS ARE THE GOVERNOR'S FIRST LEVER, AHEAD OF RESOLUTION.
    calcSha is a FIXED-count loop: a lit pixel runs every one of its N samples, each a full mapD().
