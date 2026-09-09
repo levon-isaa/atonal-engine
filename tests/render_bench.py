@@ -4,6 +4,7 @@
     python tests/render_bench.py clock     # is the drawn motion smooth, and by how much
     python tests/render_bench.py morph     # every shape pair's transition, all 72
     python tests/render_bench.py edges     # how rough is the silhouette, and where
+    python tests/render_bench.py costs     # what each pass actually costs, by ablation
     python tests/render_bench.py all
 
 WHY THIS FILE EXISTS. Every measurement in viewer.html had to be rebuilt by hand before it
@@ -419,6 +420,91 @@ def bench_edges(c, url):
     print("    native, unblurred        %7.3f" % rmse(raw, band))
 
 
+# ------------------------------------------------------------------ frame cost
+# WHY THIS EXISTS. Three cost claims in viewer.html were wrong at once, and each cost a long
+# detour to disprove:
+#   - the soft shadow was "about 4% of the frame". It is 42%. The ablation switch it was measured
+#     through went via mix(1.0, calcSha(...), u_dxs.y), and mix evaluates both arguments, so it
+#     marched the full shadow and multiplied it by zero.
+#   - AO was assumed negligible on tap count -- four taps against the shadow's forty-eight. It
+#     carries two thirds of the morph's extra cost, because calcSha's bounding-sphere returns are
+#     taken for most shaded points and its loop rarely runs its budget.
+#   - my own first two ablation passes produced fourteen identical rows, and then savings of the
+#     WRONG SIGN.
+# The last one is the method problem this arm fixes, and it has two halves.
+#
+# VSYNC HIDES EVERYTHING. At 60Hz every configuration reads 16.70ms whatever it is doing, so an
+# ablation below the cap measures nothing at all. The frame has to be pushed well clear of it
+# first, and if it cannot be, the honest output is a refusal rather than a table of zeroes.
+#
+# AND THE BASELINE DRIFTS. Measured across separate page loads the idle frame moved 98.0ms to
+# 70.8ms on one machine; thermally, a run takes minutes and the machine is not the same at the
+# end as at the start. So every ablation is paired with a baseline taken immediately before it
+# and the two are differenced. Unpaired, this produced ablations that "cost" 3.4ms to switch OFF.
+_COST_ABL = [
+    ("post: bloom",          "DX.bloom=0;"),
+    ("post: chroma",         "DX.chroma=0;"),
+    ("post: sharpen",        "DX.sharpen=0;"),
+    ("grain",                "GRAIN.amt=0;"),
+    ("scene: AO",            "DXS.ao=0;"),
+    ("scene: shadow",        "DXS.shadow=0;"),
+    ("scene: fill light",    "DXS.fill=0;"),
+    ("scene: translucency",  "DXS.trans=0;"),
+    ("shadow taps to floor", "shaScale=0;"),
+    ("ALL post",             "DX.bloom=0;DX.thr=0;DX.chroma=0;DX.sharpen=0;DX.mblur=0;GRAIN.amt=0;"),
+    ("ALL scene extras",     "DXS.ao=0;DXS.shadow=0;DXS.fill=0;DXS.twoTone=0;DXS.trans=0;shaScale=0;"),
+]
+_COST_RESTORE = ("DX.bloom=1;DX.thr=1;DX.chroma=1;DX.sharpen=1;DX.mblur=1;GRAIN.amt=1;"
+                 "DXS.ao=1;DXS.shadow=1;DXS.fill=1;DXS.twoTone=1;DXS.trans=1;shaScale=1;")
+
+
+def _cost_bench(c, js, ms=3000):
+    import numpy as np
+    v = c.js("""
+        %s
+        await new Promise(r=>setTimeout(r,800));
+        const t=[]; let last=performance.now(); const t0=last;
+        await new Promise(res=>{ const h=()=>{ const n=performance.now(); t.push(n-last); last=n;
+          if(n-t0<%d) requestAnimationFrame(h); else res(); }; requestAnimationFrame(h); });
+        return JSON.stringify(t.slice(6));""" % (js, ms), timeout=90)
+    return float(np.median(np.array(json.loads(v), float)))
+
+
+def bench_costs(c, url):
+    """What each pass costs, by paired ablation on a frame pushed clear of vsync."""
+    import numpy as np
+    c.js("""window.QLOCK=true; window.POSE={spin:1.0,cam:0.6,tumble:0.4,swirl:0.2};
+            RENDER.pinScale=true; await new Promise(x=>setTimeout(x,1500)); return 1;""")
+    rs = None
+    for r in (1.0, 2.2, 3.4, 4.2, 5.0, 6.0):
+        c.js("rscale=%f; applyScale(); await new Promise(x=>setTimeout(x,1000)); return 1;" % r)
+        v = _cost_bench(c, "", 2000)
+        print("    rscale %.1f -> %6.2f ms" % (r, v))
+        rs = r
+        if v > 45:
+            break
+    base = _cost_bench(c, _COST_RESTORE)
+    if base < 25.0:
+        print("\nREFUSING TO REPORT: the frame is %.2f ms, which is at or near the vsync cap."
+              % base)
+        print("  Every ablation would read the same number. Raise the render scale or measure on")
+        print("  a slower machine -- a table of zeroes is worse than no table.")
+        return
+    print("\nbaseline %.2f ms at rscale %.1f. Each row pairs its OWN baseline, taken immediately"
+          % (base, rs))
+    print("  before it, so drift cancels rather than accumulating.\n")
+    print("  ablation                  baseline    ablated     saved     share")
+    for name, js in _COST_ABL:
+        b = _cost_bench(c, _COST_RESTORE)
+        a = _cost_bench(c, _COST_RESTORE + js)
+        flag = "" if a <= b else "   <- negative: noise, not a saving"
+        print("  %-22s   %6.2f     %6.2f    %+6.2f   %5.1f%%%s"
+              % (name, b, a, a - b, 100 * (b - a) / b, flag))
+    c.js(_COST_RESTORE + " return 1;")
+    print("\nWhatever is left after the scene and post rows is the primary march, and the only")
+    print("  lever on that is rscale -- see the shadow-lever note in viewer.html.")
+
+
 def main():
     what = (sys.argv[1] if len(sys.argv) > 1 else "all").lower()
     try:
@@ -433,7 +519,7 @@ def main():
     print("fixture: %s  (%.0f bpm, boundaries %s)" % (url, bpm, truth))
     rc = 0
     for name, fn, q in (("clock", bench_clock, ""), ("morph", bench_morph, "?readback"),
-                        ("edges", bench_edges, "")):
+                        ("edges", bench_edges, ""), ("costs", bench_costs, "")):
         if what not in ("all", name):
             continue
         print("\n== %s ==" % name)
