@@ -101,6 +101,31 @@ def structure_track():
     return _write(path, x), truth, bpm
 
 
+def flat_track(seconds=150.0, bpm=124.0):
+    """A track that does not move: one chord, one timbre, one level, a steady kick, for two and
+    a half minutes.
+
+    It exists to test the ONE rule nothing else can reach. The Director refuses a shape change
+    that has no musical reason behind it -- a section boundary alone is not one -- and that rule
+    has an escape: after REFORM_IDLE_SECS the requirement lapses, because a piece that holds a
+    single energy for minutes and a form that then never changes is a worse fault than a form
+    that changes without reason. Every other fixture and every real upload moves enough that the
+    lapse never fires, so the escape was reasoned and never observed. Here it is the only way a
+    change can happen at all.
+
+    Bar-aligned and long enough to cross the lapse several times over at any plausible setting.
+    """
+    path = os.path.join(CACHE, "flat.wav")
+    if os.path.exists(path):
+        return path, bpm
+    t = np.arange(int(SR * seconds)) / SR
+    x = np.zeros_like(t)
+    _pad(x, t, 0.0, seconds, CHORDS[0], 3, 1.0)
+    for k in range(int(seconds / (60.0 / bpm))):
+        _kick(x, k * 60.0 / bpm, 0.7)
+    return _write(path, x), bpm
+
+
 def energy_only_track():
     """Unequal sections at 140bpm, two of whose boundaries move ONLY the level -- same chord,
     same timbre. These are the boundaries the energy-novelty path exists for, and the guard

@@ -22,7 +22,14 @@ import tagger   # Layer 4 ML tagging (PANNs), optional
 # without this a track analysed before a pipeline change keeps returning the old director for
 # ever. The failure is silent and shaped exactly like a bug in the renderer: fields the contract
 # promises are simply absent, on some tracks and not others.
-ANALYSIS_VERSION = 10
+# 11: hpss went to kernel_size 21 and then across cores (b9d03a7, ae2a262). The commit for the
+# second said the director came out "identical" and compared sections, energies, labels, tempo
+# and genre -- not the harmonic and percussive CURVES, which are what the hpss envelopes feed.
+# They move by up to 0.197, and warmth, atmosphere and danceability move with them. Small, and
+# still exactly the kind of stale this field exists to catch: a cached entry that returns 200
+# with a director an older pipeline built. server.py re-analyses a stale entry WITHOUT charging,
+# which is why bumping is cheap and leaving it wrong is not.
+ANALYSIS_VERSION = 11
 
 SR = 22050            # analysis sample rate
 HOP = 512             # ~23 ms frames at 22.05k
@@ -189,13 +196,55 @@ def _fold_tempo(bpm):
     return float(round(bpm, 2))
 
 
-def nrm(a, lo=5, hi=95):
-    """Robust 0..1 normalise using percentiles (resists outliers)."""
+NRM_FLOOR = 0.8   # relative spread below which a curve stops being stretched; see nrm
+
+
+def nrm(a, lo=5, hi=95, floor=None):
+    """Robust 0..1 normalise using percentiles (resists outliers).
+
+    AND IT DOES NOT MANUFACTURE DYNAMICS A TRACK DOES NOT HAVE. The guard here was
+    `p2 - p1 < 1e-9`, which is a floating-point epsilon and not a musical floor, so any
+    input with a spread above that got stretched to the full 0..1 whatever its real range.
+    On a deliberately static fixture -- one chord, one level, a steady kick for two and a
+    half minutes, section energies spanning 0.018 -- the energy CURVE came out p50 0.217,
+    p95 0.999, with a frame-to-frame p90 step of 0.492. Half the range between adjacent
+    frames, from noise.
+
+    That reaches everything: shapeRung swings across the ladder, the fold's threshold is a
+    quantile of it, and the Director's in-section departure rule (dE > 0.34) fires
+    constantly. Measured before this: five shape changes in 148s on a track where nothing
+    happens, at live energies of 0.084, 0.802, 0.036, 0.821, 0.007.
+
+    So the OUTPUT range is proportional to the input's own relative spread until that
+    spread is large enough to be real. Measured, (p95-p05)/p50 on the smoothed RMS:
+
+        flat fixture 0.263        electronic 1.149        techno 1.075
+
+    NRM_FLOOR sits in that gap. Above it k is 1 and the expression below is exactly the
+    old one -- bit-identical, which matters: this function feeds every curve in the
+    analysis, and a change that moved real tracks would invalidate every cached director
+    and re-charge people for analyses they had already paid for.
+
+    OPT-IN, AND ONLY THE ENERGY CURVE ASKS FOR IT. Applied to everything it is the wrong
+    lever: measured on a real upload, `percussive` moved by 0.197 and `harmonic` by 0.131,
+    because those features legitimately have a low relative spread and a single threshold
+    cannot tell that from a track with no dynamics. Energy is the one this rule is about --
+    it is what the Director's rung, the fold's threshold and the in-section departure all
+    read, and the derived curves (arousal, danceability, darkness) take it from there, so
+    flooring it once reaches all of them without touching anything measured independently.
+    """
     a = np.asarray(a, dtype=np.float64)
     p1, p2 = np.percentile(a, lo), np.percentile(a, hi)
     if p2 - p1 < 1e-9:
         return np.zeros_like(a)
-    return np.clip((a - p1) / (p2 - p1), 0, 1)
+    out = np.clip((a - p1) / (p2 - p1), 0, 1)
+    if floor:
+        mid = np.percentile(a, 50)
+        if mid > 1e-12:
+            k = min(1.0, ((p2 - p1) / mid) / floor)
+            if k < 1.0:
+                out = 0.5 + (out - 0.5) * k      # k == 1 leaves `out` untouched
+    return out
 
 def smooth(a, win):
     """Box smooth that always returns the SAME length it was given.
@@ -1123,7 +1172,9 @@ def onset_rate(f, win_s=2.0):
 
 # =================================================== LAYER 3: EMOTION CURVES
 def layer3_emotion(f, moods=None):
-    energy   = nrm(smooth(f["rms"], 9))
+    # The only caller that asks for the floor -- see nrm. Everything downstream that has a
+    # term in energy inherits it; nothing measured independently of energy is touched.
+    energy   = nrm(smooth(f["rms"], 9), floor=NRM_FLOOR)
     bright   = nrm(smooth(f["centroid"], 9))
     flux     = nrm(smooth(f["flux"], 9))
     perc     = nrm(smooth(f["perc"], 9))
