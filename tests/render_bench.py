@@ -564,6 +564,7 @@ _DIR_REC = """
   return JSON.stringify({ev:window.__L, dec:window.__D, agg:window.__A, db:db, grid:PHRASE_GRID,
     foldMin:FOLD_MIN, dtCap:MORPH_DT_CAP,
     minSecs:REFORM_MIN_SECS, minDE:REFORM_MIN_DE, idle:REFORM_IDLE_SECS,
+    maxBars:(typeof REFORM_MAX_BARS==='number'?REFORM_MAX_BARS:-1), maxWait:REFORM_MAX_WAIT,
     pace:pace(), fast:MORPH_SECS.fast, slow:MORPH_SECS.slow,
     duty:KAL_DUTY, bpm:(director&&director.tempo&&director.tempo.bpm)||0});
 """
@@ -573,7 +574,11 @@ def bench_director(c, url):
     """The Director's timing rules, asserted against real playback."""
     import numpy as np
     load_track(c, url)
-    secs = 126.0
+    # 126s covers the fixture, which is 128s long. A real track is longer, and the things
+    # worth watching for are not all in its first two minutes -- the irregular bars that
+    # broke the wait budget sit at 135s and 200s of the 176bpm upload. ATONAL_BENCH_SECS
+    # opens the window; the run costs about that much wall clock, so it is not the default.
+    secs = float(os.environ.get("ATONAL_BENCH_SECS", "126"))
     d = json.loads(c.js(_DIR_REC % (secs, int(secs * 1000) + 4000), timeout=secs + 90))
     ev, db = d["ev"], np.array(sorted(d["db"]))
     bpm, grid = d["bpm"], d["grid"]
@@ -679,6 +684,19 @@ def bench_director(c, url):
               "smallest allowed set while folded was %d, floor %d" % (vf, d["foldMin"]))
     else:
         check("folded vocabulary respects FOLD_MIN", True, "(fold never held)")
+
+    # 12. the wait budget is counted in DOWNBEATS. This one is a structural check, not a
+    #     behavioural one, and it is here because the behavioural version does not work: the
+    #     bug it guards against shows up on 2 arrivals in 714 of the 176bpm upload, so a run
+    #     that watches five changes would catch a revert about 1.4% of the time. Measured over
+    #     every beat of all four analyses on hand, simulating both rules against the real beat
+    #     grids: off-grid landings 2/714 and 2/751 under a beat budget, 0 under a bar count,
+    #     for 2 extra beats of worst-case wait. A beat budget cannot be made correct -- a
+    #     phrase's length in beats is not known until it is over -- so the assertion is on the
+    #     shape of the rule rather than on an outcome it only rarely changes.
+    check("the wait budget is counted in bars, not beats",
+          d.get("maxBars") == grid and d.get("maxWait") >= grid * 11,
+          "escape at %s bars, strand guard at %s beats" % (d.get("maxBars"), d.get("maxWait")))
 
     if fails:
         raise AssertionError("director rules failed: " + ", ".join(fails))

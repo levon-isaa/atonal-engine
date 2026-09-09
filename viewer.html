@@ -6202,13 +6202,34 @@ function pace(){ const v=window.SHAPE_PACE;
    material is actually built from. Every 8- and 16-bar boundary is also a 4-bar boundary, so
    the bigger structural moments are included by construction.
 
-   THE WAIT BUDGET HAS TO GROW WITH IT. REFORM_MAX_WAIT is the escape hatch that stops a request
-   sitting through most of a bar; at 4 beats it fires before the next 4-bar boundary can arrive
-   and would defeat the quantisation on almost every change. It becomes the phrase itself plus a
-   beat, so the escape still exists -- a request cannot be lost -- but it can no longer pre-empt
-   the boundary it is waiting for. */
+   THE WAIT BUDGET HAS TO GROW WITH IT. The escape hatch stops a request sitting through most
+   of a bar; at 4 beats it fires before the next 4-bar boundary can arrive and would defeat the
+   quantisation on almost every change. It becomes the phrase itself, so the escape still exists
+   -- a request cannot be lost -- but it can no longer pre-empt the boundary it is waiting for.
+   Counted in downbeats rather than beats, for the reason REFORM_MAX_BARS gives below. */
 const PHRASE_GRID=4;             // bars; the commit quantises to this, from the phrase anchor
-const REFORM_MAX_WAIT=PHRASE_GRID*4+1;   // beats a pending change may wait for its boundary
+/* THE BUDGET IS COUNTED IN DOWNBEATS, because a bar is not always four beats. The escape was
+   written as PHRASE_GRID*4+1 beats -- "the phrase itself plus a beat" -- and that sentence is
+   only true where every bar spans exactly 4. It does not. swBarBeats exists a few thousand
+   lines up precisely because the bar's own length has to be read from the grid rather than
+   assumed, and it accepts anything in 1..12. MEASURED over the beat grids of the four analyses
+   on hand, the beats between consecutive downbeats:
+
+       146bpm  p50 4.00, range 2..7, 3 bars of 192 not 4
+       176bpm  p50 4.00, range 2..7, 3 bars of 182 not 4
+
+   so a 4-bar phrase is not always 16 beats, and where it is 19 the 17-beat budget fires BEFORE
+   the boundary it is waiting for -- the exact defeat the budget was raised to prevent. One
+   phrase in 45 on the 176bpm upload, one in 48 on the 146: small, and wrong in the direction
+   that silently undoes the quantisation rather than announcing itself.
+   No beat count can fix this, because a phrase's length is not known until it is over. Counting
+   the DOWNBEATS the request has sat through is immune to bar length entirely: four of them are
+   a phrase however long its bars are. The beat budget stays for the one thing it alone can do
+   -- release a request when the downbeat grid has stopped arriving, where a bar count would
+   wait forever -- and is sized past any phrase the 1..12 clamp permits, so it can no longer
+   pre-empt a boundary that is still coming. */
+const REFORM_MAX_BARS=PHRASE_GRID;       // downbeats a pending change may wait for its boundary
+const REFORM_MAX_WAIT=PHRASE_GRID*12;    // beats, and only for a grid that has stopped
 let lastReformSec=-1e9;
 /* THE MELT IS A WHOLE NUMBER OF BARS, chosen for how long that is. 8 beats is two bars, which
    was picked against 4 seconds at 120bpm -- but the same 8 beats is 2.7s at 176 and 5.5s at 88,
@@ -6357,7 +6378,7 @@ function requestReform(energy,beatNow,sec){
         && nowSec-lastShapeT < REFORM_IDLE_SECS) return;
   // sec is the SECTION this request came from, and only a boundary has one -- chooseMode keys its
   // repeat memory on it, and an in-section departure is not a repeat of anything.
-  reformWant={energy, at:beatNow, sec:sec||null};
+  reformWant={energy, at:beatNow, bar:swBarK, sec:sec||null};
 }
 /* THE PACE ARRIVES WITH THE FORM. The section's motion periods used to be applied the instant
    the boundary was crossed, while the shape change waited for the next downbeat -- so the form
@@ -6379,7 +6400,9 @@ function commitReform(beatNow){
      REFORM_MAX_WAIT is the escape and is evaluated here too, so a request cannot be stranded by
      a grid it never reaches. */
   const onGrid=((((swBarK-swPhAnchor)%PHRASE_GRID)+PHRASE_GRID)%PHRASE_GRID)===0;
-  const waited=reformWant && (beatNow-reformWant.at>=REFORM_MAX_WAIT);
+  const waited=reformWant &&
+    ((reformWant.bar>=0 && swBarK>=0 && swBarK-reformWant.bar>REFORM_MAX_BARS) ||
+     (beatNow-reformWant.at>=REFORM_MAX_WAIT));
   if(!onGrid && !waited) return;
   if(periodWant){ MOTPT.spin=periodWant.spin; MOTPT.tumble=periodWant.tumble; MOTPT.swirl=periodWant.swirl;
                   periodWant=null; }
@@ -7675,9 +7698,11 @@ function frame(){
         // analysed downbeat: the &3 fallback counts from the tracker's first beat, which is the
         // arbitrary phase this exists to avoid, so it is left alone rather than guessed at.
         if(isDown && dbSet) barOrigin = beatsAtTime(beats[bi]);
-        /* A PENDING SHAPE CHANGE LANDS HERE. On the downbeat by preference; if one has been
-           waiting longer than REFORM_MAX_WAIT the next beat takes it, so a request made just
-           after a downbeat cannot sit through most of a bar. */
+        /* A PENDING SHAPE CHANGE LANDS HERE, on a downbeat by preference -- and whether this
+           particular one is a downbeat a change may LAND on is commitReform's decision, not
+           this call site's. The extra condition covers only the case this call site can see and
+           that one cannot: a grid that has stopped delivering downbeats at all, where waiting
+           for the next one waits forever. REFORM_MAX_BARS handles the ordinary escape. */
         /* A pending PERIOD has to land even when no shape change is coming -- autoShape off, or
            a reform the rate limiter refused. commitReform applies whatever is pending, so the
            condition is on either request, not on the reform alone. */
