@@ -6050,6 +6050,8 @@ function kalOpenShare(t0,t1){
   return n/(i1-i0);
 }
 let shapeMemo=null, shapeMemoFor=null, lastShapeE=null;
+let lastShapeT=-1e9;   // WHEN the last decision was taken; the reason gate's lapse reads this
+                       // and not lastReformSec, which the boundary priority falsifies.
 /* `opening` is the track's FIRST shape, which is not a change and must not be nudged off itself:
    rule 3 exists so that a transition transitions, and there is no transition here -- the form has
    not shown anything for this track yet. Without it, loading a track whose opening rung happens to
@@ -6067,7 +6069,8 @@ function chooseMode(energy, sec, opening, foldOpen){
   if(key && shapeMemo.has(key)){
     const m=shapeMemo.get(key);
     // ...unless the fold has since closed the door on it, in which case fall through and re-pick
-    if(allowed.indexOf(m)>=0){ lastShapeE=energy; return shapeTap(m,rung,key,energy,allowed,true); }
+    if(allowed.indexOf(m)>=0){ lastShapeE=energy; lastShapeT=(typeof pos==='function')?pos():0;
+      return shapeTap(m,rung,key,energy,allowed,true); }
   }
   /* THE SUCCESSOR ALREADY TRACKS THE MUSIC, which is not what a first look at it suggests.
      The ladder positions a real track visits are 8, 4, 2, 3, 8, 7, 1, 2, 3, 7, 8 -- leaps of 4,
@@ -6097,7 +6100,7 @@ function chooseMode(energy, sec, opening, foldOpen){
               : (energy<lastShapeE-0.02 ? -1 : 1);
     i = (i+dir>=0 && i+dir<allowed.length) ? i+dir : i-dir;
   }
-  lastShapeE=energy;
+  lastShapeE=energy; lastShapeT=(typeof pos==='function')?pos():0;
   const out=allowed[i];
   if(key) shapeMemo.set(key,out);
   return shapeTap(out,rung,key,energy,allowed,false);
@@ -6342,8 +6345,16 @@ function requestReform(energy,beatNow,sec){
      satisfy it while sitting exactly where the last decision was taken. The requirement is the
      same whoever asks: if the music is where it was when this shape was chosen, the shape has
      no reason to become another one. */
+  /* THE LAPSE READS ITS OWN CLOCK, not lastReformSec. That variable is deliberately FALSIFIED
+     by the boundary-priority rule further down -- pulled back by half the spacing so a section
+     change can get through the floor -- and the lapse was reading the same one. MEASURED on the
+     fixture: a change at t=111.99 with dE 0.041 was admitted as "nothing has happened for 45s"
+     when 32s had passed since the previous decision, because two boundaries had each pulled the
+     clock back 17.5s. Two rules sharing one clock, and only one of them wanted it moved.
+     lastShapeT is set beside lastShapeE in chooseMode, so both halves of this gate now describe
+     the same event: the last decision the Director actually took. */
   if(lastShapeE!==null && Math.abs(energy-lastShapeE) < REFORM_MIN_DE
-        && nowSec-lastReformSec < REFORM_IDLE_SECS) return;
+        && nowSec-lastShapeT < REFORM_IDLE_SECS) return;
   // sec is the SECTION this request came from, and only a boundary has one -- chooseMode keys its
   // repeat memory on it, and an in-section departure is not a repeat of anything.
   reformWant={energy, at:beatNow, sec:sec||null};
@@ -6356,6 +6367,20 @@ function requestReform(energy,beatNow,sec){
    two seconds from wherever it was; what moved is when that ramp is allowed to start. */
 let periodWant=null;
 function commitReform(beatNow){
+  /* THE PHRASE GATE LIVES HERE, NOT AT THE CALL SITES. It was written at the beat loop's call
+     site and there are TWO -- the section-boundary commit a hundred lines below was left
+     ungated, so a boundary that does not fall on the phrase grid landed a change wherever it
+     stood. On the upload it was verified against, that track's sections happen to sit on 4-bar
+     multiples and it passed 5 of 5 by luck of the material. On the generated fixture, whose
+     downbeat grid starts at 1.02s while its sections start at 0, every change landed at bar
+     15, 39, 55 -- all of them exactly 3 mod 4, quantised to nothing.
+     A rule about when a change may LAND belongs in the function that lands it. Both call sites
+     now ask only whether there is something to commit; this decides whether it may.
+     REFORM_MAX_WAIT is the escape and is evaluated here too, so a request cannot be stranded by
+     a grid it never reaches. */
+  const onGrid=((((swBarK-swPhAnchor)%PHRASE_GRID)+PHRASE_GRID)%PHRASE_GRID)===0;
+  const waited=reformWant && (beatNow-reformWant.at>=REFORM_MAX_WAIT);
+  if(!onGrid && !waited) return;
   if(periodWant){ MOTPT.spin=periodWant.spin; MOTPT.tumble=periodWant.tumble; MOTPT.swirl=periodWant.swirl;
                   periodWant=null; }
   if(!reformWant) return;
@@ -7011,7 +7036,7 @@ function openOnFirstSection(){
   if(autoShape){ const m=chooseMode(s.energy, s, true, kalOpenShare(s.t0,s.t1)>0.35); mode=m; mode2=m; }
   mix=0; phase=0; reformWant=null;
   segNow=segForSection(s);         // and its density, rather than one rung of drift per boundary
-  lastReformBeat=0; lastReformSec=0; secERef=s.energy; lastShapeE=s.energy;
+  lastReformBeat=0; lastReformSec=0; secERef=s.energy; lastShapeE=s.energy; lastShapeT=s.t0;
 }
 function buildTimelineUI(){
   const el=$('tlS'); el.innerHTML=''; const d=director.meta.duration;
@@ -7658,14 +7683,9 @@ function frame(){
            condition is on either request, not on the reform alone. */
         if(reformWant || periodWant){
           const bn=beatsAtTime(t);
-          /* On a downbeat that is also a PHRASE boundary -- see PHRASE_GRID. swBarK is the
-             downbeat index the bar phrasing is already tracking and swPhAnchor is where the
-             phrase grid starts, so this asks the same question the motion asks and gets the
-             same answer. The escape hatch still applies unconditionally: a request that has
-             waited out its budget is committed wherever it stands rather than dropped. */
-          const onPhrase = isDown &&
-            ((((swBarK-swPhAnchor)%PHRASE_GRID)+PHRASE_GRID)%PHRASE_GRID)===0;
-          if(onPhrase || (reformWant && bn-reformWant.at>=REFORM_MAX_WAIT)) commitReform(bn);
+          // Whether this downbeat is one a change may LAND on is commitReform's decision now,
+          // because there are two call sites and gating them separately missed the other one.
+          if(isDown || (reformWant && bn-reformWant.at>=REFORM_MAX_WAIT)) commitReform(bn);
         }
         break; } }
     }

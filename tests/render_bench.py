@@ -5,6 +5,7 @@
     python tests/render_bench.py morph     # every shape pair's transition, all 72
     python tests/render_bench.py edges     # how rough is the silhouette, and where
     python tests/render_bench.py costs     # what each pass actually costs, by ablation
+    python tests/render_bench.py director  # the Director's timing rules, asserted
     python tests/render_bench.py all
 
 WHY THIS FILE EXISTS. Every measurement in viewer.html had to be rebuilt by hand before it
@@ -505,6 +506,119 @@ def bench_costs(c, url):
     print("  lever on that is rscale -- see the shadow-lever note in viewer.html.")
 
 
+# ------------------------------------------------------------------ director rules
+# WHY THESE ARE HERE. One session changed about ten of the Director's behaviours -- the ladder's
+# order, the pacing, the phrase lock, the "a boundary is not a reason" gate, the fold's duty --
+# and nothing covered any of them. tests/run.py never opens viewer.html, so every one of those
+# rules could be undone by an edit and no suite would notice. These assert the rules that are
+# cheap to check from a recording of real playback: WHEN a change is allowed to happen, not what
+# it looks like.
+#
+# On the generated fixture, not a real upload: 128s of 8 sections at 120bpm, boundaries known by
+# construction at 16s intervals, which is 8 bars -- so a section boundary is also a phrase
+# boundary and the phrase rule is satisfiable rather than accidentally impossible.
+_DIR_REC = """
+  window.__L=[]; window.__PH=0; window.__D=[]; let lastShape=null;
+  const rec=()=>{
+    // EVERY DECISION, not every visible change. chooseMode writes __SHAPE on each call and
+    // updates the energy the gate compares against -- including calls that return the shape
+    // already showing and fire nothing. Testing consecutive CHANGES therefore skips over those
+    // and measures a pair the rule was never applied to, which is what made this fail against
+    // correct code.
+    if(window.__SHAPE && window.__SHAPE!==lastShape){
+      lastShape=window.__SHAPE;
+      window.__D.push({t:pos(), e:window.__SHAPE.energy, held:!!window.__SHAPE.held});
+    }
+    if(phase===1 && window.__PH===0){
+      const s=window.__SHAPE||{};
+      window.__L.push({t:pos(), from:mode, to:mode2, e:s.energy,
+                       bar:swBarK, anch:swPhAnchor, beats:morphBeats(),
+                       secs:morphSecs, held:kalHeld?1:0});
+    }
+    window.__PH=phase;
+    if(pos()<%f) requestAnimationFrame(rec);
+  };
+  requestAnimationFrame(rec);
+  await new Promise(r=>setTimeout(r,%d));
+  const db=(dbSet?Array.from(dbSet):[]);
+  return JSON.stringify({ev:window.__L, dec:window.__D, db:db, grid:PHRASE_GRID,
+    minSecs:REFORM_MIN_SECS, minDE:REFORM_MIN_DE, idle:REFORM_IDLE_SECS,
+    pace:pace(), fast:MORPH_SECS.fast, slow:MORPH_SECS.slow,
+    duty:KAL_DUTY, bpm:(director&&director.tempo&&director.tempo.bpm)||0});
+"""
+
+
+def bench_director(c, url):
+    """The Director's timing rules, asserted against real playback."""
+    import numpy as np
+    load_track(c, url)
+    secs = 126.0
+    d = json.loads(c.js(_DIR_REC % (secs, int(secs * 1000) + 4000), timeout=secs + 90))
+    ev, db = d["ev"], np.array(sorted(d["db"]))
+    bpm, grid = d["bpm"], d["grid"]
+    beat = 60.0 / max(bpm, 1e-6)
+    fails = []
+
+    def check(name, ok, detail=""):
+        print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, ("   " + detail) if detail else ""))
+        if not ok:
+            fails.append(name)
+
+    print("  %d shape changes in %.0fs at %.1f bpm, phrase grid %d bars"
+          % (len(ev), secs, bpm, grid))
+    if len(ev) < 2:
+        check("enough changes to judge", False, "got %d; the rules cannot be tested" % len(ev))
+        raise AssertionError("director: too few changes to assert anything")
+
+    # 1. every change lands on a real downbeat
+    if len(db):
+        off = [float(np.min(np.abs(db - e["t"]))) for e in ev]
+        check("changes land on a downbeat", max(off) < beat * 0.5,
+              "worst %.3fs against a %.3fs beat" % (max(off), beat))
+    else:
+        check("downbeat grid present", False)
+
+    # 2. and on a phrase boundary. The wait budget is allowed to release one that has waited
+    #    it out, so this asserts the RULE holds for the great majority rather than every one.
+    pb = [((e["bar"] - e["anch"]) % grid + grid) % grid for e in ev]
+    onp = sum(1 for x in pb if x == 0)
+    check("changes land on a phrase boundary", onp >= max(1, int(0.8 * len(pb))),
+          "%d of %d on bar 0 of the %d-bar grid" % (onp, len(pb), grid))
+
+    # 3. no transition runs faster than the range that exists to bound it
+    short = [e for e in ev if e["secs"] < d["fast"] - 1e-6]
+    check("transition is never shorter than MORPH_SECS.fast", not short,
+          "fastest %.2fs against a floor of %.2fs" % (min(e["secs"] for e in ev), d["fast"]))
+
+    # 4. the spacing floor, halved at a section boundary, which is documented and deliberate
+    gaps = np.diff([e["t"] for e in ev])
+    floor = d["minSecs"] * d["pace"] * 0.5
+    check("spacing respects the floor", len(gaps) == 0 or gaps.min() >= floor - 0.05,
+          "tightest %.1fs against %.1fs (half of %.1f x pace %.2f)"
+          % (gaps.min() if len(gaps) else 0, floor, d["minSecs"], d["pace"]))
+
+    # 5. every DECISION answered a move in the music, unless the idle lapse let it through.
+    #    Decisions, not visible changes: the gate compares against the energy of the last call
+    #    to chooseMode, and a call that returns the shape already showing fires nothing but
+    #    still moves that reference.
+    dec = d.get("dec") or []
+    bad = 0
+    for i in range(1, len(dec)):
+        dE = abs(dec[i]["e"] - dec[i - 1]["e"])
+        if dE < d["minDE"] and (dec[i]["t"] - dec[i - 1]["t"]) < d["idle"]:
+            bad += 1
+    check("every decision had a musical reason", bad == 0,
+          "%d of %d under dE %.3f without the idle lapse" % (bad, max(len(dec) - 1, 0), d["minDE"]))
+
+    # 6. the fold is an accent, not the resting state
+    held = float(np.mean([e["held"] for e in ev])) if ev else 0.0
+    check("fold is not pinned open at every change", held <= 0.9,
+          "open at %.0f%% of changes, duty target %.2f" % (100 * held, d["duty"]))
+
+    if fails:
+        raise AssertionError("director rules failed: " + ", ".join(fails))
+
+
 def main():
     what = (sys.argv[1] if len(sys.argv) > 1 else "all").lower()
     try:
@@ -519,7 +633,8 @@ def main():
     print("fixture: %s  (%.0f bpm, boundaries %s)" % (url, bpm, truth))
     rc = 0
     for name, fn, q in (("clock", bench_clock, ""), ("morph", bench_morph, "?readback"),
-                        ("edges", bench_edges, ""), ("costs", bench_costs, "")):
+                        ("edges", bench_edges, ""), ("costs", bench_costs, ""),
+                        ("director", bench_director, "")):
         if what not in ("all", name):
             continue
         print("\n== %s ==" % name)
