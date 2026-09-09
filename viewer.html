@@ -6144,7 +6144,29 @@ const REFORM_MIN_SECS=14;
 const SHAPE_PACE_DEF=2.5;   window.SHAPE_PACE=SHAPE_PACE_DEF;
 function pace(){ const v=window.SHAPE_PACE;
   return (typeof v==='number' && isFinite(v)) ? Math.max(0.25,Math.min(4,v)) : SHAPE_PACE_DEF; }
-const REFORM_MAX_WAIT=4;         // beats a pending change may wait for its downbeat
+/* A CHANGE LANDS ON A PHRASE BOUNDARY, NOT MERELY ON A DOWNBEAT.
+   The commit already waits for a downbeat, and that works: measured, changes land within 0.10s
+   of a real one against a 0.34s beat. What nothing constrained is WHICH downbeat. This music is
+   built on powers of two -- 4, 8, 16 bars -- so a change on bar 6 of an eight-bar phrase is
+   exactly on the grid and still in the wrong place, which is what "no mathematical logic" is
+   describing. MEASURED over a 245s upload, the phrase bar each change landed on:
+
+       bars 4, 7, 6, 1, 6        on a phrase boundary: 0 of 5
+
+   Scattered, and never once on one. PHRASE_GRID is the resolution the commit is quantised to,
+   counted from the same anchor the motion's phrase arc uses so the two agree about where a
+   phrase begins. Four bars rather than eight: at 176bpm eight is 10.9s to wait, which is long
+   enough to carry a change past the moment that asked for it, and four is the sub-phrase this
+   material is actually built from. Every 8- and 16-bar boundary is also a 4-bar boundary, so
+   the bigger structural moments are included by construction.
+
+   THE WAIT BUDGET HAS TO GROW WITH IT. REFORM_MAX_WAIT is the escape hatch that stops a request
+   sitting through most of a bar; at 4 beats it fires before the next 4-bar boundary can arrive
+   and would defeat the quantisation on almost every change. It becomes the phrase itself plus a
+   beat, so the escape still exists -- a request cannot be lost -- but it can no longer pre-empt
+   the boundary it is waiting for. */
+const PHRASE_GRID=4;             // bars; the commit quantises to this, from the phrase anchor
+const REFORM_MAX_WAIT=PHRASE_GRID*4+1;   // beats a pending change may wait for its boundary
 let lastReformSec=-1e9;
 /* THE MELT IS A WHOLE NUMBER OF BARS, chosen for how long that is. 8 beats is two bars, which
    was picked against 4 seconds at 120bpm -- but the same 8 beats is 2.7s at 176 and 5.5s at 88,
@@ -7597,7 +7619,14 @@ function frame(){
            condition is on either request, not on the reform alone. */
         if(reformWant || periodWant){
           const bn=beatsAtTime(t);
-          if(isDown || (reformWant && bn-reformWant.at>=REFORM_MAX_WAIT)) commitReform(bn);
+          /* On a downbeat that is also a PHRASE boundary -- see PHRASE_GRID. swBarK is the
+             downbeat index the bar phrasing is already tracking and swPhAnchor is where the
+             phrase grid starts, so this asks the same question the motion asks and gets the
+             same answer. The escape hatch still applies unconditionally: a request that has
+             waited out its budget is committed wherever it stands rather than dropped. */
+          const onPhrase = isDown &&
+            ((((swBarK-swPhAnchor)%PHRASE_GRID)+PHRASE_GRID)%PHRASE_GRID)===0;
+          if(onPhrase || (reformWant && bn-reformWant.at>=REFORM_MAX_WAIT)) commitReform(bn);
         }
         break; } }
     }
