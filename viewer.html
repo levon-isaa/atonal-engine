@@ -8727,7 +8727,7 @@ function frame(){
      have to agree or the surface texture slides through the geometry. Two call sites that each
      rebuild the sum is how they come to disagree, so there is one sum and both read it. */
   const tiltRaw = VAR.tilt + formTumble + tumbleSwing + tumblePhr;
-  const swirlA = formSwirl + swirlSwing + swirlPhr;
+  let swirlA = formSwirl + swirlSwing + swirlPhr;
   /* KEEPING THE FACE TO THE CAMERA. The note at formRot ends by saying that removing edge-on
      entirely is a decision about what the product should be rather than a defect to patch, and
      lists the two ways: bound the out-of-plane rotation, or make the plate less than 3.5:1.
@@ -8754,14 +8754,27 @@ function frame(){
      bound: multiplying it in puts back exactly the free revolution about y that the sin() above
      had just removed. Once spin itself is bounded the camera's orbit is not what carries the
      face away, whatever the earlier table implied. Removed rather than left at zero. */
+  /* THE TURN MOVES TO THE AXIS THAT KEEPS THE FACE, it is not thrown away. Bounding spin with
+     sin() alone was wrong and measurably so: the drawn rate went NEGATIVE on 52.1% of frames and
+     within 2 deg/s of a standstill on 21.8%, against 0.0% and 0.0% before -- the form rocked and
+     stalled instead of turning, and a shape change landing in a stall reads as a glitch rather
+     than a turn. The guarantee it broke is written down two hundred lines up, at SYNC.spinSwing:
+     the swing returns to zero on every downbeat AND THE RATE NEVER GOES NEGATIVE.
+     So the continuous part of the turn is handed to swirl, which formRot's note says is the one
+     axis that is "always readable" because it turns the plate about its own normal -- a rotation
+     that cannot present the edge. spinRaw carries spinSwing and spinPhr with it, so the bar
+     swing and the phrase arc arrive on the axis that is now doing the turning, at the same
+     moment and in the same proportion to the rate. What stays on spin and tilt is the bounded
+     sway, which is now a lean on top of a turn rather than the turn itself. */
   const spin = FACE.on ? FACE.spinRad*Math.sin(spinRaw) : spinRaw;
   const tilt = FACE.on ? FACE.tiltRad*Math.sin(tiltRaw) : tiltRaw;
+  if(FACE.on) swirlA += spinRaw;
   /* SYNC.spinOut IS THE ANGLE THAT IS DRAWN, and with the bound above that is no longer the sum
      of the integrator and its phrasing. bench_clock's whole subject is the judder of what
      reaches the screen, so it has to read this and not the raw sum -- which is still there,
      unbounded, as SYNC.spin/spinSwing/spinPhr for the phrasing checks that want it. SYNC is
      built earlier in the frame than this line, so it is amended rather than moved. */
-  if(window.SYNC){ window.SYNC.spinOut=spin; window.SYNC.tiltOut=tilt; }
+  if(window.SYNC){ window.SYNC.spinOut=spin; window.SYNC.tiltOut=tilt; window.SYNC.swirlOut=swirlA; }
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
   // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
   // genuinely neither shape; the longer that state is held the more it reads as one form flowing

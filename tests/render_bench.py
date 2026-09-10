@@ -203,7 +203,7 @@ def bench_clock(c, url, secs=25):
         window.__C=[]; window.__on=true;
         (function tick(){ if(!window.__on) return; const s=window.SYNC;
           if(s&&s.playing) window.__C.push([performance.now(), pos(), s.spin, s.spinOut,
-                                            s.tumble, s.swirl]);
+                                            s.tumble, s.swirl, s.swirlOut||0]);
           requestAnimationFrame(tick); })();
         await new Promise(r=>setTimeout(r,%d)); window.__on=false;
         return JSON.stringify(window.__C);""" % (secs * 1000), timeout=secs + 90)
@@ -232,7 +232,12 @@ def bench_clock(c, url, secs=25):
     print("  clock: slope %.6f (1.0 = no drift), residual rms %.2fms, ptp %.2fms, quantum ~%.3fms"
           % (m, res.std(), res.max() - res.min(), q))
     out = {}
-    for name, col in (("formSpin", 2), ("spinOut", 3), ("formTumble", 4), ("formSwirl", 5)):
+    # swirlOut IS THE DOMINANT DRAWN ROTATION when FACE.on, which is the default: the continuous
+    # turn was moved onto the plate's own normal so it cannot present the edge, and spinOut is
+    # then only the bounded lean. Measuring spinOut alone would report the judder of the small
+    # motion and miss the large one.
+    for name, col in (("formSpin", 2), ("spinOut", 3), ("formTumble", 4), ("formSwirl", 5),
+                      ("swirlOut", 6)):
         r = judder(a[:, col])
         out[name] = r.std()
         print("  %-10s judder %.4f deg rms   p95 %.4f   ptp %.4f"
@@ -247,8 +252,11 @@ def bench_clock(c, url, secs=25):
     scale = (g["reach"] / g["dist"]) * px_per_rad
     print("  geometry: reach %.2f at dist %.2f, fov %.3f -> %.0f px per radian of spin"
           % (g["reach"], g["dist"], g["fov"], scale))
+    # The LARGER of the two form rotations, because which one carries the turn depends on FACE:
+    # spinOut when the free three-axis motion is on, swirlOut when the plate is held face-on.
+    worst = max(out["spinOut"], out.get("swirlOut", 0.0))
     print("  DRAWN JUDDER %.3f px rms  (sub-pixel is the expected answer; see the note at"
-          " the read point in viewer.html)" % (out["spinOut"] * np.pi / 180.0 * scale))
+          " the read point in viewer.html)" % (worst * np.pi / 180.0 * scale))
     return out
 
 
