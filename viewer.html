@@ -282,16 +282,35 @@
   <!-- MOTION. Multipliers on the tempo-derived rates, not absolute speeds -- see MOT in the
        script for why the tempo lock has to survive the dial. 0 holds a pose. -->
   <details id="gMotion"><summary>Motion</summary>
-    <div class="row"><label title="The form turning about its own axis — one revolution every 16 beats at 1.0">Spin</label>
+    <!-- THESE ARE NO LONGER THREE PERPENDICULAR AXES, and the labels said they were until the
+         face bound shipped. The form is a 3.5:1 plate: two of its three axes sweep the face
+         through the view and present a featureless rim, so those two are now bounded sways and
+         the continuous turn was moved onto the plate's own normal, where it cannot present the
+         edge. See FACE where spin and tilt are summed.
+         WHAT EACH SLIDER ACTUALLY DRIVES NOW, measured by zeroing them one at a time over 40s:
+
+             baseline           turn 27.4 deg/s   lean 26.0 deg   nod 18.0 deg
+             Spin 0             turn  8.4         lean 25.9       nod 18.0
+             Swirl 0            turn 18.0         lean 26.0       nod 18.0
+             Tumble 0           turn 27.2         lean 26.0       nod 10.1
+             Spin 0 + Swirl 0   turn  0.0         lean 25.9       nod 18.0
+
+         So Spin and Swirl now drive the SAME in-plane turn, about two thirds and one third of
+         it, at their own periods so the two beat against each other; Tumble is the nod alone;
+         and zeroing a rate holds its lean where it stands rather than centring it, because the
+         lean is sin() of an integrator that has simply stopped advancing. The lean's AMPLITUDE
+         is not on a slider -- it is FACE.spinDeg and FACE.tiltDeg, and FACE.on=false restores
+         the old free three-axis motion these labels used to describe. -->
+    <div class="row"><label title="The form's main turn, in its own plane, and the rate it rocks side to side through the face lean. About two thirds of the turn at 1.00; the beat swing and the phrase arc ride on this one. At 0 the turn continues from Swirl and the lean holds where it stands.">Spin</label>
       <input type="range" id="mSpin" min="0" max="300" value="100"><span class="val" id="mSpinV">1.00</span></div>
-    <div class="row"><label title="The second axis, about X — one revolution every 48 beats at 1.0">Tumble</label>
+    <div class="row"><label title="How fast the form nods, through the face lean's other axis. It no longer turns end over end — that axis is bounded so the plate keeps its face to the camera. At 0 a nod set elsewhere still holds.">Tumble</label>
       <input type="range" id="mTumble" min="0" max="300" value="100"><span class="val" id="mTumbleV">1.00</span></div>
-    <div class="row"><label title="The third axis, about Z — the profile's own plane">Swirl</label>
+    <div class="row"><label title="A second turn in the same plane as Spin, at its own period, so the two beat against each other rather than adding to one rate. About a third of the turn at 1.00. Spin and Swirl both at 0 is the only way to stop the form turning.">Swirl</label>
       <input type="range" id="mSwirl" min="0" max="300" value="100"><span class="val" id="mSwirlV">1.00</span></div>
     <div class="row"><label title="The camera's orbit around the form. Independent of the form's own rotation.">Orbit</label>
       <input type="range" id="mOrbit" min="0" max="300" value="100" title="Speed of the camera orbit. Has no effect while Camera·Orbit is off, because nothing is driving it then."><span class="val" id="mOrbitV">1.00</span></div>
     <div class="row"><label>&nbsp;</label>
-      <button id="motStop" class="mini" title="Hold every axis still">Freeze</button>
+      <button id="motStop" class="mini" title="Hold every axis still, wherever it stands — including the face lean, which is a pose and not a rate">Freeze</button>
       <button id="motReset" class="mini" title="Back to 1.00 on all four">Reset</button></div>
   </details>
 
