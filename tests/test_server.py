@@ -83,6 +83,21 @@ def post(body, key=None, name="upload.mp3", length=None):
             return e.code, {}
 
 
+def post_json(path, obj, raw=None):
+    """A JSON POST to an arbitrary endpoint; `raw` sends bytes verbatim, for the malformed cases."""
+    data = raw if raw is not None else json.dumps(obj or {}).encode()
+    req = urllib.request.Request("http://127.0.0.1:%d%s" % (PORT, path), data=data,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as f:
+            return f.status, json.loads(f.read())
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read())
+        except Exception:
+            return e.code, {}
+
+
 def reset():
     """Empty billing between tests. Every request here comes from 127.0.0.1, so the free
     counter carries over otherwise and the second test to run starts with none left."""
@@ -272,12 +287,48 @@ def test_stale_entry_is_not_charged_again():
           % billing.balance(k))
 
 
+def test_redeem_endpoint():
+    """/redeem is public and unauthenticated, exactly like /claim. The only thing between it and
+    free credits is that Gumroad is the one answering, so what is asserted here is that it
+    refuses everything it can refuse before it ever gets that far."""
+    print("\nredeem endpoint")
+    reset()
+    os.environ.pop("ATONAL_GUMROAD_TEN", None)
+    st, body = post_json("/redeem", {"license": "anything"})
+    check(st == 503 and "Gumroad" in str(body),
+          "with no product configured it is a 503, not a 500 (%d %s)" % (st, body))
+
+    os.environ["ATONAL_GUMROAD_TEN"] = "prod_ten"
+    # STUBBED so this suite stays offline. Without it the unrecognised-licence case posts a
+    # made-up key to api.gumroad.com -- slow, flaky without a network, and an outbound request
+    # to somebody else's service from a test run. It returns None, which is what Gumroad answers
+    # for a licence that is not theirs, so the path under test is the same one.
+    real_verify = billing._gumroad_verify
+    billing._gumroad_verify = lambda product_id, license_key, timeout=20: None
+    try:
+        st, _ = post_json("/redeem", {})
+        check(st == 400, "a body with no licence is a 400 (%d)" % st)
+        st, _ = post_json("/redeem", None, raw=b"{not json")
+        check(st == 400, "and so is a body that is not JSON (%d)" % st)
+        st, body = post_json("/redeem", {"license": "L-NOPE"})
+        check(st == 400 and "not recognised" in str(body),
+              "an unrecognised licence is refused (%d %s)" % (st, body))
+        check(billing.free_left(IP) == billing.FREE_PER_DAY,
+              "and none of it touched the free allowance")
+        with billing._conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM ledger").fetchone()[0]
+        check(n == 0, "nor granted a credit")
+    finally:
+        billing._gumroad_verify = real_verify
+        os.environ.pop("ATONAL_GUMROAD_TEN", None)
+
+
 if __name__ == "__main__":
     print("server tests — throwaway db and cache under %s" % TMP)
     for fn in (test_bad_requests_are_free, test_bad_key_is_rejected_before_charging,
                test_failed_analysis_refunds_a_credit, test_failed_analysis_refunds_the_free_tier,
                test_failure_leaves_nothing_behind, test_cache_hit_is_free,
-               test_stale_entry_is_not_charged_again):
+               test_stale_entry_is_not_charged_again, test_redeem_endpoint):
         fn()
     print()
     if FAILURES:

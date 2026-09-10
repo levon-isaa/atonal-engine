@@ -343,10 +343,16 @@ class H(BaseHTTPRequestHandler):
             self._json(200, out)
             return True
         if path.startswith("/packs"):
+            # Gumroad reported ALONGSIDE Paddle rather than instead of it: they are two channels
+            # for the same packs, and a page may show either, both, or neither depending on what
+            # is configured. `provider` stays "paddle" because that is what /checkout creates.
+            gr = {p: billing.gumroad_link(p) for p in billing.gumroad_products()}
             self._json(200, {"currency": billing.CURRENCY,
                              "ready": billing.billing_ready(), "provider": "paddle",
                              "free_per_day": billing.FREE_PER_DAY,
-                             "packs": billing.PACKS})
+                             "packs": billing.PACKS,
+                             "gumroad": {"ready": billing.gumroad_ready(),
+                                         "links": {k: v for k, v in gr.items() if v}}})
             return True
         if path.startswith("/claim"):
             sid = (q.get("session_id") or [""])[0].strip()
@@ -391,6 +397,43 @@ class H(BaseHTTPRequestHandler):
         if n <= 0 or n > cap:
             return None
         return self.rfile.read(n)
+
+    def _redeem(self):
+        """Exchange a Gumroad licence key for credits on an ATONAL key.
+
+        POST, not GET, and the licence in the BODY: it is a bearer credential, and a query
+        string reaches access logs, browser history and Referer headers. Same reasoning as the
+        X-Render-Key header on /claim.
+
+        Nothing here decides whether the licence is real -- billing.redeem asks Gumroad. That
+        matters because this endpoint is public and unauthenticated, exactly like /claim, and
+        the only thing standing between it and free credits is that the provider is the one
+        answering.
+        """
+        if not billing.gumroad_ready():
+            return self._json(503, {"error": "Gumroad is not configured"})
+        raw = self._body()
+        if raw is None:
+            return self._json(400, {"error": "bad body"})
+        try:
+            body = json.loads(raw or b"{}") or {}
+        except Exception:
+            return self._json(400, {"error": "bad JSON"})
+        lic = str(body.get("license") or body.get("licence") or "").strip()
+        if not lic:
+            return self._json(400, {"error": "missing licence key"})
+        have = (self.headers.get("X-Render-Key") or "").strip() or None
+        try:
+            out = billing.redeem(lic, have_key=have)
+        except Exception:
+            # The licence may be perfectly good and Gumroad simply unreachable, so this does not
+            # tell the customer their key is bad -- that would send someone who paid to support.
+            traceback.print_exc()
+            return self._json(502, {"error": "could not reach Gumroad to check that licence"})
+        if out.get("error"):
+            return self._json(400, out)
+        print("[redeem] gumroad licence -> %d credits" % (out.get("credits") or 0), flush=True)
+        return self._json(200, out)
 
     def _checkout(self):
         """Creates a Paddle transaction and hands back its hosted checkout URL.
@@ -534,6 +577,8 @@ class H(BaseHTTPRequestHandler):
             return self._checkout()
         if path == "/paddle/webhook":
             return self._webhook()
+        if path == "/redeem":
+            return self._redeem()
         if not path.startswith("/analyze"):
             return self._json(404, {"error": "not found"})
         # Parsed BEFORE the try below, so a non-numeric header used to raise ValueError straight

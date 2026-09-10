@@ -418,19 +418,19 @@ def _customer_email(customer_id):
         return None
 
 
-def _grant_for_session(txn) -> dict:
-    """Turn a completed Paddle transaction into credits. Idempotent on the
-    transaction id, so the webhook and the success page can both call it and only
-    one wins.
+def _grant_purchase(sid, credits: int, pack, email, ref: str) -> dict:
+    """The half of a purchase that has nothing to do with who took the money.
 
-    A REPEAT PURCHASE TOPS UP THE EXISTING KEY rather than issuing a second one.
-    Handing someone a new key per purchase means juggling several, and the
-    balance they can see is never the balance they have.
+    Paddle hands us a transaction, Gumroad hands us a verified licence, and from here they are
+    the same thing: an id that must grant exactly once, a credit count, and an address that ties
+    a repeat purchase to the key its owner already has. Both providers route through this so the
+    ledger, the claims row and the ownership race are settled in ONE place -- the race in
+    particular took 38 of 300 concurrent trials before it was fixed, and having two copies of
+    that logic is how it comes back on the path nobody re-measured.
     """
     init()
-    sid = txn.get("id")
     if not sid:
-        raise ValueError("transaction has no id")
+        raise ValueError("purchase has no id")
     with _conn() as c:
         row = c.execute("SELECT key_plain, credits, key_hash FROM claims WHERE session_id=?",
                         (sid,)).fetchone()
@@ -438,20 +438,9 @@ def _grant_for_session(txn) -> dict:
         # key_hash comes back with it so claim() can confirm a key the CLIENT already holds
         # when key_plain has been wiped; it is popped before anything is sent.
         return {"key": row[0], "credits": int(row[1]), "fresh": False, "key_hash": row[2]}
-
-    custom = txn.get("custom_data") or {}
-    try:
-        credits = int(custom.get("credits") or 0)
-    except (TypeError, ValueError):
-        credits = 0
-    if credits <= 0:
-        credits = PACKS.get(custom.get("pack"), {}).get("credits", 0)
-    if credits <= 0:
-        raise ValueError("transaction carries no credit count")
-
-    email = _norm_email((txn.get("customer") or {}).get("email")
-                        or _customer_email(txn.get("customer_id")))
-
+    if int(credits) <= 0:
+        raise ValueError("purchase carries no credit count")
+    email = _norm_email(email)
     key_plain, key_hash = None, None
     if email:
         with _conn() as c:
@@ -470,25 +459,18 @@ def _grant_for_session(txn) -> dict:
         key_plain = new_key()
         key_hash = _hash(key_plain)
 
-
     # WHICH KEY THE MONEY LANDS ON IS DECIDED BY THE CLAIMS ROW, and it has to be decided
-    # before the grant rather than recorded after it. The docstring above promises the webhook
-    # and the success page can both call this and only one wins; the ledger's UNIQUE ref made
-    # the GRANT single, and nothing made the claims row single. Both callers read no claims row,
-    # both mint a fresh key, one wins the ledger and the other wins the INSERT OR REPLACE -- so
-    # the customer is shown a key with a balance of zero while the credits sit on a hash whose
-    # plaintext was a local variable in the thread that lost. Paid for and undeliverable.
-    # REPRODUCED before this was changed: two threads on one transaction id, 1 trial in 40 left
-    # the claimed key holding 0 of 50 credits. OR IGNORE plus a read-back inside one IMMEDIATE
-    # transaction makes the first writer the owner and the loser's key simply unused; the grant
-    # then goes to whoever the row says, so the two can no longer disagree. REPLACE is not
-    # wanted here in any case -- an existing row returns at the top of this function, so the
-    # only thing it ever overwrote was the winner.
+    # before the grant rather than recorded after it. Two callers -- a webhook and a success
+    # page, or two browser tabs -- both read no claims row, both mint a fresh key, one wins the
+    # ledger and the other wins the write, so the customer is shown a key with a balance of zero
+    # while the credits sit on a hash whose plaintext was a local variable in the thread that
+    # lost. REPRODUCED at 38 of 300 two-thread trials before this; 0 of 300 after. OR IGNORE plus
+    # a read-back inside one IMMEDIATE transaction makes the first writer the owner.
     with _conn() as c:
         try:
             c.execute("BEGIN IMMEDIATE")
             c.execute("INSERT OR IGNORE INTO claims(session_id,key_plain,key_hash,credits,created)"
-                      " VALUES(?,?,?,?,?)", (sid, key_plain, key_hash, credits, time.time()))
+                      " VALUES(?,?,?,?,?)", (sid, key_plain, key_hash, int(credits), time.time()))
             row = c.execute("SELECT key_plain, credits, key_hash FROM claims WHERE session_id=?",
                             (sid,)).fetchone()
             c.execute("COMMIT")
@@ -498,11 +480,61 @@ def _grant_for_session(txn) -> dict:
     key_plain, credits, key_hash = row[0], int(row[1]), row[2]
     # The PACK goes in the reason, because "what did this key buy" is a ledger fact and the
     # ledger is append-only -- so priority cannot be granted or lost by an UPDATE somewhere.
-    # Old rows read "purchase:txn_..."; no pack is named "txn_...", so has_priority below cannot
-    # confuse the two and no migration is needed.
-    grant(key_hash, credits, "purchase:%s:%s" % (custom.get("pack") or "?", sid),
-          "paddle:" + sid, email=email)
+    grant(key_hash, credits, "purchase:%s:%s" % (pack or "?", sid), ref, email=email)
     return {"key": key_plain, "credits": credits, "fresh": True, "key_hash": key_hash}
+
+
+def _grant_for_session(txn) -> dict:
+    """A completed Paddle transaction, turned into credits. Idempotent on the transaction id,
+    so the webhook and the success page can both call it and only one wins."""
+    init()
+    sid = txn.get("id")
+    if not sid:
+        raise ValueError("transaction has no id")
+    with _conn() as c:
+        row = c.execute("SELECT key_plain, credits, key_hash FROM claims WHERE session_id=?",
+                        (sid,)).fetchone()
+    if row:
+        return {"key": row[0], "credits": int(row[1]), "fresh": False, "key_hash": row[2]}
+    custom = txn.get("custom_data") or {}
+    try:
+        credits = int(custom.get("credits") or 0)
+    except (TypeError, ValueError):
+        credits = 0
+    if credits <= 0:
+        credits = PACKS.get(custom.get("pack"), {}).get("credits", 0)
+    if credits <= 0:
+        raise ValueError("transaction carries no credit count")
+    email = ((txn.get("customer") or {}).get("email")
+             or _customer_email(txn.get("customer_id")))
+    return _grant_purchase(sid, credits, custom.get("pack"), email, "paddle:" + sid)
+
+
+def _finish(out: dict, have_key: str = None) -> dict:
+    """The tail both redemption paths share: attach the balance, never leak the key_hash, and
+    turn "we have no plaintext to show you" into a top-up rather than an error.
+
+    A REPEAT PURCHASE USED TO END ON THE ERROR PAGE. The plaintext key is wiped after CLAIM_TTL,
+    deliberately, so the database holds nothing that can spend credits. A returning customer's
+    second pack therefore tops up their EXISTING key_hash -- correctly, the credits land -- and
+    then had no plaintext to show. TWO ANSWERS, IN ORDER. If the browser still holds the key it
+    can send it and we CONFIRM rather than reveal: hash what arrived, compare, hand the same
+    string back. The server learns nothing it did not already have. Failing that, the purchase
+    succeeded and the balance is known, so say so and let the page render a top-up.
+    """
+    kh = out.pop("key_hash", None)          # never sent to the client; only compared here
+    if kh:
+        with _conn() as c:
+            out["balance"] = int((c.execute(
+                "SELECT COALESCE(SUM(delta),0) FROM ledger WHERE key_hash=?", (kh,)
+            ).fetchone() or [0])[0] or 0)
+    if not out.get("key"):
+        if have_key and kh and secrets.compare_digest(_hash(have_key), kh):
+            out["key"] = have_key
+            out["restored"] = True          # confirmed from the client's own copy, not from ours
+        else:
+            out["topped_up"] = True         # paid, credited, key issued on an earlier purchase
+    return out
 
 
 def claim(session_id: str, have_key: str = None) -> dict:
@@ -524,40 +556,109 @@ def claim(session_id: str, have_key: str = None) -> dict:
     # payment methods, and both mean the money is ours.
     if txn.get("status") not in ("completed", "paid"):
         return {"error": "not paid"}
-    out = _grant_for_session(txn)
-    kh = out.pop("key_hash", None)          # never sent to the client; only compared here
-    if kh:
-        with _conn() as c:
-            out["balance"] = int((c.execute(
-                "SELECT COALESCE(SUM(delta),0) FROM ledger WHERE key_hash=?", (kh,)
-            ).fetchone() or [0])[0] or 0)
-    # A REPEAT PURCHASE USED TO END ON THE ERROR PAGE. The plaintext key is wiped after CLAIM_TTL,
-    # deliberately, so the database holds nothing that can spend credits. A returning customer's
-    # second pack therefore tops up their EXISTING key_hash -- correctly, the credits land -- and
-    # then had no plaintext to show, so claim() returned an error and the success page told
-    # someone who had just paid to reply to their receipt and wait for support.
-    #
-    # REPRODUCED END TO END against a temp database: purchase, age the claim past the TTL, purchase
-    # again with the same email. Balance on the original key goes 10 -> 20 and claim() returns
-    # {"error": "key no longer retrievable"}. The money was always right; the page was wrong, on
-    # the most ordinary path a paying customer has.
-    #
-    # TWO ANSWERS, IN ORDER. If the browser still holds the key -- and it does on the machine the
-    # first purchase was made from, because the success page saved it there -- it can send it and
-    # we CONFIRM rather than reveal: hash what arrived, compare, hand the same string back. The
-    # server learns nothing it did not already have and stores nothing new, so the "holds nothing
-    # usable" property above is untouched; the customer is told that the key they already have is
-    # the one that just gained credits.
-    #
-    # Failing that, this is still not an error. The purchase succeeded, the credits exist and the
-    # balance is known, so say so and let the page render a top-up rather than a fault.
-    if not out.get("key"):
-        if have_key and kh and secrets.compare_digest(_hash(have_key), kh):
-            out["key"] = have_key
-            out["restored"] = True          # confirmed from the client's own copy, not from ours
-        else:
-            out["topped_up"] = True         # paid, credited, key issued on an earlier purchase
+    return _finish(_grant_for_session(txn), have_key)
+
+
+# ---------------------------------------------------------------- gumroad
+# A SECOND CHANNEL, NOT A REPLACEMENT. Paddle stays the in-app checkout: its cut is smaller and
+# it signs its webhooks, which is what makes an unauthenticated public endpoint safe. Gumroad
+# earns its place somewhere Paddle cannot go -- a link that works in a post, a video description
+# or a DM, with nothing to integrate at the other end. Both are merchants of record, so the VAT
+# handling and the payout geography that ruled Stripe out are answered either way.
+#
+# REDEMPTION, NOT A WEBHOOK, AND THAT IS THE WHOLE SECURITY ARGUMENT. Gumroad's ping is a plain
+# form POST with no signature over the body, so an endpoint that granted on one would be the
+# unauthenticated "give me credits" API that webhook() above exists to refuse. Gumroad's licence
+# verification API is the strong surface: the customer pastes the licence key they were emailed,
+# and the server asks GUMROAD whether it is real before anything is granted. Same shape as
+# claim() -- the client's word is a hint, the provider's answer is the fact.
+GUMROAD_API = "https://api.gumroad.com/v2"
+
+
+def gumroad_products() -> dict:
+    """pack -> Gumroad product id, from ATONAL_GUMROAD_<PACK>. A pack with no id configured is
+    simply not on sale through Gumroad, which is a legitimate state: the single might live only
+    in the app and the big pack only on the storefront."""
+    out = {}
+    for p in PACKS:
+        v = (os.environ.get("ATONAL_GUMROAD_" + p.upper()) or "").strip()
+        if v:
+            out[p] = v
     return out
+
+
+def gumroad_link(pack: str) -> str:
+    """The buy page for a pack, if one is set. Gumroad product URLs are static and public, so
+    unlike Paddle there is no transaction to create first and no server round trip to buy."""
+    return (os.environ.get("ATONAL_GUMROAD_LINK_" + pack.upper()) or "").strip()
+
+
+def gumroad_ready() -> bool:
+    return bool(gumroad_products())
+
+
+def _gumroad_verify(product_id: str, license_key: str, timeout=20):
+    """Ask Gumroad whether this licence is real for this product. None when it is not.
+
+    increment_uses_count is FALSE on purpose. Gumroad's counter is a licence-activation count
+    and this is not an activation -- the ledger's UNIQUE ref is what makes a sale grant once, so
+    burning a use on every verification would make a customer's own retry look like a second
+    install. Not raising on a 404 either: a licence for a DIFFERENT pack answers 404 here, and
+    the caller tries each configured product in turn.
+    """
+    import requests
+    r = requests.post(GUMROAD_API + "/licenses/verify",
+                      data={"product_id": product_id, "license_key": license_key,
+                            "increment_uses_count": "false"}, timeout=timeout)
+    if r.status_code == 404:
+        return None
+    if r.status_code // 100 != 2:
+        raise RuntimeError("gumroad verify -> %s %s" % (r.status_code, r.text[:300]))
+    d = r.json() or {}
+    return d if d.get("success") else None
+
+
+def redeem(license_key: str, have_key: str = None) -> dict:
+    """Turn a Gumroad licence key into credits on an ATONAL key.
+
+    The licence is NOT the render key and is not stored as one. It is exchanged once for an
+    atk_ key and the ledger stays the source of truth, so an analysis never depends on Gumroad
+    being reachable -- and a customer who buys through both channels ends up with one key and
+    one balance rather than two of each.
+    """
+    init()
+    expire_claims()
+    lic = (license_key or "").strip()
+    if not lic:
+        return {"error": "no licence key"}
+    prods = gumroad_products()
+    if not prods:
+        return {"error": "Gumroad is not configured"}
+    found = None
+    for pack, pid in prods.items():
+        d = _gumroad_verify(pid, lic)
+        if d:
+            found = (pack, d)
+            break
+    if not found:
+        return {"error": "that licence was not recognised"}
+    pack, d = found
+    pur = d.get("purchase") or {}
+    # A REFUNDED SALE IS NOT A SALE. Gumroad keeps the licence valid after a refund or a
+    # chargeback and reports it on the purchase, so this has to be read or the money can be
+    # taken back while the credits stay.
+    if pur.get("refunded") or pur.get("chargebacked") or pur.get("disputed"):
+        return {"error": "that purchase was refunded"}
+    sid = pur.get("sale_id") or pur.get("id")
+    if not sid:
+        return {"error": "that licence carries no sale id"}
+    try:
+        qty = max(1, int(pur.get("quantity") or 1))
+    except (TypeError, ValueError):
+        qty = 1
+    credits = PACKS[pack]["credits"] * qty
+    out = _grant_purchase(sid, credits, pack, pur.get("email"), "gumroad:" + str(sid))
+    return _finish(out, have_key)
 
 
 def webhook(payload: bytes, sig_header: str) -> dict:

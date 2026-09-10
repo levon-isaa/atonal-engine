@@ -397,12 +397,95 @@ def test_claim():
         billing._paddle = real
 
 
+def test_gumroad_redeem():
+    """A Gumroad licence, exchanged for credits.
+
+    _gumroad_verify is stubbed -- it is the one call that leaves the machine, and what is being
+    asserted is that nothing is granted until IT says yes. The licence is not the render key and
+    is not stored as one; it buys an atk_ key and the ledger stays the source of truth.
+    """
+    print("\ngumroad")
+    os.environ["ATONAL_GUMROAD_TEN"] = "prod_ten"
+    os.environ["ATONAL_GUMROAD_FIFTY"] = "prod_fifty"
+    real = billing._gumroad_verify
+    lic = {}
+
+    def fake(product_id, license_key, timeout=20):
+        d = lic.get(license_key)
+        return d if (d and d.get("_prod") == product_id) else None
+    billing._gumroad_verify = fake
+    try:
+        fresh()
+        check(billing.gumroad_ready(), "gumroad reports ready once a product id is configured")
+        check(billing.redeem("").get("error") == "no licence key", "an empty licence is refused")
+        check("not recognised" in (billing.redeem("nope").get("error") or ""),
+              "an unknown licence is refused")
+        with billing._conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM ledger").fetchone()[0]
+        check(n == 0, "and neither granted anything -- the provider's answer is the only fact")
+
+        # A REFUND KEEPS THE LICENCE VALID. Gumroad reports it on the purchase and this has to
+        # read it, or the money goes back while the credits stay.
+        lic["L-REFUNDED"] = {"_prod": "prod_ten", "success": True,
+                             "purchase": {"sale_id": "s_ref", "email": "a@b.com",
+                                          "refunded": True}}
+        check("refunded" in (billing.redeem("L-REFUNDED").get("error") or ""),
+              "a refunded purchase is refused")
+        lic["L-CHARGEBACK"] = {"_prod": "prod_ten", "success": True,
+                               "purchase": {"sale_id": "s_cb", "email": "a@b.com",
+                                            "chargebacked": True}}
+        check("refunded" in (billing.redeem("L-CHARGEBACK").get("error") or ""),
+              "and so is a chargeback")
+        check(billing.balance(billing.new_key()) == 0, "with nothing granted for either")
+
+        lic["L-GOOD"] = {"_prod": "prod_ten", "success": True,
+                         "purchase": {"sale_id": "s_1", "email": "Buyer@Example.com"}}
+        out = billing.redeem("L-GOOD")
+        key = out.get("key")
+        check(bool(key) and out.get("credits") == 10 and out.get("balance") == 10,
+              "a good licence grants its pack (%s)" % {k: v for k, v in out.items() if k != "key"})
+        check("key_hash" not in out, "and never returns the key_hash")
+
+        again = billing.redeem("L-GOOD")
+        check(again.get("key") == key and billing.balance(key) == 10,
+              "redeeming the same licence twice grants once (%d)" % billing.balance(key))
+
+        # quantity: Gumroad sells n of a pack in one sale
+        lic["L-QTY"] = {"_prod": "prod_fifty", "success": True,
+                        "purchase": {"sale_id": "s_2", "email": "bulk@example.com",
+                                     "quantity": 3}}
+        out = billing.redeem("L-QTY")
+        check(out.get("credits") == 150, "a quantity of 3 on the fifty grants 150 (%s)"
+              % out.get("credits"))
+        check(billing.has_priority(out["key"]),
+              "and the pack's priority comes with it, from the ledger reason")
+
+        # THE CROSS-PROVIDER PROPERTY. Buying through both channels must not leave someone with
+        # two keys and two balances -- the whole reason the licence is exchanged rather than used.
+        fresh()
+        lic["L-BOTH"] = {"_prod": "prod_ten", "success": True,
+                         "purchase": {"sale_id": "s_3", "email": "both@example.com"}}
+        g = billing.redeem("L-BOTH")
+        billing._grant_for_session({"id": "txn_both", "status": "completed",
+                                    "customer": {"email": "both@example.com"},
+                                    "custom_data": {"pack": "single", "credits": 1}})
+        with billing._conn() as c:
+            rows = c.execute("SELECT key_hash, SUM(delta) FROM ledger GROUP BY key_hash").fetchall()
+        check(len(rows) == 1 and rows[0][1] == 11,
+              "a Gumroad pack and a Paddle pack on one address share one key at 11 (%s)" % (rows,))
+        check(billing.balance(g["key"]) == 11, "and it is the key the licence handed back")
+    finally:
+        billing._gumroad_verify = real
+        os.environ.pop("ATONAL_GUMROAD_TEN", None)
+        os.environ.pop("ATONAL_GUMROAD_FIFTY", None)
+
+
 if __name__ == "__main__":
     print("billing tests — throwaway database under %s" % TMP)
     for fn in (test_ledger_basics, test_spend_is_atomic, test_priority_is_ever_not_currently,
                test_free_tier, test_webhook_signature, test_webhook_grants_once,
                test_grant_races_agree_on_one_key, test_claim_plaintext_expires,
-               test_claim):
+               test_claim, test_gumroad_redeem):
         fn()
     print()
     if FAILURES:
