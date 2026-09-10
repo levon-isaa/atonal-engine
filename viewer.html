@@ -192,6 +192,16 @@
     transition:background-color .14s var(--ease), border-color .14s var(--ease)}
   #ctrl select:hover{background-color:var(--surface-3);border-color:var(--line-2)}
   #ctrl select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  /* The key field. Same box as the selects so it reads as one control set, without the
+     dropdown arrow they carry. type=password: a render key is a bearer token and the panel is
+     open on screen while people record and screen-share. */
+  #ctrl input.keyIn{flex:1;min-width:0;background:var(--surface-2);color:var(--ink);
+    border:1px solid var(--line);border-radius:var(--r-sm);
+    padding:6px 9px;font-family:var(--mono,ui-monospace,monospace);font-size:10px;
+    letter-spacing:.02em;-webkit-appearance:none;appearance:none;
+    transition:background-color .14s var(--ease), border-color .14s var(--ease)}
+  #ctrl input.keyIn:hover{background:var(--surface-3);border-color:var(--line-2)}
+  #ctrl input.keyIn:focus{outline:none;border-color:var(--accent-line);background:var(--surface-3)}
   #ctrl input[type=color]{width:30px;height:22px;flex:0 0 auto;padding:0;
     border:1px solid var(--line);border-radius:var(--r-sm);background:transparent;cursor:pointer}
   #ctrl input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
@@ -411,6 +421,21 @@
       <span class="val" id="rollSeed" style="flex:1;text-align:right;color:#8a8b91">—</span></div>
   </details>
 
+  <!-- CREDITS IS ITS OWN GROUP, and it is a key field and nothing else. The note at RKEY says
+       what was removed and why: a balance ROW, and with it the /credits poll and the refresh
+       that painted it. What is here does not poll -- it asks once, when a key is saved, because
+       that is the moment a typo can still be caught cheaply. Everything else still reads
+       localStorage directly on upload, exactly as before. -->
+  <details id="gKey"><summary>Credits</summary>
+    <div class="row"><label title="Your render key. It is stored in this browser only and sent as a header when a track is analysed.">Key</label>
+      <input class="keyIn" id="rkIn" type="password" spellcheck="false" autocomplete="off"
+             placeholder="atk_…" aria-label="Render key">
+      <button id="rkSave" class="mini" title="Check the key and remember it in this browser">Save</button></div>
+    <div class="row"><label>&nbsp;</label>
+      <span class="val" id="rkStat" style="flex:1;text-align:left;color:#8a8b91">No key saved</span>
+      <button id="rkShow" class="mini" title="Show the key in plain text">Show</button></div>
+  </details>
+
   <!-- EXPORT IS ITS OWN GROUP. It was three rows at the bottom of View, under Camera and Quality
        and above Random -- filed by which part of the code owns it rather than by what the user
        came to do. Recording a clip for a platform is a task, not a view setting, and it is the one
@@ -492,6 +517,48 @@ const RKEY = (function(){
   return {get,set};
 })();
 window.RKEY=RKEY;
+
+/* ---- THE KEY FIELD ----
+   Added back deliberately and narrowly. The note above says the credits PANEL went and took the
+   /credits poll and the refresh() with it; what had no replacement was any way to ENTER a key,
+   and site/success.html spent that whole time telling people to "paste it into the renderer's
+   key field". So this is the field and not the panel: it does not poll, and it asks the server
+   exactly once, when Save is pressed, because that is the moment a typo can still be caught
+   cheaply rather than at the next upload.
+   A KEY THAT DOES NOT EXIST IS NOT STORED. Accepting anything typed here would put a dead
+   string in localStorage and turn every later upload into a 402 that looks like an empty
+   balance, which is a worse failure than being told now.
+   type=password because the panel is open on screen while people record and screen-share, and
+   this is a bearer token. Show reveals it for the length of a copy. */
+(function(){
+  const inp=document.getElementById('rkIn'), btn=document.getElementById('rkSave'),
+        stat=document.getElementById('rkStat'), eye=document.getElementById('rkShow');
+  if(!inp||!btn||!stat) return;
+  const say=(t,warn)=>{ stat.textContent=t; stat.style.color = warn ? '#e0684f' : '#8a8b91'; };
+  const held=RKEY.get();
+  if(held){ inp.value=held; say('Saved on this machine'); }
+  eye && eye.addEventListener('click',()=>{
+    const shown = inp.type==='text';
+    inp.type = shown ? 'password' : 'text';
+    eye.textContent = shown ? 'Show' : 'Hide';
+  });
+  function save(){
+    const k=(inp.value||'').trim();
+    if(!k){ RKEY.set(''); say('No key saved'); return; }
+    btn.disabled=true; const was=btn.textContent; btn.textContent='…';
+    fetch(SERVER+'/credits?key='+encodeURIComponent(k))
+      .then(r=>r.json())
+      .then(c=>{
+        if(!c.known){ say('Not recognised — nothing saved', true); return; }
+        RKEY.set(k);
+        say(c.balance===1 ? '1 credit' : c.balance+' credits');
+      })
+      .catch(()=>say('Server unreachable — nothing saved', true))
+      .finally(()=>{ btn.disabled=false; btn.textContent=was; });
+  }
+  btn.addEventListener('click',save);
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter') save(); });
+})();
 
 /* The server's length limit, as this page last learned it. Not a setting and not a copy of the
    server's number -- a cache of the last 413, so an over-long file can be refused before it is
