@@ -259,7 +259,7 @@
       <option value="auto">Auto &middot; Director</option>
       <option value="0">Rotor</option><option value="1">Volute</option>
       <option value="2">Arc</option><option value="3">Chevron</option>
-      <option value="4">Wave</option><option value="5">Plate</option>
+      <option value="4">Star</option><option value="5">Plate</option>
       <option value="6">Gear</option><option value="7">Knot</option>
       <option value="8">Lattice</option>
       <option value="mesh">Reference mesh</option>
@@ -1185,11 +1185,48 @@ float p2Chev(vec2 p){
   return d;
 }
 // WAVE — an S laid on its side, so the extrusion wall turns through the whole silhouette
-float p2Wave(vec2 p){
-  float w=0.20+u_gDense*0.03, d=1e9;
-  d=min(d, s2Seg(p,vec2(-0.80, 0.34),vec2(-0.26, 0.34),w));
-  d=smin3(d, s2Seg(p,vec2(-0.26, 0.34),vec2( 0.26,-0.34),w), 0.39);
-  d=smin3(d, s2Seg(p,vec2( 0.26,-0.34),vec2( 0.80,-0.34),w), 0.39);
+/* STAR -- the star polygon {N/2}, replacing the Wave.
+   SAME MEASUREMENT THAT PICKED THE CLOVER. With the Volute in, the isoperimetric ratios read
+   Volute 18.32, Rotor 15.59, Lattice 14.35, Chevron 10.17, Knot 7.97, Plate 5.56, Gear 5.01,
+   Arc 4.52, Wave 3.03 -- and the Wave was then last by the same distance the Clover had been.
+   An S laid on its side is three segments and one closed outline; there is nothing inside it.
+
+   VERTICES ON A CIRCLE, EDGES FROM i TO i+2, which is the only construction in the set whose
+   path CROSSES ITSELF. That is what produces the interior: a polygonal hole at the centre and a
+   ring of smaller ones between the crossings and the points, none of which had to be cut out --
+   they are what the path encloses. The Segments slider changes the FIGURE rather than the count
+   of some repeated feature: 7 points, 9, 11, up to 17.
+
+   ODD N ONLY, N = 2*segN+1, and there are two reasons which happen to agree.
+   The geometric one: {N/2} closes into a single self-crossing path only when N is odd. At even
+   N the step of two never visits the odd vertices, so it degenerates into TWO separate polygons
+   that merely overlap -- at N=6, two triangles -- and the self-crossing path is the whole point
+   of choosing this construction over a rosette of arms.
+   The other one is that this profile is mode 4, which is the DEFAULT STARTUP SHAPE, and the
+   default segment count is 3. Under the obvious mapping N=segN+3 that is exactly 6, so the
+   first thing anyone saw on opening the viewer was a hexagram -- the Star of David, rendered
+   two feet tall on the landing state of a product that has nothing to do with it. Odd N makes
+   the default a heptagram. A pentagram is still reachable at the bottom of the slider, which is
+   a choice someone makes rather than one the software makes for them.
+
+   Checked in numpy before it was written here, because the last profile cost two renders to
+   find two faults: inside fraction 0.218 at N=5 through 0.247 at N=7, a centre hole at every N
+   from 5 to 17, and max radius exactly R+w = 0.875, which is where S comes from.
+
+   smin3 at the crossings rather than min: FILLET*w is 0.036 here, enough to take the wire edge
+   off a corner where two bars cross without rounding the points, which are the shape. */
+float p2Star(vec2 p){
+  int N = int(clamp(u_segN,2.0,8.0))*2 + 1;            // 5,7,9..17 -- odd only; see above
+  float R = 0.80;
+  float w = 0.075 + u_gDense*0.018;
+  float a0 = u_gTwist*0.25 - 1.5707963;                // a point at the top at rest
+  float d = 1e9;
+  for(int i=0;i<17;i++){
+    if(i>=N) break;
+    float A = a0 + float(i)*6.2831853/float(N);
+    float B = a0 + float(i+2)*6.2831853/float(N);
+    d = smin3(d, s2Seg(p, vec2(cos(A),sin(A))*R, vec2(cos(B),sin(B))*R, w), FILLET*w);
+  }
   return d;
 }
 // PLATE — a rounded slab with three bores. Closest to the old set, kept so the family has a
@@ -1267,7 +1304,7 @@ float mRotor(vec3 p){    float S=EXR/0.950; return extr(p2Rotor(p.xy/S)*S, p, ex
 float mStack(vec3 p){    float S=EXR/0.940; return extr(p2Volute(p.xy/S)*S, p, exDepth(), exBevel()); }
 float mRings(vec3 p){    float S=EXR/0.930; return extr(p2Arc  (p.xy/S)*S, p, exDepth(), exBevel()); }
 float mTruss(vec3 p){    float S=EXR/0.870; return extr(p2Chev (p.xy/S)*S, p, exDepth()*0.92, exBevel()); }
-float mPods(vec3 p){     float S=EXR/1.070; return extr(p2Wave (p.xy/S)*S, p, exDepth(), exBevel()); }
+float mPods(vec3 p){     float S=EXR/0.875; return extr(p2Star (p.xy/S)*S, p, exDepth(), exBevel()); }
 float mAperture(vec3 p){ float S=EXR/1.075; return extr(p2Plate(p.xy/S)*S, p, exDepth()*1.05, exBevel()); }
 float mGear(vec3 p){     float S=EXR/1.000; return extr(p2Gear (p.xy/S)*S, p, exDepth()*0.95, exBevel()); }
 float mKnot(vec3 p){     float S=EXR/1.020; return extr(p2Knot (p.xy/S)*S, p, exDepth()*0.90, exBevel()); }
@@ -1633,8 +1670,9 @@ float evalForm(vec3 p){
    For a profile with N-fold symmetry the twin should repeat every PI/N, so on a three-arm form
    0 and 60 degrees ought to be the same object. Rendered on one frozen frame with the pose pinned,
    0, 60 and 120 degrees gave three visibly different shapes — because only p2Tris and p2Clover are
-   N-fold at all. The default startup profile is p2Wave, a Z-stroke with nothing but C2 symmetry
-   and no relationship to u_segN whatever, and four of the six modes are like it. So treat the
+   N-fold at all. (Written when the default startup profile was p2Wave, a Z-stroke with nothing
+   but C2 symmetry and no relationship to u_segN whatever. That slot is the Star now, which IS
+   C_N -- but at N=2*segN+1, so it is still not C_segN, and the conclusion is unchanged.) So treat the
    angle as a dial with a look at each setting, not as a lattice with equivalent positions.
 
    This is also why the effect is a UNION and not a fold: a fold's output depends entirely on which
@@ -1662,7 +1700,7 @@ float evalForm(vec3 p){
      mKnot    p2Knot     loop at i*2PI/N, N=clamp(segN,2,6)          -> C_segN AT ITS OWN CLAMP
      mRings   p2Arc      p.x=abs(p.x): one mirror, no rotation       -> none
      mTruss   p2Chev     two mirrored chevrons                       -> none
-     mPods    p2Wave     a Z-stroke, C2 at best and never C_segN     -> none
+     mPods    p2Star     edges i->i+2 on N=2*segN+1 vertices        -> C_N, not C_segN
      mAperture p2Plate   rounded SQUARE (C4) cut by THREE bores (C3) -> C1, none
      mLattice p2Lattice  parallel bars, translational                -> none
 
@@ -4464,17 +4502,30 @@ const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15, bump:0.15};  window.MORPH=MOR
    0.15 rather than 0.22: it takes most of the improvement on the worst pair and is the best of
    the four on the other two, and 0.22 starts costing the pairs that were already fine. It is
    also the value the Arc's hardest pair already carries, so it is inside the range this table
-   was tuned in rather than a new extreme. */
+   was tuned in rather than a new extreme.
+
+   ROW AND COLUMN 4 WERE RETUNED THE SAME WAY when the Wave became the Star, and landed
+   somewhere else -- which is the argument for measuring each row rather than applying one
+   number to every new profile:
+
+       fuse    4<->3   4<->8   4<->5   4<->0
+       0.05     1.87    2.20    2.68    2.14
+       0.10     1.56    1.73    1.59    1.78
+       0.15     1.65    1.76    1.71    1.72
+       0.22     1.71    1.86    1.78    1.89
+
+   0.10, and the curve has a floor rather than a direction: 0.05 is worst on all four and 0.22
+   has started climbing back. The Volute pair keeps 0.15, which was measured on its own row. */
 const MORPH_FUSE=[
-  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05],
   [0.15,0.05,0.15,0.15,0.15,0.15,0.15,0.15,0.15],
-  [0.10,0.15,0.05,0.10,0.15,0.10,0.05,0.10,0.10],
-  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.15,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.05,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05]];
+  [0.10,0.15,0.05,0.10,0.10,0.10,0.05,0.10,0.10],
+  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.10,0.15,0.10,0.10,0.05,0.10,0.10,0.10,0.10],
+  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.05,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05]];
 function fuseBlob(a,b){
   const r=MORPH_FUSE[a|0], v=r&&r[b|0];
   return (v===undefined)?MORPH.blob:v;      // an SVG or mesh mode is outside the table
@@ -5728,7 +5779,7 @@ function segForSection(s){
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
-// 0 Rotor  1 Volute  2 Arc  3 Chevron  4 Wave  5 Plate  6 Gear  7 Knot  8 Lattice
+// 0 Rotor  1 Volute  2 Arc  3 Chevron  4 Star  5 Plate  6 Gear  7 Knot  8 Lattice
 // (this header read "0 ribbon 1 tower 2 gyroscope 3 space frame 4 pods 5 shell" -- six names
 //  for nine profiles, from before 6/7/8 existed. The table below still shows its age: every
 //  genre carries exactly three of modes 0-5 plus exactly one of 6/7/8, bolted on afterwards.)
@@ -5750,12 +5801,13 @@ const CALM=[3,2,8], MID=[1,3,7], HOT=[0,4,5,6];
    which is why every shape looked alike once the fold was on. A profile carrying repeated
    internal structure at a scale below the wedge -- teeth, bores, rings, a weave -- still has
    detail inside the slice, and the mirrors multiply it into something worth looking at.
-   Rotor, Volute, Gear, Knot and Lattice have that. Arc, Chevron, Wave and Plate are single
-   smooth strokes and do not. The Volute keeps the Clover's place here on a different claim: the
+   Rotor, Volute, Star, Gear, Knot and Lattice have that. Arc, Chevron and Plate are single
+   smooth strokes and do not. The Star joined on the strength of its crossings, which are
+   structure at a finer scale than the wedge. The Volute keeps the Clover's place here on a different claim: the
    Clover earned it on its lobe count and the Volute earns it on the gap between its turns, which
    is structure at exactly the scale a wedge slices through. (The Rotor was built for this line: the Triskelion it replaced was
    in this list on the strength of its arms, and its arms are what the wedge cuts off.) */
-const FOLD_FRIENDLY=[0,1,6,7,8];
+const FOLD_FRIENDLY=[0,1,4,6,7,8];
 /* THE FEWEST SHAPES THE FOLD MAY LEAVE THE DIRECTOR. 3 rather than 4 because FOLD_FRIENDLY has
    only five members: asking for 4 would override the genre on nine of twelve genres, which
    stops being a top-up and becomes ignoring the genre. 3 lifts every genre off 1 and 2 while
@@ -10912,7 +10964,7 @@ addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/s
    moves and changes nothing. Greying it out is the difference between "this does nothing" and
    "this is broken". Checked against the shaders rather than remembered: the four listed here are
    exactly the p2* functions with no u_segN in them. */
-const SEG_SHAPES={'0':1,'1':1,'6':1,'7':1,'8':1};
+const SEG_SHAPES={'0':1,'1':1,'4':1,'6':1,'7':1,'8':1};
 /* WHAT EACH FORM SOURCE CAN ACTUALLY USE. Three of the shape sources are not generated profiles
    at all, and the controls that only make sense for a profile do nothing on them -- silently,
    until now. Read from the field functions rather than from intent:
@@ -11165,7 +11217,8 @@ function rollAll(seedStr){
   const shape=pick(r,['0','1','2','3','4','5','6','7','8','6','7','8']);   // the complex three, twice as often
   setCtl('selShape',shape);
   /* Segments means something different per profile: teeth on the Gear, rings on the Knot, bars
-     on the Lattice, blades on the Rotor, TURNS on the Volute -- and nothing on Wave or Plate. The
+     on the Lattice, blades on the Rotor, TURNS on the Volute, POINTS on the Star -- and nothing
+     at all on the Plate. The
      ceiling is per shape so a roll never spends its randomness on a slider that is inert, and
      never asks the Arc (a broken ring) for eight of itself. */
   const segMax = (shape==='0'||shape==='1'||shape==='6') ? 6
