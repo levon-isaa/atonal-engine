@@ -606,6 +606,90 @@ def bench_filter(c, url):
     return out
 
 
+# ------------------------------------------------------------------ the motion guarantees
+# WHY THIS EXISTS. viewer.html states two guarantees about the drawn rotation, in a comment at
+# SYNC.spinSwing: the bar swing returns to zero on every downbeat, and THE RATE NEVER GOES
+# NEGATIVE. Both were uncovered. A change that bounded the spin axis to keep the plate facing the
+# camera broke the second one outright -- the drawn rate went negative on 52.1% of frames and sat
+# within 2 deg/s of a standstill on 21.8% -- and every one of the twelve director rules passed
+# while it did, because they are about WHEN the form changes and not about how it moves. The user
+# reported it twice before it was found.
+#
+# The thresholds below are set from measurement and not from aspiration: on the 176bpm upload the
+# shipped build measures 0.0% negative, 0.0% stalled and 5.2% of frames with the face turned past
+# 0.30, so the bars are set where a real regression is caught and ordinary variation is not.
+_MOT_REC = """
+  window.__M=[]; let t0=performance.now();
+  const tick=()=>{ const s=window.SYNC||{};
+    if(s.playing) window.__M.push([performance.now()-t0, s.spinOut||0, s.swirlOut||0,
+                                   s.spinSwing||0, s.swingPhi||0, window.FACEDOT]);
+    if(performance.now()-t0 < %d) requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+  await new Promise(r=>setTimeout(r,%d));
+  return JSON.stringify({m:window.__M, face:!!(window.FACE&&FACE.on)});
+"""
+
+
+def bench_motion(c, url, secs=60):
+    """The guarantees viewer.html makes about how the form turns, asserted."""
+    import numpy as np
+    load_track(c, url)
+    d = json.loads(c.js(_MOT_REC % (secs * 1000, secs * 1000 + 2500), timeout=secs + 90))
+    a = np.array(d["m"], dtype=float)
+    fails = []
+
+    def check(name, ok, detail=""):
+        print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, ("   " + detail) if detail else ""))
+        if not ok:
+            fails.append(name)
+
+    if len(a) < 200:
+        raise AssertionError("motion: only %d frames; nothing can be asserted" % len(a))
+    t = a[:, 0] / 1000.0
+    # THE TURN IS THE SUM OF THE TWO IN-PLANE ANGLES, because which one carries it depends on
+    # FACE: spin when the free three-axis motion is on, swirl when the plate is held face-on.
+    # Asserting either alone passes vacuously in the other mode.
+    turn = a[:, 1] + a[:, 2]
+    dt = np.diff(t)
+    rate = np.diff(turn) / np.maximum(dt, 1e-6) * 180.0 / np.pi
+    rate = rate[np.abs(rate) < 2000]        # drop the frame either side of a seek or a stall
+    print("  %d frames over %.0fs, FACE.on=%s | turn rate p05 %.1f p50 %.1f p95 %.1f deg/s"
+          % (len(a), t[-1], d["face"], np.percentile(rate, 5), np.median(rate),
+             np.percentile(rate, 95)))
+
+    neg = float((rate < 0).mean())
+    check("the drawn turn never reverses", neg <= 0.01,
+          "negative on %.1f%% of frames" % (100 * neg))
+    stall = float((np.abs(rate) < 2.0).mean())
+    check("and never stalls", stall <= 0.02,
+          "within 2 deg/s of a standstill on %.1f%% of frames" % (100 * stall))
+
+    # "the swing returns to zero on every downbeat" -- swingPhi is the bar phase and is 0 there
+    sw, phi = a[:, 3], a[:, 4]
+    peak = float(np.percentile(np.abs(sw), 95))
+    at_db = np.abs(sw)[(phi < 0.02) | (phi > 0.98)]
+    if len(at_db) > 20 and peak > 1e-6:
+        check("the bar swing is zero on the downbeat",
+              float(at_db.mean()) <= 0.25 * peak,
+              "mean |swing| there %.5f against a p95 of %.5f" % (at_db.mean(), peak))
+    else:
+        check("the bar swing is zero on the downbeat", True,
+              "(no swing on this track: peak %.6f)" % peak)
+
+    # and the face, which is the whole point of FACE.on
+    fd = a[:, 5]
+    fd = fd[np.isfinite(fd)]
+    if d["face"] and len(fd) > 100:
+        check("the face stays presented", float((fd < 0.30).mean()) <= 0.12,
+              "|n.v| p50 %.2f, turned past 0.30 on %.1f%% of frames"
+              % (np.median(fd), 100 * (fd < 0.30).mean()))
+    else:
+        check("the face stays presented", True, "(FACE.on is false; the bound is not in play)")
+
+    if fails:
+        raise AssertionError("motion guarantees failed: " + ", ".join(fails))
+
+
 # ------------------------------------------------------------------ director rules
 # WHY THESE ARE HERE. One session changed about ten of the Director's behaviours -- the ladder's
 # order, the pacing, the phrase lock, the "a boundary is not a reason" gate, the fold's duty --
@@ -843,6 +927,7 @@ def main():
     for name, fn, q in (("clock", bench_clock, ""), ("morph", bench_morph, "?readback"),
                         ("edges", bench_edges, ""), ("costs", bench_costs, ""),
                         ("filter", bench_filter, "?readback"),
+                        ("motion", bench_motion, ""),
                         ("director", bench_director, "")):
         if what not in ("all", name):
             continue
