@@ -258,7 +258,7 @@
     <div class="row"><label>Shape</label><select id="selShape">
       <option value="auto">Auto &middot; Director</option>
       <option value="0">Rotor</option><option value="1">Volute</option>
-      <option value="2">Arc</option><option value="3">Chevron</option>
+      <option value="2">Rings</option><option value="3">Chevron</option>
       <option value="4">Star</option><option value="5">Plate</option>
       <option value="6">Gear</option><option value="7">Knot</option>
       <option value="8">Lattice</option>
@@ -1153,24 +1153,54 @@ float p2Volute(vec2 p){
   d = smin3(d, length(p-e1) - (0.085 + u_gCut*0.03), 0.05);
   return d;
 }
-// ARC — a broken ring, the counter-shape. Reads as a single confident stroke.
-// Analytic, not chained. Two earlier versions failed differently and both are worth remembering:
-// cutting a gap out of a full ring needed its end caps placed by hand at the cut angles and one
-// landed inside the removed wedge, rendering as a disc floating free of the body; chaining nine
-// capsules along the arc fixed that but left the outer silhouette visibly FACETED, because the
-// boundary sits a fixed width from each straight chord and a 30-degree chord has a 2.6% sagitta.
-// Raising the count would fix the facets and multiply the per-sample cost, in a function the
-// raymarch evaluates millions of times a frame.
-// The closed form has neither problem: exact curvature everywhere, round ends for free, one
-// branch, constant cost. Outside the aperture the nearest point is the end cap, inside it the
-// nearest point is the ring — which is exactly the two cases below.
-float p2Arc(vec2 p){
-  float w=0.21+u_gDense*0.03, R=0.72;
-  p=rr2(-0.70)*p;                       // orient the opening
-  const float HA=2.356;                 // half-aperture 135 deg -> a 270 deg arc
+/* RINGS -- nested broken rings, replacing the single Arc.
+   THE ARC WAS LAST ON THE SAME MEASUREMENT that took the Clover and then the Wave: 4.50 against
+   Volute 17.86, Rotor 15.33, Lattice 14.22, Chevron 10.07, Star 7.93, Plate 5.49, Gear 4.99 --
+   and zero enclosed pixels, because one broken ring encloses nothing.
+
+   The ring STAYS, because it was the set's only circular member and the note it carried called
+   it "the counter-shape" -- the quiet one among the busy ones. Nesting several of them keeps
+   that and gives it an interior: the gaps are staggered by the golden angle so no two line up,
+   which is what stops it reading as one thick ring with a slot cut through it.
+
+   THE CLOSED-FORM ARC IS KEPT VERBATIM and the reasoning with it, because two earlier versions
+   of it failed and both are worth remembering: cutting a gap out of a full ring needed its end
+   caps placed by hand at the cut angles and one landed inside the removed wedge, rendering as a
+   disc floating free of the body; chaining nine capsules along the arc fixed that but left the
+   outer silhouette visibly FACETED, because the boundary sits a fixed width from each straight
+   chord and a 30-degree chord has a 2.6% sagitta. The closed form has neither problem: exact
+   curvature everywhere, round ends for free, one branch, constant cost. Outside the aperture
+   the nearest point is the end cap, inside it the ring -- the two cases in s2Arc below.
+
+   WIDTH IS TIED TO SPACING, which is the lesson the Volute cost two renders to learn. Five rings
+   across the same radial span sit 0.145 apart, and the old single ring's width of 0.42 would
+   merge every one of them into a disc. w is 0.30 of the spacing, so the gap between rings is
+   always about two thirds of a stroke. R0 then absorbs w so the outer edge lands at 0.905
+   whatever the count, and one S frames them all.
+
+   Prototyped in numpy first: inside fraction 0.18 at two rings to 0.27 at three, and the figure
+   reads as an armillary rather than a target at every count. */
+float s2Arc(vec2 p, float R, float w, float HA){
   vec2 sc=vec2(sin(HA),cos(HA));
   p.x=abs(p.x);
   return ((sc.y*p.x>sc.x*p.y) ? length(p-sc*R) : abs(length(p)-R)) - w;
+}
+float p2Rings(vec2 p){
+  int N = int(clamp(u_segN,2.0,5.0));                  // 2..5 rings; above that they crowd
+  float sp = 0.58/max(float(N-1),1.0);
+  float w0 = min(0.085 + u_gDense*0.015, 0.30*sp);
+  float R0 = 0.905 - w0;                               // so the outer edge is 0.905 at every N
+  float d = 1e9;
+  for(int i=0;i<5;i++){
+    if(i>=N) break;
+    float t  = float(i)/max(float(N-1),1.0);
+    float R  = R0 - 0.58*t;
+    float w  = w0*(1.0 - 0.22*t);
+    float HA = 2.15 + 0.35*sin(float(i)*1.7);          // each ring its own aperture
+    float rot= float(i)*2.399963 + u_gTwist*0.20;      // golden angle: no two gaps line up
+    d = min(d, s2Arc(rr2(-rot)*p, R, w, HA));
+  }
+  return min(d, length(p) - w0*0.95);                  // the centre, so the middle is not a void
 }
 // CHEVRON — nested Vs, the most graphic of the set
 float p2Chev(vec2 p){
@@ -1302,7 +1332,7 @@ float p2Lattice(vec2 p){
 }
 float mRotor(vec3 p){    float S=EXR/0.950; return extr(p2Rotor(p.xy/S)*S, p, exDepth(), exBevel()); }
 float mStack(vec3 p){    float S=EXR/0.940; return extr(p2Volute(p.xy/S)*S, p, exDepth(), exBevel()); }
-float mRings(vec3 p){    float S=EXR/0.930; return extr(p2Arc  (p.xy/S)*S, p, exDepth(), exBevel()); }
+float mRings(vec3 p){    float S=EXR/0.905; return extr(p2Rings(p.xy/S)*S, p, exDepth(), exBevel()); }
 float mTruss(vec3 p){    float S=EXR/0.870; return extr(p2Chev (p.xy/S)*S, p, exDepth()*0.92, exBevel()); }
 float mPods(vec3 p){     float S=EXR/0.875; return extr(p2Star (p.xy/S)*S, p, exDepth(), exBevel()); }
 float mAperture(vec3 p){ float S=EXR/1.075; return extr(p2Plate(p.xy/S)*S, p, exDepth()*1.05, exBevel()); }
@@ -1698,7 +1728,7 @@ float evalForm(vec3 p){
      mStack   p2Volute   a spiral polyline; no rotation, no mirror   -> none
      mGear    p2Gear     teeth at i*2PI/2N, circular rim and bore    -> C_2segN, so C_segN holds
      mKnot    p2Knot     loop at i*2PI/N, N=clamp(segN,2,6)          -> C_segN AT ITS OWN CLAMP
-     mRings   p2Arc      p.x=abs(p.x): one mirror, no rotation       -> none
+     mRings   p2Rings    nested arcs, gaps staggered off each other  -> none
      mTruss   p2Chev     two mirrored chevrons                       -> none
      mPods    p2Star     edges i->i+2 on N=2*segN+1 vertices        -> C_N, not C_segN
      mAperture p2Plate   rounded SQUARE (C4) cut by THREE bores (C3) -> C1, none
@@ -4515,16 +4545,33 @@ const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15, bump:0.15};  window.MORPH=MOR
        0.22     1.71    1.86    1.78    1.89
 
    0.10, and the curve has a floor rather than a direction: 0.05 is worst on all four and 0.22
-   has started climbing back. The Volute pair keeps 0.15, which was measured on its own row. */
+   has started climbing back. The Volute pair keeps 0.15, which was measured on its own row.
+
+   ROW AND COLUMN 2 WERE RETUNED PER PAIR when the Arc became the Rings, because unlike the
+   other two rows they do not agree with each other at all:
+
+       fuse    2<->0   2<->1   2<->3   2<->4   2<->5   2<->6   2<->7   2<->8
+       0.05     3.47    3.06    1.68    2.45    1.66    2.52    2.58    3.39
+       0.10     2.75    1.84    1.81    2.03    1.81    2.74    2.39    1.81
+       0.15     2.43    2.00    1.99    2.00    1.99    2.00    2.00    1.99
+       0.22     2.13    2.16    2.13    2.16    2.13    2.16    2.16    2.13
+
+   The Chevron and the Plate want the floor and the Rotor wants the ceiling, on the same row.
+   AND NOTICE THE BOTTOM TWO ROWS: at 0.15 and 0.22 every pair returns the same number to two
+   decimals. That is the melt SATURATING -- past some fuse the blob is most of what is on screen
+   through the middle of the transition, so which two shapes are being blended stops affecting
+   the measurement. A high value therefore scores well by erasing the thing being scored, which
+   is worth knowing before reading this table as "higher is smoother". Each pair takes the
+   LOWEST value that avoids a spike, not the one with the best number. */
 const MORPH_FUSE=[
-  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05],
-  [0.15,0.05,0.15,0.15,0.15,0.15,0.15,0.15,0.15],
-  [0.10,0.15,0.05,0.10,0.10,0.10,0.05,0.10,0.10],
-  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05],
-  [0.10,0.15,0.10,0.10,0.05,0.10,0.10,0.10,0.10],
-  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.15,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.15,0.05,0.10,0.15,0.15,0.15,0.15,0.15,0.15],
+  [0.15,0.10,0.05,0.05,0.10,0.05,0.15,0.15,0.10],
   [0.05,0.15,0.05,0.05,0.10,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.10,0.15,0.10,0.10,0.05,0.10,0.10,0.10,0.10],
+  [0.05,0.15,0.05,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.15,0.05,0.10,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.15,0.05,0.10,0.05,0.05,0.05,0.05],
   [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05]];
 function fuseBlob(a,b){
   const r=MORPH_FUSE[a|0], v=r&&r[b|0];
@@ -5779,7 +5826,7 @@ function segForSection(s){
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
-// 0 Rotor  1 Volute  2 Arc  3 Chevron  4 Star  5 Plate  6 Gear  7 Knot  8 Lattice
+// 0 Rotor  1 Volute  2 Rings  3 Chevron  4 Star  5 Plate  6 Gear  7 Knot  8 Lattice
 // (this header read "0 ribbon 1 tower 2 gyroscope 3 space frame 4 pods 5 shell" -- six names
 //  for nine profiles, from before 6/7/8 existed. The table below still shows its age: every
 //  genre carries exactly three of modes 0-5 plus exactly one of 6/7/8, bolted on afterwards.)
@@ -5801,8 +5848,10 @@ const CALM=[3,2,8], MID=[1,3,7], HOT=[0,4,5,6];
    which is why every shape looked alike once the fold was on. A profile carrying repeated
    internal structure at a scale below the wedge -- teeth, bores, rings, a weave -- still has
    detail inside the slice, and the mirrors multiply it into something worth looking at.
-   Rotor, Volute, Star, Gear, Knot and Lattice have that. Arc, Chevron and Plate are single
-   smooth strokes and do not. The Star joined on the strength of its crossings, which are
+   Rotor, Volute, Star, Gear, Knot and Lattice have that. Chevron and Plate are single smooth
+   strokes and do not. Rings is the open question: it HAS internal structure now, but the note
+   below records it fragmenting under the fold as a single arc, and that was never re-measured
+   after it became several. Left out until it is. The Star joined on the strength of its crossings, which are
    structure at a finer scale than the wedge. The Volute keeps the Clover's place here on a different claim: the
    Clover earned it on its lobe count and the Volute earns it on the gap between its turns, which
    is structure at exactly the scale a wedge slices through. (The Rotor was built for this line: the Triskelion it replaced was
@@ -10964,7 +11013,7 @@ addEventListener('drop',e=>{ const f=[...(e.dataTransfer?.files||[])].find(x=>/s
    moves and changes nothing. Greying it out is the difference between "this does nothing" and
    "this is broken". Checked against the shaders rather than remembered: the four listed here are
    exactly the p2* functions with no u_segN in them. */
-const SEG_SHAPES={'0':1,'1':1,'4':1,'6':1,'7':1,'8':1};
+const SEG_SHAPES={'0':1,'1':1,'2':1,'4':1,'6':1,'7':1,'8':1};
 /* WHAT EACH FORM SOURCE CAN ACTUALLY USE. Three of the shape sources are not generated profiles
    at all, and the controls that only make sense for a profile do nothing on them -- silently,
    until now. Read from the field functions rather than from intent:
@@ -11217,8 +11266,8 @@ function rollAll(seedStr){
   const shape=pick(r,['0','1','2','3','4','5','6','7','8','6','7','8']);   // the complex three, twice as often
   setCtl('selShape',shape);
   /* Segments means something different per profile: teeth on the Gear, rings on the Knot, bars
-     on the Lattice, blades on the Rotor, TURNS on the Volute, POINTS on the Star -- and nothing
-     at all on the Plate. The
+     on the Lattice, blades on the Rotor, TURNS on the Volute, POINTS on the Star, RINGS on the
+     Rings -- and nothing at all on the Plate. The
      ceiling is per shape so a roll never spends its randomness on a slider that is inert, and
      never asks the Arc (a broken ring) for eight of itself. */
   const segMax = (shape==='0'||shape==='1'||shape==='6') ? 6
