@@ -3719,6 +3719,22 @@ let morphStepF=1.0, morphPhasePrev=0;   // latched at the phase edge; see the us
        entry rscale 1.28  refused      45.8 fps              28.0ms
 
    Four seconds at 46fps while the form is changing, which is the one moment the eye is on it.
+
+   THAT FPS COLUMN IS A BAD STATISTIC AND IS KEPT ONLY AS THE DIAGNOSIS. It is frames divided
+   by duration, which a handful of long frames drags down; the MEDIAN frame inside a transition
+   was 16.7ms all along, in every decile of mix. What was actually wrong was the tail, and the
+   tail is what the step fixes. Measured properly afterwards -- three rounds ALTERNATING old and
+   new, 150s each, so machine drift cannot masquerade as an effect:
+
+       inside a morph      p90            p99          frames over 25ms
+         before        21.9 21.9 22.9   33.0 33.0 32.8   8.5% 8.5% 8.2%
+         after         18.6 18.7 19.4   25.5 25.6 24.4   1.7% 1.2% 0.8%
+       outside, both   18.3 - 18.5      27.0 - 28.2      about 2%
+
+   So a transition used to stall four times as often as ordinary playback and now stalls
+   slightly less often than it. The residual 2% is a property of the whole session, not of the
+   morph: correlated against target reallocation, section changes and shape swaps over 17557
+   frames, the frames over 25ms match none of them above their base rate.
    The artefact the gate exists to avoid is the CROSSING, not the step -- so the step stops at
    the threshold instead of being refused, and the crossing cannot happen. From 1.28 that is a
    33% pixel cut with the resolve untouched. Below the threshold nothing can be crossed and the
