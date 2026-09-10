@@ -4413,6 +4413,7 @@ const CM={dist:5,height:.5,ang:0,spin:0.1,fov:1.5};
    default nobody chose. */
 const CMi={dist:CM.dist,height:CM.height,spin:CM.spin,fov:CM.fov};
 let camAng=0, formSpin=0, formTumble=0, formSwirl=0, rollS=0;
+let FACEDOT=1;   // |face normal . view|: 1 square to the camera, 0 edge-on. See the camera basis.
 /* THE BAR PHRASING, added to the three rotation angles at the point they are USED rather than
    folded into the integration. See the block that computes them in frame(): keeping them as
    offsets is what makes drift structurally impossible, because an offset returns to zero and an
@@ -4547,6 +4548,12 @@ const MOT={spin:1, tumble:1, swirl:1, orbit:1}; window.MOT=MOT;
    configurations tried. 0 is the previous behaviour exactly, bit-identical.
    window.FACE_LEAN.deg = n from the console re-uploads on the next frame. */
 const FACE_LEAN={deg:25, get rad(){ return this.deg*Math.PI/180; }}; window.FACE_LEAN=FACE_LEAN;
+/* The face-to-camera bound; see the note where spin and tilt are summed. deg values are the
+   amplitude each out-of-plane axis is allowed, in degrees. FACE.on=false restores the free
+   three-axis rotation exactly. Live from the console: FACE.spinDeg=40 and so on. */
+const FACE={on:true, spinDeg:26, tiltDeg:18,
+            get spinRad(){ return this.spinDeg*Math.PI/180; },
+            get tiltRad(){ return this.tiltDeg*Math.PI/180; }}; window.FACE=FACE;
 /* SELF-SPIN. A constant turn about the form's own axis, ADDED to whatever the Director is doing
    rather than replacing it -- so the object is always visibly rotating around itself, and the
    music modulates that rather than owning it outright.
@@ -8714,13 +8721,47 @@ function frame(){
   const TAU=6.283185307179586;
   userEl = ((userEl % TAU) + TAU) % TAU; if(userEl > Math.PI) userEl -= TAU;
   userAz = ((userAz % TAU) + TAU) % TAU; if(userAz > Math.PI) userAz -= TAU;
-  const spin = formSpin + spinSwing + spinPhr;   // bar phrasing + phrase arc; see PHRASE_BARS
+  const spinRaw = formSpin + spinSwing + spinPhr;   // bar phrasing + phrase arc; see PHRASE_BARS
   /* THE COMBINED LEAN, COMPUTED ONCE. u_tilt is uploaded to the scene pass and to the motion
      blur, and map() and objP() both read it -- the note at TUMBLE_BEATS is explicit that those
      have to agree or the surface texture slides through the geometry. Two call sites that each
      rebuild the sum is how they come to disagree, so there is one sum and both read it. */
-  const tilt = VAR.tilt + formTumble + tumbleSwing + tumblePhr;
+  const tiltRaw = VAR.tilt + formTumble + tumbleSwing + tumblePhr;
   const swirlA = formSwirl + swirlSwing + swirlPhr;
+  /* KEEPING THE FACE TO THE CAMERA. The note at formRot ends by saying that removing edge-on
+     entirely is a decision about what the product should be rather than a defect to patch, and
+     lists the two ways: bound the out-of-plane rotation, or make the plate less than 3.5:1.
+     This is the first, asked for.
+
+     TWO AXES TURN THE FACE AWAY AND A THIRD DOES NOT. swirl is about the plate's own normal, so
+     it is free and stays a full revolution -- the profile turns in its own plane and is readable
+     the whole way. spin (about y) and tilt (about x) are both perpendicular to the normal, and
+     each sweeps the face through the view twice per turn. Bounding them turns each revolution
+     into a SWAY OF THE SAME PERIOD AND PHASE: sin() of the same integrator, so every accent the
+     phrasing and the ladder put into the motion still lands at the same moment, at a smaller
+     amplitude. The form nods and leans where it used to roll.
+
+     THE CAMERA NEEDS NO TERM HERE, AND ADDING ONE MADE IT WORSE. The table at formRot blames
+     the camera's own orbit for defeating every bound, so this first carried the orbit into the
+     form's yaw to cancel it. Measured over 150s, share of frames with |n.v| below 0.30:
+
+         free rotation (FACE.on=false)      32.0%      edge-on passes 17
+         bounded, no camera term             8.9%                      3
+         bounded, yaw follows the camera    20.7%                      6
+         bounded, yaw counter-rotates       22.0%                      8
+
+     Both signs are worse than neither, and the reason is that camAng is an integrator with no
+     bound: multiplying it in puts back exactly the free revolution about y that the sin() above
+     had just removed. Once spin itself is bounded the camera's orbit is not what carries the
+     face away, whatever the earlier table implied. Removed rather than left at zero. */
+  const spin = FACE.on ? FACE.spinRad*Math.sin(spinRaw) : spinRaw;
+  const tilt = FACE.on ? FACE.tiltRad*Math.sin(tiltRaw) : tiltRaw;
+  /* SYNC.spinOut IS THE ANGLE THAT IS DRAWN, and with the bound above that is no longer the sum
+     of the integrator and its phrasing. bench_clock's whole subject is the judder of what
+     reaches the screen, so it has to read this and not the raw sum -- which is still there,
+     unbounded, as SYNC.spin/spinSwing/spinPhr for the phrasing checks that want it. SYNC is
+     built earlier in the frame than this line, so it is amended rather than moved. */
+  if(window.SYNC){ window.SYNC.spinOut=spin; window.SYNC.tiltOut=tilt; }
   // MORPH: melt current style into the next over ~1.3s (smooth, clean). No hard collapse.
   // 1.9s -> 3.4s. An SDF melt is a lerp between two distance fields, so mid-morph the surface is
   // genuinely neither shape; the longer that state is held the more it reads as one form flowing
@@ -8937,6 +8978,21 @@ function frame(){
   const cosE=Math.cos(ce);
   const roX=Math.sin(ca)*dolly*cosE, roY=CM.height+Math.sin(ce)*dolly, roZ=Math.cos(ca)*dolly*cosE;
   let fx=-roX,fy=-0.05-roY,fz=-roZ; const fl=Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;
+  /* HOW SQUARE THE FACE IS TO THE CAMERA, as a number. |n.v| is 1 face-on and 0 edge-on, and
+     the whole note at formRot is about this quantity -- which was recomputed by hand, offline,
+     every time the question came up. It is four trig pairs a frame, so it lives here instead.
+     formRot takes WORLD to LOCAL, so the world normal is its inverse applied to local +z: the
+     same four rotations, reversed and negated. Checked against the drawn image rather than
+     trusted: over 16 spins at a fixed tilt it tracks the drawn silhouette's AREA at r 0.80, and
+     the area at the most face-on pose is 5.0x the area at the most edge-on -- which is a 3.5:1
+     plate seen face and edge, so the sign and the order are right. It is a proxy and not the
+     silhouette: the remaining spread is the profile's own area changing with the pose. */
+  { let nx=0,ny=0,nz=1,a,c,s;
+    a=-FACE_LEAN.rad;        c=Math.cos(a);s=Math.sin(a); { const y=ny,z=nz; ny=c*y-s*z; nz=s*y+c*z; }
+    a=-spin;                 c=Math.cos(a);s=Math.sin(a); { const x=nx,z=nz; nx=c*x-s*z; nz=s*x+c*z; }
+    a=-(tilt-FACE_LEAN.rad); c=Math.cos(a);s=Math.sin(a); { const y=ny,z=nz; ny=c*y-s*z; nz=s*y+c*z; }
+    a=-swirlA;               c=Math.cos(a);s=Math.sin(a); { const x=nx,y=ny; nx=c*x-s*y; ny=s*x+c*y; }
+    FACEDOT=Math.abs(nx*fx+ny*fy+nz*fz); window.FACEDOT=FACEDOT; }
   /* THE UP FLIPS WITH THE POLE CROSSING. rx,rz are the world-up cross forward, with up pinned to
      +Y -- which is why elevation had to be clamped short of vertical: at the pole this is the zero
      vector and past it the handedness inverts, so the image mirrors. Taking the sign from cos(ce)
