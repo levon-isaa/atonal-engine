@@ -13,6 +13,18 @@
 .hero{padding:clamp(40px,5vw,80px) 0 clamp(28px,3vw,44px)}
 .hero .prose{margin-top:22px;font-size:17px}
 
+.hide{display:none}
+/* The licence box borrows success.html's treatment for the same reason it exists there: a
+   render key is a bearer token, and someone redeeming on a shared or projected screen should
+   not have it sitting in plain sight. */
+.keyBox{display:flex;gap:12px;align-items:stretch;margin-top:18px;flex-wrap:wrap}
+.keyVal{flex:1 1 340px;min-width:0;font-family:'JetBrains Mono',monospace;font-size:14px;
+  padding:15px 17px;border:1px solid var(--line-2);background:#08080D;color:var(--ink);
+  word-break:break-all;user-select:all;line-height:1.5}
+.keyVal.blur{filter:blur(7px);user-select:none}
+.licIn{flex:1 1 340px;min-width:0;font-family:'JetBrains Mono',monospace;font-size:14px;
+  padding:15px 17px;border:1px solid var(--line-2);background:#08080D;color:var(--ink)}
+.licIn:focus{outline:none;border-color:var(--mag)}
 .packs{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}
 @media(max-width:900px){.packs{grid-template-columns:1fr}}
 .pack{background:var(--bg-2);padding:var(--pad);display:flex;flex-direction:column;gap:18px;
@@ -95,6 +107,7 @@ details .prose{padding:0 0 20px;font-size:14.5px}
         <ul><li>One track analysed</li><li>Unlimited renders and exports of it</li>
           <li>Every format up to 4K</li><li>No watermark</li></ul>
         <button class="btn o" data-buy="single">Buy 1 credit</button>
+        <a class="btn o hide" data-gum="single" target="_blank" rel="noopener">Buy on Gumroad</a>
       </div>
       <div class="pack f" data-pack="ten">
         <span class="lab" style="color:var(--mag)">Pack of 10 &middot; most taken</span>
@@ -102,6 +115,7 @@ details .prose{padding:0 0 20px;font-size:14.5px}
         <ul><li>Ten tracks analysed</li><li>Unlimited renders and exports</li>
           <li>Every format up to 4K</li><li>No watermark</li><li>Commercial use included</li></ul>
         <button class="btn" data-buy="ten">Buy 10 credits <span class="k">&rarr;</span></button>
+        <a class="btn o hide" data-gum="ten" target="_blank" rel="noopener">Buy on Gumroad</a>
       </div>
       <div class="pack" data-pack="fifty">
         <span class="lab">Pack of 50</span>
@@ -110,6 +124,44 @@ details .prose{padding:0 0 20px;font-size:14.5px}
           <li>Every format up to 4K</li><li>No watermark</li><li>Commercial use included</li>
           <li data-prio>Priority queue</li></ul>
         <button class="btn o" data-buy="fifty">Buy 50 credits</button>
+        <a class="btn o hide" data-gum="fifty" target="_blank" rel="noopener">Buy on Gumroad</a>
+      </div>
+    </div>
+    <div class="pad hide" id="redeemWrap" style="border-top:1px solid var(--line)">
+      <div class="sh"><span class="ix">GUM</span><span class="lab">Bought through Gumroad</span>
+        <span class="rl"></span><span class="lab" id="redeemLab">Paste the licence you were emailed</span></div>
+      <p class="prose" style="margin-top:14px;font-size:15px">Gumroad emails a licence key with the
+        receipt. It is not the render key &mdash; exchange it here, once, for one that is. The
+        credits land on the same key you already have if you have bought before.</p>
+      <div class="keyBox">
+        <input class="licIn" id="licIn" type="text" spellcheck="false" autocomplete="off"
+               placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX" aria-label="Gumroad licence key">
+        <button class="btn" id="redeemBtn" style="flex:0 0 auto">Redeem</button>
+      </div>
+      <div id="redeemOut" class="hide" style="margin-top:18px">
+        <div class="sh"><span class="ix">KEY</span><span class="lab">Save this</span><span class="rl"></span>
+          <span class="lab" id="redeemReveal">Click to reveal</span></div>
+        <div class="keyBox">
+          <code class="keyVal blur" id="redeemKey" title="Click to reveal"></code>
+          <button class="btn" id="redeemCopy" style="flex:0 0 auto">Copy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- OUTSIDE the Gumroad block on purpose: a key someone already holds has nothing to do
+         with which channel sold it, and this field is the only place in the product where one
+         can be entered. success.html has been pointing at it since before it existed. -->
+    <div class="pad" id="key" style="border-top:1px solid var(--line)">
+      <div class="sh"><span class="ix">KEY</span>
+        <span class="lab">Already have a render key</span><span class="rl"></span>
+        <span class="lab" id="haveLab">On a new machine, put it here once</span></div>
+      <p class="prose" style="margin-top:14px;font-size:15px">The key is stored in this browser and
+        the renderer reads it from there, so this is the same field for both. It is checked
+        against the server only to show you the balance and to catch a typo before an upload does.</p>
+      <div class="keyBox">
+        <input class="licIn" id="haveIn" type="text" spellcheck="false" autocomplete="off"
+               placeholder="atk_…" aria-label="Render key">
+        <button class="btn o" id="haveBtn" style="flex:0 0 auto">Save</button>
       </div>
     </div>
     <div class="pad" style="padding-top:16px;padding-bottom:16px;border-top:1px solid var(--line)">
@@ -235,10 +287,28 @@ details .prose{padding:0 0 20px;font-size:14.5px}
                                          : w.charAt(0).toUpperCase()+w.slice(1) + ' tracks a day, free, no account');
       var fn = document.getElementById('freeN'); if(fn) fn.textContent = w;
     }
+    /* GUMROAD IS A SECOND CHANNEL AND IS REPORTED SEPARATELY, so a pack can be on sale
+       through one, both or neither. Only packs with a link configured get a button: a pack
+       that is Paddle-only should show nothing rather than a button that 404s. */
+    var gum = d.gumroad || {}, links = gum.links || {};
+    Object.keys(links).forEach(function(k){
+      var a = document.querySelector('[data-gum="'+k+'"]');
+      if(a && links[k]){ a.href = links[k]; a.classList.remove('hide'); }
+    });
+    if(gum.ready){ document.getElementById('redeemWrap').classList.remove('hide'); }
+
     if(!d.ready){
-      say('warn','<strong>Checkout is not live yet.</strong> The buttons below are wired and the ' +
-        'ledger is running &mdash; they need Paddle keys in the server environment before they can ' +
-        'take a payment. Until then, everyone gets the free daily tracks.');
+      /* The old wording said checkout was not live and disabled everything. With Gumroad
+         configured that is simply false -- there is a way to buy on this page -- so the two
+         cases say different things and only the Paddle buttons are disabled. */
+      if(gum.ready){
+        say('warn','<strong>Card checkout is not live yet</strong>, but the Gumroad links below ' +
+          'are. Buy there, then redeem the licence at the bottom of this section for a render key.');
+      } else {
+        say('warn','<strong>Checkout is not live yet.</strong> The buttons below are wired and the ' +
+          'ledger is running &mdash; they need Paddle keys in the server environment before they can ' +
+          'take a payment. Until then, everyone gets the free daily tracks.');
+      }
       document.querySelectorAll('[data-buy]').forEach(function(b){ b.disabled = true; });
     }
   }).catch(function(){
@@ -246,6 +316,110 @@ details .prose{padding:0 0 20px;font-size:14.5px}
       'unavailable. The figures below are the current ones.');
     document.querySelectorAll('[data-buy]').forEach(function(b){ b.disabled = true; });
   });
+
+  /* ---- REDEEMING A GUMROAD LICENCE ----
+     The licence goes in the BODY of a POST, never a query string: it is a bearer credential and
+     query strings reach access logs, browser history and Referer headers. The key this browser
+     already holds rides along in a header for the same reason, so a top-up can be confirmed
+     against a hash without the server having to reveal anything.
+     Nothing here decides whether the licence is real -- the server asks Gumroad. */
+  (function(){
+    var btn = document.getElementById('redeemBtn'), input = document.getElementById('licIn');
+    if(!btn || !input) return;
+    function run(){
+      var lic = (input.value || '').trim();
+      if(!lic){ say('warn','<strong>Paste the licence key</strong> from your Gumroad receipt first.'); return; }
+      btn.disabled = true; btn.textContent = 'Checking…';
+      var held = null; try { held = localStorage.getItem('atonal.key') || null; } catch(e){}
+      var h = {'Content-Type':'application/json'};
+      if(held) h['X-Render-Key'] = held;
+      fetch(API + '/redeem', {method:'POST', headers:h, body: JSON.stringify({license: lic})})
+        .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+        .then(function(res){
+          var j = res.j || {};
+          if(!res.ok || j.error) throw new Error(j.error || 'that licence could not be redeemed');
+          /* Same origin as the renderer, so storing it here is storing it there. */
+          if(j.key){ try { localStorage.setItem('atonal.key', j.key); } catch(e){} }
+          if(!j.key){
+            /* Paid, credited, and the key was issued on an earlier purchase. Nothing is wrong
+               and the page must not say that it is. */
+            say('ok','<strong>' + j.credits + ' credits added.</strong> They went onto the key you ' +
+              'already have' + (j.balance != null ? ', which now holds ' + j.balance + '.' : '.'));
+            return;
+          }
+          document.getElementById('redeemOut').classList.remove('hide');
+          document.getElementById('redeemKey').textContent = j.key;
+          document.getElementById('redeemLab').textContent = 'Redeemed';
+          say('ok','<strong>' + j.credits + ' credits added.</strong> ' +
+            (j.restored ? 'That is the key you already had; it has just gained credits.'
+                        : 'This browser has already saved the key below.') +
+            (j.balance != null ? ' Balance ' + j.balance + '.' : ''));
+          input.value = '';
+        })
+        .catch(function(e){
+          say('warn','<strong>' + String(e.message || e).replace(/[<>]/g,'') + '</strong>');
+        })
+        .then(function(){ btn.disabled = false; btn.textContent = 'Redeem'; });
+    }
+    btn.addEventListener('click', run);
+    input.addEventListener('keydown', function(e){ if(e.key === 'Enter') run(); });
+
+    /* ---- A KEY THE CUSTOMER ALREADY HAS ----
+       success.html has been telling people to "paste it into the renderer's key field" since
+       that field was removed from the viewer, so the instruction pointed at nothing. The site
+       and the renderer are the same origin, so a key stored here is a key the renderer reads.
+       /credits is asked only to show a balance and to catch a typo before an upload does. */
+    var hIn = document.getElementById('haveIn'), hBtn = document.getElementById('haveBtn');
+    try { var cur = localStorage.getItem('atonal.key') || ''; if(cur) hIn.value = cur; } catch(e){}
+    function saveHave(){
+      var k = (hIn.value || '').trim();
+      if(!k){
+        try { localStorage.removeItem('atonal.key'); } catch(e){}
+        say('warn','<strong>Key cleared</strong> from this browser.');
+        return;
+      }
+      hBtn.disabled = true; hBtn.textContent = 'Checking…';
+      fetch(API + '/credits?key=' + encodeURIComponent(k))
+        .then(function(r){ return r.json(); })
+        .then(function(c){
+          if(!c.known){
+            say('warn','<strong>That key is not recognised.</strong> Check it for a missing ' +
+              'character &mdash; nothing has been saved.');
+            return;
+          }
+          try { localStorage.setItem('atonal.key', k); } catch(e){}
+          document.getElementById('haveLab').textContent = 'Saved in this browser';
+          say('ok','<strong>Key saved.</strong> It holds ' + c.balance +
+            (c.balance === 1 ? ' credit.' : ' credits.') + ' The renderer will use it on this machine.');
+        })
+        .catch(function(){
+          say('warn','<strong>Could not reach the server</strong> to check that key, so it has ' +
+            'not been saved. Try again when it is up.');
+        })
+        .then(function(){ hBtn.disabled = false; hBtn.textContent = 'Save'; });
+    }
+    hBtn.addEventListener('click', saveHave);
+    hIn.addEventListener('keydown', function(e){ if(e.key === 'Enter') saveHave(); });
+
+    var box = document.getElementById('redeemKey');
+    box.addEventListener('click', function(){
+      box.classList.remove('blur');
+      document.getElementById('redeemReveal').textContent = 'Visible';
+    });
+    document.getElementById('redeemCopy').addEventListener('click', function(){
+      box.classList.remove('blur');
+      document.getElementById('redeemReveal').textContent = 'Visible';
+      var t = box.textContent, b = document.getElementById('redeemCopy');
+      var done = function(){ b.textContent = 'Copied'; setTimeout(function(){ b.textContent = 'Copy'; }, 1800); };
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(t).then(done, function(){
+          var r = document.createRange(); r.selectNodeContents(box);
+          var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+          b.textContent = 'Press \u2318C';
+        });
+      } else { done(); }
+    });
+  })();
 
   document.querySelectorAll('[data-buy]').forEach(function(btn){
     btn.addEventListener('click', function(){
