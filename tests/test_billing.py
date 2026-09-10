@@ -317,11 +317,92 @@ def test_claim_plaintext_expires():
           "while the credits themselves survive on the hash")
 
 
+def test_claim():
+    """claim() is what actually hands a customer their key, and it has four outcomes: not paid,
+    a fresh purchase, a repeat purchase whose plaintext has been wiped, and the same again from
+    a browser that still holds its copy.
+
+    _paddle is stubbed. It is the one call in this module that leaves the machine, and the point
+    of claim() is that it re-reads the transaction FROM the provider rather than trusting the
+    return URL -- so what is asserted is that a transaction the provider does not call paid
+    yields nothing, whatever the query string said.
+    """
+    print("\nclaim")
+    real = billing._paddle
+    txns = {}
+
+    def fake(method, path, body=None, timeout=20):
+        return txns.get(path.rsplit("/", 1)[-1], {})
+    billing._paddle = fake
+    try:
+        fresh()
+        txns["txn_unpaid"] = {"id": "txn_unpaid", "status": "ready",
+                              "custom_data": {"pack": "ten", "credits": 10}}
+        out = billing.claim("txn_unpaid")
+        check(out.get("error") == "not paid", "a transaction the provider has not marked paid "
+              "is refused (%s)" % out)
+        with billing._conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM ledger").fetchone()[0]
+        check(n == 0, "and grants nothing -- the return URL is just a redirect anyone can craft")
+
+        txns["txn_a"] = {"id": "txn_a", "status": "completed",
+                         "customer": {"email": "buyer@example.com"},
+                         "custom_data": {"pack": "ten", "credits": 10}}
+        out = billing.claim("txn_a")
+        key = out.get("key")
+        check(bool(key) and out.get("credits") == 10 and out.get("balance") == 10,
+              "a fresh purchase returns the key, its credits and its balance (%s)"
+              % {k: v for k, v in out.items() if k != "key"})
+        check("key_hash" not in out, "and never the key_hash -- it is popped before the response")
+
+        # the webhook and the success page racing is the ordinary case, not the exotic one
+        again = billing.claim("txn_a")
+        check(again.get("key") == key and billing.balance(key) == 10,
+              "claiming the same transaction twice returns the same key and grants once (%d)"
+              % billing.balance(key))
+
+        # ---- the repeat purchase, past the window where the plaintext still exists ----
+        with billing._conn() as c:
+            c.execute("UPDATE claims SET created=? WHERE session_id=?",
+                      (time.time() - billing.CLAIM_TTL - 60, "txn_a"))
+        txns["txn_b"] = {"id": "txn_b", "status": "completed",
+                         "customer": {"email": "buyer@example.com"},
+                         "custom_data": {"pack": "single", "credits": 1}}
+        out = billing.claim("txn_b")
+        check(out.get("topped_up") is True and not out.get("key") and out.get("balance") == 11,
+              "a repeat purchase with no key to show is a top-up, not an error (%s)" % out)
+        check(billing.balance(key) == 11, "and the credits landed on the original key (%d)"
+              % billing.balance(key))
+
+        # the browser still holds its copy: confirm, do not reveal
+        with billing._conn() as c:
+            c.execute("DELETE FROM claims WHERE session_id=?", ("txn_b",))
+        out = billing.claim("txn_b", have_key=key)
+        check(out.get("restored") is True and out.get("key") == key,
+              "a browser that still holds the key gets it confirmed (%s)" % out.get("restored"))
+
+        # AND A WRONG ONE MUST NOT BE. This is the security property in the branch: the compare
+        # is against a hash, so a guess must come back with no key and no confirmation.
+        with billing._conn() as c:
+            c.execute("DELETE FROM claims WHERE session_id=?", ("txn_b",))
+        out = billing.claim("txn_b", have_key=billing.new_key())
+        check(not out.get("key") and not out.get("restored"),
+              "a key that is not this customer's is neither confirmed nor revealed (%s)" % out)
+        with billing._conn() as c:
+            c.execute("DELETE FROM claims WHERE session_id=?", ("txn_b",))
+        out = billing.claim("txn_b", have_key=key[:-1] + ("x" if key[-1] != "x" else "y"))
+        check(not out.get("key") and not out.get("restored"),
+              "nor is one that differs by a single character (%s)" % out)
+    finally:
+        billing._paddle = real
+
+
 if __name__ == "__main__":
     print("billing tests — throwaway database under %s" % TMP)
     for fn in (test_ledger_basics, test_spend_is_atomic, test_priority_is_ever_not_currently,
                test_free_tier, test_webhook_signature, test_webhook_grants_once,
-               test_grant_races_agree_on_one_key, test_claim_plaintext_expires):
+               test_grant_races_agree_on_one_key, test_claim_plaintext_expires,
+               test_claim):
         fn()
     print()
     if FAILURES:
