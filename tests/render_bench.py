@@ -519,11 +519,30 @@ def bench_costs(c, url):
 # the unfiltered frame's foreground mask, and the score is how much of that mask you can still
 # recover from the filtered frame after a FIXED 3px blur -- fixed, and deliberately not scaled
 # with the cell, because a blur that grows with the cell would hand every setting the same score.
+#
+# AND THE REFERENCE IS _mask, WHICH IS A LUMA SPLIT. Read its docstring: it is not tracking the
+# form, so "the subject covers 64% of the box" in this arm's output means the luma split, not the
+# shape. This is the second reason nothing in the filter commit rests on these numbers.
 
 
 def _mask(a):
-    """Foreground, by Otsu on the luma. Otsu rather than a fixed threshold because the palette
-    and the material change what 'background' is worth from run to run."""
+    """A LUMA SPLIT, NOT A SUBJECT MASK, and the difference has cost real time twice.
+
+    Otsu picks the threshold that best separates the histogram into two halves. On these frames
+    the background is a lit gradient covering the whole plate, so the split it finds is usually
+    inside the BACKGROUND, not between the form and everything else. Measured: on the filter
+    arm's reference frame it called 64-65% of the box "subject", and asked for a bounding box it
+    returns the whole canvas on every frame -- which is what it should return, for a mask that is
+    not tracking the form.
+
+    So it is fine for what it was written for -- comparing one filtered frame against another at
+    the SAME pose, where whatever it selects it selects consistently -- and it is wrong for any
+    question about where the form is or how big it is. There is no ready subject mask in the
+    viewer either: the scene pass writes alpha 99 on a surface hit and the ray distance
+    otherwise, so DBGMASK's `alpha < 17` is a DEPTH mask and puts the far background on the same
+    side as the form. Isolating the subject would mean a new debug mode (alpha == 99), which is
+    worth adding the first time a measurement actually needs one.
+    """
     import numpy as np
     h, _ = np.histogram(a, bins=256, range=(0, 256))
     p = h / max(h.sum(), 1)
