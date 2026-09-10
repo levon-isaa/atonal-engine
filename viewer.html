@@ -257,7 +257,7 @@
   <details id="gForm" open><summary>Form</summary>
     <div class="row"><label>Shape</label><select id="selShape">
       <option value="auto">Auto &middot; Director</option>
-      <option value="0">Rotor</option><option value="1">Clover</option>
+      <option value="0">Rotor</option><option value="1">Volute</option>
       <option value="2">Arc</option><option value="3">Chevron</option>
       <option value="4">Wave</option><option value="5">Plate</option>
       <option value="6">Gear</option><option value="7">Knot</option>
@@ -1070,13 +1070,87 @@ float p2Rotor(vec2 p){
   }
   return max(d, -(r-(0.075+u_gCut*0.02)));                          // bore
 }
-float p2Clover(vec2 p){
-  float d=s2Disc(p,0.30+u_gDense*0.04);
-  int N=int(clamp(u_segN,2.0,8.0));
-  for(int i=0;i<N;i++){
-    vec2 q=rr2(float(i)*6.2831853/float(N)+1.5707963)*p;
-    d=smin3(d, s2Disc(q-vec2(0.0,0.62),0.40+u_gDense*0.04), 0.33);
+/* VOLUTE -- a tapering spiral, replacing the Clover.
+   WHY THIS ONE WENT. Measured across all nine profiles at a fixed face-on pose, rendering the
+   subject mask and taking the isoperimetric ratio P*P/(4*pi*A) -- how far the outline is from a
+   circle, which is a decent stand-in for how much shape there is to look at -- plus the count of
+   enclosed background pixels:
+
+       Rotor 15.11 (5924 hole px)   Lattice 13.96 (1521)   Chevron 9.99 (0)
+       Knot   7.69 (7385)           Plate    5.39 (10927)  Gear    4.94 (4404)
+       Arc    4.42 (0)              Wave     3.01 (0)      Clover  2.32 (0)
+
+   The Clover was last by a distance: the least articulated outline in the set, no internal
+   structure at all, and the shortest perimeter. Three discs on a disc. I would have picked the
+   Plate by eye and the Plate scores more than twice as high, because its three bites are real
+   holes.
+
+   AND A SPIRAL IS THE THING THE SET DID NOT HAVE. Eight of the nine are symmetric under some
+   rotation or reflection, and every one of them is either a closed outline or a stroke that
+   ends where it started. This is a continuous curve that never closes, its own spacing is the
+   internal structure, and it is the only profile in the set with no symmetry at all -- so it
+   reads differently at every angle instead of snapping back every 60 or 90 degrees.
+
+   An exact spiral SDF is not cheap; a polyline through it is, and it is the same construction
+   the Gear and the Chevron already use -- min() over real primitives, which the kaleidoscope
+   note argues for at length because a fold can be wrong about a symmetry the shape does not
+   have and a union cannot. 18 segments, the same order of cost as the Gear's 16 teeth.
+   The stroke TAPERS along its length. A constant-width spiral reads as a coil of rope; the
+   taper is what makes it a horn, and it costs one multiply. */
+float p2Volute(vec2 p){
+  /* ANALYTIC, NOT A POLYLINE, and the first version was the polyline. 18 segments over 2.2
+     turns is eight a turn, and it rendered as a spiral octagon -- straight edges plainly
+     visible, which is the same fault the note at the mesh decimation records as "the size of
+     the polygons that were visible on the Clover". Raising the count fixes the look and pays
+     for it in the march; this costs less than the 18 segments did and has no facets at all.
+
+     The trick is that a spiral is single-valued in polar coordinates. r(th) = R0 + B*th, so for
+     a point at angle phi and radius R the candidate turns sit at th = phi + 2*pi*k, and solving
+     r(th) = R for th says which k is nearest. Three k are tested rather than one, because the
+     nearest turn by that estimate can be the wrong side of a half-turn near the ends.
+
+     RADIAL DISTANCE IS NOT THE TRUE DISTANCE, it is the distance measured along a ray from the
+     origin, which is longer -- and an SDF that OVERestimates makes sphere tracing overshoot and
+     tear the surface. The pitch factor corrects it: cos of the spiral's pitch angle, which is
+     1/sqrt(1+(B/R)^2). At these constants that is a 0.4% correction at mid radius and 2% near
+     the eye, so it is small -- but it is the difference between a bound and a guess, and the
+     march is entitled to a bound. Clamping th to the spiral's own range UNDERestimates for
+     points off the ends, which is the safe direction, and the caps below cover them properly. */
+  float turns = 1.55 + clamp(u_segN,2.0,8.0)*0.21;   // Segments is a TURN count here
+  float TH    = turns*6.2831853;
+  float R0    = 0.86, C = 0.63;
+  float B     = -C/TH;                                // r = R0 + B*th, shrinking inward
+  float w0    = 0.080 + u_gDense*0.016;               // see the pitch note below
+  float a0    = u_gTwist*0.35;
+
+  float R   = length(p);
+  float phi = atan(p.y, p.x) - a0;
+  float thStar = (R - R0)/B;                          // the th whose radius is exactly R
+  float d = 1e9;
+  for(int k=-1;k<=1;k++){
+    float th = phi + 6.2831853*(floor((thStar - phi)/6.2831853 + 0.5) + float(k));
+    /* OUT OF RANGE IS REJECTED, NOT CLAMPED, and clamping was the bug. A clamped candidate
+       reports the radius of an ENDPOINT at every angle, which is a full circle -- so the first
+       version drew the spiral correctly and then filled every gap with two concentric rings and
+       came out 41% solid. The ends are the caps below; they do not belong in this loop. */
+    if(th < 0.0 || th > TH) continue;
+    float rr = R0 + B*th;
+    float w  = w0*(1.0 - 0.66*th/TH);                 // the taper, in the same parameter
+    float pitch = inversesqrt(1.0 + (B*B)/max(R*R,1e-4));
+    d = min(d, (abs(R - rr))*pitch - w);
   }
+  /* THE STROKE HAS TO FIT THE PITCH. Consecutive turns sit 2*pi*|B| apart -- 0.289 at the
+     default segment count -- so a full stroke of 0.21, which is what the polyline version used,
+     leaves a gap of 0.079 and the extrusion's bevel closes most of what is left. 0.16 leaves
+     0.129, and the gap is the whole point of the shape: it is what a spiral has that a disc
+     does not. */
+  /* THE TWO ENDS. The clamp above turns the spiral into a circle beyond its range, so without
+     these the form gains a phantom arc at each end. A disc at each end is the honest cap and it
+     is what makes the eye read as the centre of a spiral rather than a line that stops. */
+  vec2 e0 = vec2(cos(a0), sin(a0))*R0;
+  vec2 e1 = vec2(cos(a0+TH), sin(a0+TH))*(R0 + B*TH);
+  d = min(d, length(p-e0) - w0);
+  d = smin3(d, length(p-e1) - (0.085 + u_gCut*0.03), 0.05);
   return d;
 }
 // ARC — a broken ring, the counter-shape. Reads as a single confident stroke.
@@ -1190,7 +1264,7 @@ float p2Lattice(vec2 p){
   return max(d, length(p)-(0.74+u_gThick*0.04));           // clipped, or the bars run forever
 }
 float mRotor(vec3 p){    float S=EXR/0.950; return extr(p2Rotor(p.xy/S)*S, p, exDepth(), exBevel()); }
-float mStack(vec3 p){    float S=EXR/1.020; return extr(p2Clover(p.xy/S)*S, p, exDepth(), exBevel()); }
+float mStack(vec3 p){    float S=EXR/0.940; return extr(p2Volute(p.xy/S)*S, p, exDepth(), exBevel()); }
 float mRings(vec3 p){    float S=EXR/0.930; return extr(p2Arc  (p.xy/S)*S, p, exDepth(), exBevel()); }
 float mTruss(vec3 p){    float S=EXR/0.870; return extr(p2Chev (p.xy/S)*S, p, exDepth()*0.92, exBevel()); }
 float mPods(vec3 p){     float S=EXR/1.070; return extr(p2Wave (p.xy/S)*S, p, exDepth(), exBevel()); }
@@ -1583,7 +1657,7 @@ float evalForm(vec3 p){
    assumed -- and the reading disagrees with the older note, which said only p2Tris and p2Clover:
 
      mRotor   p2Rotor    loop at i*2PI/N, N=clamp(segN,2,8)          -> C_segN
-     mStack   p2Clover   loop at i*2PI/N plus a centred disc         -> C_segN
+     mStack   p2Volute   a spiral polyline; no rotation, no mirror   -> none
      mGear    p2Gear     teeth at i*2PI/2N, circular rim and bore    -> C_2segN, so C_segN holds
      mKnot    p2Knot     loop at i*2PI/N, N=clamp(segN,2,6)          -> C_segN AT ITS OWN CLAMP
      mRings   p2Arc      p.x=abs(p.x): one mirror, no rotation       -> none
@@ -1624,7 +1698,8 @@ float evalForm(vec3 p){
    The table is the part with value, and a dead function is a thing the next reader has to prove
    is dead before they can ignore it:
 
-       Tris, Clover          C_n, n = the Segments count
+       Tris                  C_n, n = the Segments count
+       Volute                none -- a spiral has no symmetry at all, which is the point of it
        Arc                   none -- a broken ring, it fragments
        Chevron, Wave, Plate  one mirror line only
        Gear                  C_n (its C_2n contains C_n)
@@ -3358,6 +3433,11 @@ void main(){
   // DBGMASK: output the depth-derived silhouette instead of the image. Edge artefacts have to be
   // measured against the EXACT silhouette, not one guessed from luminance, or the measurement
   // inherits the very halo it is trying to find.
+  /* DBGMASK IS THE SUBJECT MASK, and I read it backwards twice before reading the note above
+     the alpha write. A HIT stores t; a MISS stores the sentinel 99, which exists so that a ray
+     pointing away from the form cannot report itself as the nearest possible hit. So a<17 is
+     "hit something" -- white is the FORM -- and a threshold on "large alpha" selects the
+     background instead, which is how nine profiles came back measuring 78-92% of the frame. */
   if(u_dbg>0.5){ o=vec4(vec3(texture(u_tex,uv).a<17.0?1.0:0.0),1.0); return; }
   vec3 col;
   if(u_ss>0.5){                                 // supersampled: resolve real samples with a 4-tap tent
@@ -4369,16 +4449,32 @@ const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15, bump:0.15};  window.MORPH=MOR
    Below is that measurement plus one step of margin, floored at 0.05 so nothing runs bare.
    Symmetric by construction. u_morphBlob is set from it per transition, so the shader is
    unchanged -- this decides how much melt to ask for, not how the melt works. */
+/* ROW AND COLUMN 1 WERE RETUNED WITH THE PROFILE. They were 0.05 -- the default, meaning "this
+   one melts easily" -- and that was true of the Clover, which is three discs on a disc. The
+   Volute that replaced it has two and a bit turns and a gap between them, and melting THAT into
+   another shape leaves recognisable coils sitting inside the destination. Measured on the
+   all-pairs sweep, worst step-to-step ratio for the pairs that moved:
+
+       fuse    1<->4   1<->0   1<->8
+       0.05     4.88    3.00    2.38
+       0.10     5.09    2.86    1.83
+       0.15     3.50    1.93    1.93
+       0.22     2.55    2.09    2.09
+
+   0.15 rather than 0.22: it takes most of the improvement on the worst pair and is the best of
+   the four on the other two, and 0.22 starts costing the pairs that were already fine. It is
+   also the value the Arc's hardest pair already carries, so it is inside the range this table
+   was tuned in rather than a new extreme. */
 const MORPH_FUSE=[
-  [0.05,0.10,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.10,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.10,0.05,0.05,0.10,0.15,0.10,0.05,0.10,0.10],
-  [0.05,0.05,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.05,0.15,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.05,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.05,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
-  [0.05,0.05,0.10,0.05,0.05,0.05,0.05,0.05,0.05]];
+  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
+  [0.15,0.05,0.15,0.15,0.15,0.15,0.15,0.15,0.15],
+  [0.10,0.15,0.05,0.10,0.15,0.10,0.05,0.10,0.10],
+  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.15,0.05,0.05,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.05,0.05,0.05,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05],
+  [0.05,0.15,0.10,0.05,0.05,0.05,0.05,0.05,0.05]];
 function fuseBlob(a,b){
   const r=MORPH_FUSE[a|0], v=r&&r[b|0];
   return (v===undefined)?MORPH.blob:v;      // an SVG or mesh mode is outside the table
@@ -5632,7 +5728,7 @@ function segForSection(s){
 }
 rerollVariant();
 // ---- MODE tied to GENRE + ENERGY, changed via a smooth cross-mode MORPH ----
-// 0 Rotor  1 Clover  2 Arc  3 Chevron  4 Wave  5 Plate  6 Gear  7 Knot  8 Lattice
+// 0 Rotor  1 Volute  2 Arc  3 Chevron  4 Wave  5 Plate  6 Gear  7 Knot  8 Lattice
 // (this header read "0 ribbon 1 tower 2 gyroscope 3 space frame 4 pods 5 shell" -- six names
 //  for nine profiles, from before 6/7/8 existed. The table below still shows its age: every
 //  genre carries exactly three of modes 0-5 plus exactly one of 6/7/8, bolted on afterwards.)
@@ -5654,8 +5750,10 @@ const CALM=[3,2,8], MID=[1,3,7], HOT=[0,4,5,6];
    which is why every shape looked alike once the fold was on. A profile carrying repeated
    internal structure at a scale below the wedge -- teeth, bores, rings, a weave -- still has
    detail inside the slice, and the mirrors multiply it into something worth looking at.
-   Rotor, Clover, Gear, Knot and Lattice have that. Arc, Chevron, Wave and Plate are single
-   smooth strokes and do not. (The Rotor was built for this line: the Triskelion it replaced was
+   Rotor, Volute, Gear, Knot and Lattice have that. Arc, Chevron, Wave and Plate are single
+   smooth strokes and do not. The Volute keeps the Clover's place here on a different claim: the
+   Clover earned it on its lobe count and the Volute earns it on the gap between its turns, which
+   is structure at exactly the scale a wedge slices through. (The Rotor was built for this line: the Triskelion it replaced was
    in this list on the strength of its arms, and its arms are what the wedge cuts off.) */
 const FOLD_FRIENDLY=[0,1,6,7,8];
 /* THE FEWEST SHAPES THE FOLD MAY LEAVE THE DIRECTOR. 3 rather than 4 because FOLD_FRIENDLY has
@@ -9151,8 +9249,10 @@ function frame(){
   gl.uniform1f(US('u_faceLean'),FACE_LEAN.rad);
   gl.uniform1f(US('u_iridHue'),VAR.hue);
   gl.uniform1f(US('u_swirl'),swirlA);
-  /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the two profiles that actually
-     have segments (p2Rotor, p2Clover) and just a reasonable angle on the four that do not. See
+  /* MIRROR ANGLE, in units of PI/seg -- a sector boundary on the profiles that actually
+     have segments (p2Rotor, and the Gear and Knot at their own counts) and just a reasonable
+     angle on the rest. The Volute reads segN as a TURN COUNT rather than a repeat, so it is in
+     SEG_SHAPES but has no sector for this to line up with; harmless, for the reason below. See
      the kaleidoscope note in map() for why that is fine and why this is a dial to look at rather
      than a lattice to compute. window.KAL={phase} to try others. */
   const KALO=window.KAL||{};
@@ -11057,14 +11157,15 @@ function rollAll(seedStr){
   for(const x of ROLL_RECIPES){ if((k-=x.w)<=0){ rec=x; break; } }
   // ---- things every family gets, rolled BEFORE the recipe so the recipe can override them
   setCtl('selPal', pick(r,['auto','auto','auto','blood','acid','ultra','cyber','solar','mono']));
-  /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count and only two of the six
-     profiles use it (p2Rotor and p2Clover -- see the symmetry table in the shader); on the others the
-     slider is inert, so rolling a high count there is a roll that did nothing. And the Arc is a
-     broken ring: repeated eight times it stops reading as a single stroke. */
+  /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count on p2Rotor, a tooth count
+     on the Gear, a ring count on the Knot, a bar count on the Lattice and a TURN count on the
+     Volute -- see SEG_SHAPES; on the rest the slider is inert, so rolling a high count there is
+     a roll that did nothing. And the Arc is a broken ring: repeated eight times it stops reading
+     as a single stroke. */
   const shape=pick(r,['0','1','2','3','4','5','6','7','8','6','7','8']);   // the complex three, twice as often
   setCtl('selShape',shape);
   /* Segments means something different per profile: teeth on the Gear, rings on the Knot, bars
-     on the Lattice, blades on the Rotor -- and nothing at all on the Wave or the Plate. The
+     on the Lattice, blades on the Rotor, TURNS on the Volute -- and nothing on Wave or Plate. The
      ceiling is per shape so a roll never spends its randomness on a slider that is inert, and
      never asks the Arc (a broken ring) for eight of itself. */
   const segMax = (shape==='0'||shape==='1'||shape==='6') ? 6

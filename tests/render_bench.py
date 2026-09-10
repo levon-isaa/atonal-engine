@@ -545,11 +545,14 @@ def _mask(a):
 
     So it is fine for what it was written for -- comparing one filtered frame against another at
     the SAME pose, where whatever it selects it selects consistently -- and it is wrong for any
-    question about where the form is or how big it is. There is no ready subject mask in the
-    viewer either: the scene pass writes alpha 99 on a surface hit and the ray distance
-    otherwise, so DBGMASK's `alpha < 17` is a DEPTH mask and puts the far background on the same
-    side as the form. Isolating the subject would mean a new debug mode (alpha == 99), which is
-    worth adding the first time a measurement actually needs one.
+    question about where the form is or how big it is.
+
+    USE window.DBGMASK FOR THAT, which is a real subject mask and which I previously recorded
+    here as not being one. Wrong: the scene pass stores the ray's depth on a HIT and the
+    sentinel 99 on a MISS -- the sentinel exists so a ray pointing away cannot report itself as
+    the nearest possible hit -- so DBGMASK's `alpha < 17` means "hit the form" and renders it
+    white. Read it as `pixel > 128`. Reading it the other way round selects the background and
+    reports the form as 78-92% of the frame, which is what it did.
     """
     import numpy as np
     h, _ = np.histogram(a, bins=256, range=(0, 256))
