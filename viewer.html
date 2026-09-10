@@ -3703,7 +3703,35 @@ let morphScale=1.0;
 // whole script with it, and it does not reproduce on a hot reload, only on a cold load.
 let scaleSettle=0;             // frames the governor must not measure -- see frameAvg
 const MORPH_RSCALE=0.74;           // linear; pixels fall to ~0.55 -- see the measurement above
-let morphStepWant=false, morphPhasePrev=0;   // latched at the phase edge; see the use site
+let morphStepF=1.0, morphPhasePrev=0;   // latched at the phase edge; see the use site
+/* HOW FAR THE MORPH MAY STEP THE MARCH DOWN, given where the march is standing.
+   The old gate refused the step outright whenever rscale sat above SS_RESOLVE, because a full
+   0.74 from there drops the product through the resolve's threshold and swaps the 4-tap tent
+   for FXAA in the middle of the transition. True, and it made the insurance fire in inverse
+   proportion to the need: above the threshold is exactly where the march is dearest and the
+   morph's second field evaluation costs most, and that is the case the gate turned down.
+   MEASURED over 300s of the 176bpm upload, five transitions, frame rate INSIDE each:
+
+       entry rscale 1.00  stepped      59.1 fps    p90 frame 18.2ms
+       entry rscale 1.10  refused      60.0 fps              18.0ms
+       entry rscale 1.16  refused      60.0 fps              17.9ms
+       entry rscale 1.22  refused      51.7 fps              24.4ms
+       entry rscale 1.28  refused      45.8 fps              28.0ms
+
+   Four seconds at 46fps while the form is changing, which is the one moment the eye is on it.
+   The artefact the gate exists to avoid is the CROSSING, not the step -- so the step stops at
+   the threshold instead of being refused, and the crossing cannot happen. From 1.28 that is a
+   33% pixel cut with the resolve untouched. Below the threshold nothing can be crossed and the
+   full 0.74 applies, exactly as before. */
+function morphStepFactor(){
+  // SS_RESOLVE is declared a few hundred lines BELOW this. Read inside the function, where it
+  // is long since initialised, and not into a const up here -- a const initialised from it at
+  // this point is in the temporal dead zone and throws at script evaluation, taking the whole
+  // page with it. Which is what the first version of this did.
+  const keep=SS_RESOLVE+0.02;   // the shader tests ssR>1.05 strictly: land above it, not on it
+  if(rscale<=SS_RESOLVE) return MORPH_RSCALE;
+  return Math.max(MORPH_RSCALE, Math.min(1, keep/rscale));
+}
 function applyScale(){
   scaleSettle=2;                 // see frameAvg: the governor may not measure its own resize
   const s=rscale*morphScale;
@@ -8791,10 +8819,12 @@ function frame(){
      transition measured p50 18.3ms against 16.9 outside, but p90 30.3 against 20.4 and p99 48.3
      against 27.5. Those stalls are what make the blend advance unevenly, and the headroom gate
      could not see them -- it latches from the frame BEFORE the morph, which is the fast one. */
-  if(phase===1 && morphPhasePrev===0)
-    morphStepWant=(frameAvg>HEADROOM) || (rscale<=SS_RESOLVE);
+  // LATCHED at the phase edge and not re-read: the factor depends on rscale, which the governor
+  // moves underneath a running transition, so reading it per frame would reallocate the whole
+  // target set mid-morph -- the one thing worse than stepping once.
+  if(phase===1 && morphPhasePrev===0) morphStepF=morphStepFactor();
   morphPhasePrev=phase;
-  { const wantMS=(phase===1 && !RENDER.pinScale && morphStepWant)?MORPH_RSCALE:1.0;
+  { const wantMS=(phase===1 && !RENDER.pinScale)?morphStepF:1.0;
     if(wantMS!==morphScale){ morphScale=wantMS; applyScale(); } }
   const prog=(phase===1)?mix:0;
   const emph=(phase===1)?morphEmph():1.0;              // see morphEmph -- 1.0 at the median change
