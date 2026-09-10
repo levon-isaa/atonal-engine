@@ -282,12 +282,11 @@
   <!-- MOTION. Multipliers on the tempo-derived rates, not absolute speeds -- see MOT in the
        script for why the tempo lock has to survive the dial. 0 holds a pose. -->
   <details id="gMotion"><summary>Motion</summary>
-    <!-- THESE ARE NO LONGER THREE PERPENDICULAR AXES, and the labels said they were until the
-         face bound shipped. The form is a 3.5:1 plate: two of its three axes sweep the face
-         through the view and present a featureless rim, so those two are now bounded sways and
-         the continuous turn was moved onto the plate's own normal, where it cannot present the
-         edge. See FACE where spin and tilt are summed.
-         WHAT EACH SLIDER ACTUALLY DRIVES NOW, measured by zeroing them one at a time over 40s:
+    <!-- ONE RATE AND TWO AMPLITUDES, which is what the motion actually has now.
+         It was three rate dials named after three perpendicular axes, and the form no longer
+         has three: it is a 3.5:1 plate, two of whose axes sweep the face through the view, so
+         those two became bounded sways and the continuous turn moved onto the plate's own
+         normal. Measured on the old arrangement, zeroing each dial in turn over 40s:
 
              baseline           turn 27.4 deg/s   lean 26.0 deg   nod 18.0 deg
              Spin 0             turn  8.4         lean 25.9       nod 18.0
@@ -295,23 +294,38 @@
              Tumble 0           turn 27.2         lean 26.0       nod 10.1
              Spin 0 + Swirl 0   turn  0.0         lean 25.9       nod 18.0
 
-         So Spin and Swirl now drive the SAME in-plane turn, about two thirds and one third of
-         it, at their own periods so the two beat against each other; Tumble is the nod alone;
-         and zeroing a rate holds its lean where it stands rather than centring it, because the
-         lean is sin() of an integrator that has simply stopped advancing. The lean's AMPLITUDE
-         is not on a slider -- it is FACE.spinDeg and FACE.tiltDeg, and FACE.on=false restores
-         the old free three-axis motion these labels used to describe. -->
-    <div class="row"><label title="The form's main turn, in its own plane, and the rate it rocks side to side through the face lean. About two thirds of the turn at 1.00; the beat swing and the phrase arc ride on this one. At 0 the turn continues from Swirl and the lean holds where it stands.">Spin</label>
-      <input type="range" id="mSpin" min="0" max="300" value="100"><span class="val" id="mSpinV">1.00</span></div>
-    <div class="row"><label title="How fast the form nods, through the face lean's other axis. It no longer turns end over end — that axis is bounded so the plate keeps its face to the camera. At 0 a nod set elsewhere still holds.">Tumble</label>
-      <input type="range" id="mTumble" min="0" max="300" value="100"><span class="val" id="mTumbleV">1.00</span></div>
-    <div class="row"><label title="A second turn in the same plane as Spin, at its own period, so the two beat against each other rather than adding to one rate. About a third of the turn at 1.00. Spin and Swirl both at 0 is the only way to stop the form turning.">Swirl</label>
-      <input type="range" id="mSwirl" min="0" max="300" value="100"><span class="val" id="mSwirlV">1.00</span></div>
+         Two dials drove one visible turn and neither alone could stop it, while the two
+         quantities anyone would actually reach for -- how far it leans, how far it nods -- were
+         reachable only from the console. So Turn is the single rate for all of the form's own
+         motion (spin, swirl and tumble move together, keeping the two-thirds/one-third split
+         that makes the turn beat against itself), and Lean and Nod are the amplitudes.
+         FACE.on=false still restores the free three-axis motion, and MOT.spin / MOT.tumble /
+         MOT.swirl are still separately settable from the console for it -- what goes is the
+         panel's claim to be driving three axes when it is driving one.
+
+         AND ZERO IS NOT THE SAFE END OF LEAN AND NOD, which is worth knowing before anyone
+         drags them down to "keep the face square". Three rounds of 50s, defaults against both
+         at zero:
+
+             defaults        |n.v| p50 0.718   past 0.30  6.3 / 6.3 / 6.4 %   p05 0.25
+             Lean 0, Nod 0   |n.v| p50 0.715   past 0.30 14.8 / 14.5 / 14.3 % p05 0.12
+
+         The MEDIAN pose is the same either way; it is the TAIL that doubles. The sway is not
+         what presents the face -- it is what stops the camera's own orbit from lining up with
+         the plate's edge and sitting there. Take it away and the deep excursions get deeper.
+         The first version of these tooltips said "0 holds it square on", which is exactly
+         backwards, and only measuring caught it. -->
+    <div class="row"><label title="How fast the form moves — the turn in its own plane and the rate it sways through the lean below. One dial, because they are one motion: the sway is the turn seen from the side. At 0 the form holds wherever it stands.">Turn</label>
+      <input type="range" id="mTurn" min="0" max="300" value="100"><span class="val" id="mTurnV">1.00</span></div>
+    <div class="row"><label title="How far the form leans side to side, in degrees. Depth, not rotation. 0 does NOT hold it square on — it removes the thing that breaks the camera's alignment with the plate's edge, and the face ends up turned away MORE often, not less: measured, 6.3% of frames past the halfway angle at the default against 14.4% with Lean and Nod both at 0. Larger leans turn it away too. The default is near the floor of that curve.">Lean</label>
+      <input type="range" id="mLean" min="0" max="60" value="26"><span class="val" id="mLeanV">26°</span></div>
+    <div class="row"><label title="How far the form nods, in degrees — the other half of the lean, about the horizontal axis. Same caution as Lean: 0 is not the safest setting for keeping the face to the camera, it is simply no nod.">Nod</label>
+      <input type="range" id="mNod" min="0" max="45" value="18"><span class="val" id="mNodV">18°</span></div>
     <div class="row"><label title="The camera's orbit around the form. Independent of the form's own rotation.">Orbit</label>
       <input type="range" id="mOrbit" min="0" max="300" value="100" title="Speed of the camera orbit. Has no effect while Camera·Orbit is off, because nothing is driving it then."><span class="val" id="mOrbitV">1.00</span></div>
     <div class="row"><label>&nbsp;</label>
       <button id="motStop" class="mini" title="Hold every axis still, wherever it stands — including the face lean, which is a pose and not a rate">Freeze</button>
-      <button id="motReset" class="mini" title="Back to 1.00 on all four">Reset</button></div>
+      <button id="motReset" class="mini" title="Turn and Orbit back to 1.00. Lean and Nod are a pose and are left alone.">Reset</button></div>
   </details>
 
   <details id="gMat"><summary>Material</summary>
@@ -10707,10 +10721,36 @@ function bindMot(id,key){
   const apply=()=>{ MOT[key]=(+el.value)/100; out.textContent=MOT[key].toFixed(2); };
   el.addEventListener('input',apply); apply();
 }
-bindMot('mSpin','spin'); bindMot('mTumble','tumble'); bindMot('mSwirl','swirl'); bindMot('mOrbit','orbit');
-function motSet(v){ for(const k of ['spin','tumble','swirl','orbit']){
-  MOT[k]=v; const el=$('m'+k[0].toUpperCase()+k.slice(1)); el.value=Math.round(v*100);
-  $(el.id+'V').textContent=v.toFixed(2); } }
+bindMot('mOrbit','orbit');
+/* ONE DIAL FOR THE FORM'S OWN RATE. spin, swirl and tumble move together, which keeps the
+   two-thirds/one-third split between the two turn contributions -- that ratio is what makes the
+   turn beat against itself instead of running at one flat rate -- and keeps the sway in step
+   with the turn it is a side view of. The three are still separate underneath and still
+   settable as MOT.spin / MOT.swirl / MOT.tumble from the console, which is what FACE.on=false
+   wants: with the free three-axis motion restored they are three axes again and this dial
+   drives all of them at once. */
+function bindTurn(){
+  const el=$('mTurn'), out=$('mTurnV');
+  const apply=()=>{ const v=(+el.value)/100;
+    MOT.spin=v; MOT.swirl=v; MOT.tumble=v; out.textContent=v.toFixed(2); };
+  el.addEventListener('input',apply); apply();
+}
+/* AND TWO FOR HOW FAR, in degrees, which is the unit the control is in and the unit the note at
+   FACE reasons in -- so the panel and the measurement table talk about the same number. */
+function bindFace(id,key){
+  const el=$(id), out=$(id+'V');
+  const apply=()=>{ FACE[key]=+el.value; out.textContent=el.value+'\u00b0'; };
+  el.addEventListener('input',apply); apply();
+}
+bindTurn(); bindFace('mLean','spinDeg'); bindFace('mNod','tiltDeg');
+/* Freeze and Reset touch the RATES only. Lean and Nod are a pose, not a motion: freezing should
+   hold the form where it stands, and flattening it to square-on at the same time would be a
+   different gesture that nobody asked this button for. */
+function motSet(v){
+  for(const k of ['spin','tumble','swirl','orbit']) MOT[k]=v;
+  for(const id of ['mTurn','mOrbit']){ const el=$(id); el.value=Math.round(v*100);
+    $(id+'V').textContent=v.toFixed(2); }
+}
 $('motStop').addEventListener('click',()=>{ motSet(0); showStat('Motion frozen'); hideStat(1300); });
 $('motReset').addEventListener('click',()=>{ motSet(1); showStat('Motion 1.00'); hideStat(1300); });
 bindPrm('pSeg','seg',1,v=>v.toFixed(0));
