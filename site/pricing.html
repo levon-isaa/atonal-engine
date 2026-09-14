@@ -127,7 +127,7 @@ details .prose{padding:0 0 20px;font-size:14.5px}
         <a class="btn o hide" data-gum="fifty" target="_blank" rel="noopener">Buy on Gumroad</a>
       </div>
     </div>
-    <div class="pad hide" id="redeemWrap" style="border-top:1px solid var(--line)">
+    <div class="pad hide" id="redeem" style="border-top:1px solid var(--line)">
       <div class="sh"><span class="ix">GUM</span><span class="lab">Bought through Gumroad</span>
         <span class="rl"></span><span class="lab" id="redeemLab">Paste the licence you were emailed</span></div>
       <p class="prose" style="margin-top:14px;font-size:15px">Gumroad emails a licence key with the
@@ -263,14 +263,18 @@ details .prose{padding:0 0 20px;font-size:14.5px}
      about what a pack costs. The markup already holds the same numbers, so a
      failed fetch leaves a correct page rather than an empty one. */
   fetch(API + '/packs').then(function(r){ return r.json(); }).then(function(d){
-    var fmt = new Intl.NumberFormat(undefined,{style:'currency',currency:(d.currency||'eur').toUpperCase(),
-                                               maximumFractionDigits:2});
+    // Cents only when there are cents -- see the note on the landing page's copy of this.
+    var cur = (d.currency||'eur').toUpperCase();
+    var fmt = function(v){
+      return new Intl.NumberFormat(undefined,{style:'currency',currency:cur,
+        minimumFractionDigits:(v % 1 === 0)?0:2, maximumFractionDigits:2}).format(v);
+    };
     Object.keys(d.packs || {}).forEach(function(k){
       var el = document.querySelector('[data-pack="'+k+'"] [data-price]');
       if(!el) return;
       var p = d.packs[k], each = p.amount / p.credits / 100;
-      el.innerHTML = fmt.format(p.amount/100) +
-        '<small>/ ' + (p.credits === 1 ? '1 credit' : fmt.format(each) + ' each') + '</small>';
+      el.innerHTML = fmt(p.amount/100) +
+        '<small>/ ' + (p.credits === 1 ? '1 credit' : fmt(each) + ' each') + '</small>';
       /* The queue line comes from the server's own flag, because this page claimed a priority
          queue for a while when nothing in the code implemented one. The markup keeps it, so a
          failed fetch still renders the truth as it stands today; what the server can do is take
@@ -295,7 +299,7 @@ details .prose{padding:0 0 20px;font-size:14.5px}
       var a = document.querySelector('[data-gum="'+k+'"]');
       if(a && links[k]){ a.href = links[k]; a.classList.remove('hide'); }
     });
-    if(gum.ready){ document.getElementById('redeemWrap').classList.remove('hide'); }
+    if(gum.ready){ document.getElementById('redeem').classList.remove('hide'); }
 
     if(!d.ready){
       /* The old wording said checkout was not live and disabled everything. With Gumroad

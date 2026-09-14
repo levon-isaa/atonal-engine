@@ -758,29 +758,41 @@ footer{border-top:1px solid var(--line);padding:22px 0}
           unlimited and free, because none of it runs on our machines. Credits don&rsquo;t expire,
           and a couple of tracks a day are free without an account.</p>
       </div>
+      <!-- THE NUMBERS AND THE DESTINATIONS ARE BOTH AUTHORED HERE AND BOTH CAN BE REPLACED BY
+           THE SERVER. Authored, because this page is the first thing a stranger sees and it has
+           to be right with the network down or the server asleep -- these are the current
+           figures and the links go somewhere useful as they stand. Replaced, because a price
+           written in two places is a price that will eventually disagree with itself, and the
+           pricing page has read /packs for exactly that reason while this one did not.
+           data-pack keys each block; the script below fills in the rest. -->
       <div class="packs stagger">
-        <div class="pack">
+        <div class="pack" data-pack="single">
           <span class="lab">Single</span>
-          <div class="price">&euro;6<small>/ track</small></div>
+          <div class="price" data-price>&euro;6<small>/ track</small></div>
           <ul><li>One track analysed</li><li>Every format up to 4K</li><li>No watermark</li></ul>
-          <a class="btn o" href="./pricing.html">Render one</a>
+          <a class="btn o" data-cta href="./pricing.html">Render one</a>
+          <a class="btn o" data-gum="single" style="display:none" target="_blank" rel="noopener">Buy on Gumroad</a>
         </div>
-        <div class="pack f">
+        <div class="pack f" data-pack="ten">
           <span class="lab" style="color:var(--mag)">Pack of 10 &middot; most taken</span>
-          <div class="price">&euro;45<small>/ &euro;4.50 each</small></div>
+          <div class="price" data-price>&euro;45<small>/ &euro;4.50 each</small></div>
           <ul><li>Ten tracks analysed</li><li>Every format up to 4K</li>
             <li>No watermark</li><li>Commercial use included</li></ul>
-          <a class="btn" href="./pricing.html">Buy 10 credits <span class="k">&rarr;</span></a>
+          <a class="btn" data-cta href="./pricing.html">Buy 10 credits <span class="k">&rarr;</span></a>
+          <a class="btn o" data-gum="ten" style="display:none" target="_blank" rel="noopener">Buy on Gumroad</a>
         </div>
-        <div class="pack">
+        <div class="pack" data-pack="fifty">
           <span class="lab">Pack of 50</span>
-          <div class="price">&euro;175<small>/ &euro;3.50 each</small></div>
+          <div class="price" data-price>&euro;175<small>/ &euro;3.50 each</small></div>
           <ul><li>Fifty tracks analysed</li><li>Every format up to 4K</li>
-            <li>No watermark</li><li>Commercial use included</li><li>Priority render queue</li></ul>
-          <a class="btn o" href="./pricing.html">Buy 50 credits</a>
+            <li>No watermark</li><li>Commercial use included</li><li data-prio>Priority render queue</li></ul>
+          <a class="btn o" data-cta href="./pricing.html">Buy 50 credits</a>
+          <a class="btn o" data-gum="fifty" style="display:none" target="_blank" rel="noopener">Buy on Gumroad</a>
         </div>
       </div>
       <div class="pad" style="padding-top:18px;padding-bottom:18px">
+        <span class="lab" id="redeemLine" style="display:none">Already bought through Gumroad?
+          <a href="./pricing.html#redeem" style="color:var(--mag)">Redeem your licence</a></span>
         <span class="lab">Label or agency, rendering at volume?
           <a href="mailto:hello@example.com" style="color:var(--mag)">Talk to us</a></span>
       </div>
@@ -1903,6 +1915,67 @@ var LADDER=[2,3,8,1,7,5,4,0,6];
 })();
 })();
 </script>
+<script>
+/* ============================================================================
+   PRICES AND CHANNELS, FROM THE SERVER.
+   This page is the first thing a stranger sees, so everything below is authored
+   into the markup and correct as it stands -- with the network down, the server
+   asleep, or the page served from a CDN that has never heard of /packs, it
+   renders the current figures and its links go somewhere useful. What the fetch
+   adds is agreement: a price written in two places will eventually disagree
+   with itself, and until now the pricing page read /packs for that reason and
+   this page did not.
+   It also adds the Gumroad route, which cannot be authored because it does not
+   exist until an operator configures it -- and which only APPEARS for packs
+   that are actually on sale there. A pack with a link and no product id is one
+   that can be bought and not redeemed, and the server's boot banner shouts
+   about that; the page simply never offers it.
+   The card route stays the primary call to action. Gumroad is the second link,
+   not a replacement for the first, because the pricing page is where both
+   channels and the licence field live.
+   ========================================================================== */
+(function(){
+  'use strict';
+  var API = location.origin;
+  fetch(API + '/packs').then(function(r){ return r.json(); }).then(function(d){
+    /* WHOLE AMOUNTS KEEP THEIR WHOLE LOOK. Intl's currency format defaults to two decimal
+       places, so a fetch that is only supposed to confirm the price was rewriting the
+       authored "EUR 6" as "EUR 6.00" -- the page looked worse after the server agreed with
+       it than before. Cents are shown only when there are cents. */
+    var cur = (d.currency||'eur').toUpperCase();
+    var fmt = function(v){
+      return new Intl.NumberFormat(undefined, {style:'currency', currency:cur,
+        minimumFractionDigits: (v % 1 === 0) ? 0 : 2, maximumFractionDigits:2}).format(v);
+    };
+    Object.keys(d.packs || {}).forEach(function(k){
+      var p = d.packs[k], box = document.querySelector('[data-pack="'+k+'"]');
+      if(!box) return;
+      var pr = box.querySelector('[data-price]');
+      if(pr) pr.innerHTML = fmt(p.amount/100) + '<small>/ ' +
+        (p.credits === 1 ? 'track' : fmt(p.amount/p.credits/100) + ' each') + '</small>';
+      /* The priority line is REMOVED when the server says the pack has no priority, and
+         never added when it does: this page claimed a priority queue for a while when
+         nothing in the code implemented one, so the direction the server is allowed to
+         move it in is away. */
+      if(!p.priority){ var li = box.querySelector('[data-prio]'); if(li) li.remove(); }
+    });
+    var links = (d.gumroad && d.gumroad.links) || {};
+    var any = false;
+    Object.keys(links).forEach(function(k){
+      var a = document.querySelector('[data-gum="'+k+'"]');
+      if(a && links[k]){ a.href = links[k]; a.style.display = ''; any = true; }
+    });
+    if(any || (d.gumroad && d.gumroad.ready)){
+      var line = document.getElementById('redeemLine');
+      if(line) line.style.display = '';
+    }
+  }).catch(function(){
+    /* Deliberately silent. The markup is already correct; a marketing page has no business
+       showing a stranger an error because a fetch it did not need failed. */
+  });
+})();
+</script>
+
 <script>
 /* ============================================================================
    MICRO-INTERACTIONS -- the parts CSS cannot reach on its own.

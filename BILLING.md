@@ -46,6 +46,7 @@ for the tagger) and nothing else.
 |---|---|
 | `billing.py` | SQLite ledger, render keys, Paddle calls, Gumroad licence redemption |
 | `server.py` | `/packs` `/credits` `/checkout` `/claim` `/redeem` `/paddle/webhook`, and the gate in `/analyze` |
+| `site/index.html` | The landing page. Prices and the Gumroad links come from `/packs` too, and it falls back to its own authored markup when there is no server to ask |
 | `site/pricing.html` | The pricing page. Prices come from `/packs`, so page and ledger cannot disagree. Also the Gumroad buy links, the licence redemption field, and the one place a key can be entered by hand |
 | `site/success.html` | Post-checkout. Shows the render key once, stores it in `localStorage` |
 | `viewer.html` | Credits group in the panel: a key field that checks the key once and remembers it. Sends `X-Render-Key` with each upload |
@@ -144,6 +145,12 @@ answer is the fact.
    ```
 
    The boot banner will tell you if only one of the pair is set. Read it.
+
+   A pack with a link configured gets a **Buy on Gumroad** button on both the
+   pricing page and the landing page, beside the card button rather than instead
+   of it — the pricing page is where both channels and the licence field live,
+   so that stays the primary route. A pack with no link is simply not offered
+   there, on either page.
 
 5. **Buy your own product** and redeem the licence at the bottom of the pricing
    page. It should hand back an `atk_` key and say how many credits landed.
