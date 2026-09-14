@@ -44,11 +44,11 @@ for the tagger) and nothing else.
 
 | File | What it does |
 |---|---|
-| `billing.py` | SQLite ledger, render keys, Paddle calls |
-| `server.py` | `/packs` `/credits` `/checkout` `/claim` `/paddle/webhook`, and the gate in `/analyze` |
-| `site/pricing.html` | The pricing page. Prices come from `/packs`, so page and ledger cannot disagree |
+| `billing.py` | SQLite ledger, render keys, Paddle calls, Gumroad licence redemption |
+| `server.py` | `/packs` `/credits` `/checkout` `/claim` `/redeem` `/paddle/webhook`, and the gate in `/analyze` |
+| `site/pricing.html` | The pricing page. Prices come from `/packs`, so page and ledger cannot disagree. Also the Gumroad buy links, the licence redemption field, and the one place a key can be entered by hand |
 | `site/success.html` | Post-checkout. Shows the render key once, stores it in `localStorage` |
-| `viewer.html` | Credits panel; sends `X-Render-Key` with each upload |
+| `viewer.html` | Credits group in the panel: a key field that checks the key once and remembers it. Sends `X-Render-Key` with each upload |
 
 Database: `out/billing.db` (override with `ATONAL_DB`). It holds **hashed** keys.
 The one exception is the `claims` table, which keeps the plaintext for 24 hours
@@ -56,8 +56,17 @@ so the success page survives a refresh; after that the database contains nothing
 that can spend anything.
 
 The ledger, keys, free tier and the `/analyze` gate never knew what a payment
-processor was — only five functions below the provider marker in `billing.py`
-did. Changing provider again is a small job, not a rebuild.
+processor was — only the functions below the provider marker in `billing.py`
+did. Changing provider again is a small job, not a rebuild, and adding a second
+one alongside was exactly that job: both channels meet at `_grant_purchase()`,
+which is the only place that decides which key a purchase lands on.
+
+**The server says which channels are live at boot**, and which packs are only
+half configured — a product id with no link is a pack that can be redeemed but
+not bought, and a link with no product id is a pack that can be **bought and not
+redeemed**. The second one takes money. A variable with a typo in its name is
+otherwise indistinguishable from one that was never set: the page shows no
+button and nothing is logged.
 
 ## Switching it on
 
@@ -97,6 +106,51 @@ did. Changing provider again is a small job, not a rebuild.
    from Paddle's own test-payments documentation rather than from here, since
    they change. You should land on `success.html` with a key.
 
+## Switching Gumroad on
+
+A second channel, not a replacement. Paddle stays the in-app checkout — its cut
+is smaller and it signs its webhooks. Gumroad earns its place somewhere Paddle
+cannot go: a link that works in a post, a video description or a DM, with
+nothing to integrate at the other end. Both are merchants of record, so the VAT
+handling and the payout geography that ruled Stripe out are answered either way.
+
+**It is redemption, not a webhook, and that is the whole security argument.**
+Gumroad's ping is a plain form POST with no signature over the body, so an
+endpoint that granted on one would be the unauthenticated "give me credits" API
+that the Paddle webhook check exists to refuse. Gumroad's licence verification
+API is the strong surface: the buyer pastes the licence they were emailed and
+the server asks **Gumroad** whether it is real before anything is granted — the
+same shape as `/claim`, where the client's word is a hint and the provider's
+answer is the fact.
+
+1. **Create one Gumroad product per pack you want to sell there.** You do not
+   have to sell all three; a pack with no product id is simply not on sale
+   through Gumroad, which is a legitimate state.
+
+2. **Turn on licence keys for each product.** *Product → Settings → generate a
+   unique licence key per sale.* Without this there is nothing to redeem.
+
+3. **Get each product's id.** It is the `id` on the product in Gumroad's own
+   API (`GET /v2/products`), not the short permalink in the URL. The permalink
+   is the buy link; the id is what verification is checked against.
+
+4. **Set the environment** — two variables per pack, and both matter:
+
+   ```
+   ATONAL_GUMROAD_TEN=<product id>              # what a licence is verified against
+   ATONAL_GUMROAD_LINK_TEN=https://you.gumroad.com/l/ten   # the buy button
+   ATONAL_GUMROAD_FIFTY=<product id>
+   ATONAL_GUMROAD_LINK_FIFTY=https://you.gumroad.com/l/fifty
+   ```
+
+   The boot banner will tell you if only one of the pair is set. Read it.
+
+5. **Buy your own product** and redeem the licence at the bottom of the pricing
+   page. It should hand back an `atk_` key and say how many credits landed.
+
+There is no sandbox. Gumroad's own test purchases are the way to try this
+without moving money, and the amount is yours either way minus their cut.
+
 ## How a purchase becomes credits
 
 1. The pricing page POSTs `/checkout`; the server creates a Paddle transaction
@@ -108,6 +162,20 @@ did. Changing provider again is a small job, not a rebuild.
    Paddle** and grants if the webhook has not landed yet.
 4. The webhook grants too. Both paths are idempotent on the transaction id, so
    whichever runs first wins and the other is a no-op.
+
+Through Gumroad it is shorter, and the buyer does one thing the card flow does
+not ask of them:
+
+1. They buy on Gumroad, which emails them a licence key.
+2. They paste it into the redemption field on the pricing page, which POSTs
+   `/redeem` — the licence in the **body**, never a query string, because it is
+   a bearer credential and query strings reach access logs and Referer headers.
+3. `redeem()` asks Gumroad whether the licence is real, refuses a refunded or
+   charged-back sale, and exchanges it **once** for an `atk_` key.
+4. The licence is not the render key and is never stored as one. So an analysis
+   never depends on Gumroad being reachable, and a customer who buys through
+   both channels on the same address ends up with **one key and one balance**
+   rather than two of each.
 
 ## Things that are deliberate
 
@@ -136,6 +204,16 @@ did. Changing provider again is a small job, not a rebuild.
   response shape under a running server.
 - **`stripe_ready()` remains as an alias** for `billing_ready()` so an older
   cached page does not break on the rename.
+- **A Gumroad refund is read, not assumed.** Gumroad leaves the licence valid
+  after a refund or a chargeback and reports it on the purchase, so `redeem()`
+  checks `refunded`, `chargebacked` and `disputed` — otherwise the money goes
+  back while the credits stay.
+- **`increment_uses_count` is false on verification.** Gumroad's counter is a
+  licence-activation count and a redemption is not an activation; the ledger's
+  UNIQUE `ref` is what makes a sale grant once. Burning a use on every check
+  would make a customer's own retry look like a second install.
+- **`/redeem` is public and unauthenticated**, exactly like `/claim`. The only
+  thing between it and free credits is that the provider is the one answering.
 
 ## Still to do before taking real money
 
@@ -153,3 +231,12 @@ did. Changing provider again is a small job, not a rebuild.
 - [ ] **Move the ledger off SQLite** if you ever run more than one instance —
       it is a single file on local disk. One box is fine for a launch.
 - [ ] **Back up `out/billing.db`.** It is the only record of who paid you.
+- [ ] **Check Gumroad's current fee and their payout to Armenia.** Both change,
+      and neither is worth taking from a file written months earlier. The cut is
+      higher than Paddle's, which is the argument for Gumroad being the link you
+      hand out rather than the checkout in the app.
+- [ ] **Decide whether the redemption paste is costing you buyers.** There is no
+      webhook, so a Gumroad buyer does one extra step. Whether that is where
+      people drop out is a number to get from customers, not from here — and if
+      it is, the fix is a ping endpoint that re-fetches the sale before granting
+      rather than one that trusts the POST.

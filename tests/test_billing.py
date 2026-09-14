@@ -449,6 +449,12 @@ def test_gumroad_redeem():
         again = billing.redeem("L-GOOD")
         check(again.get("key") == key and billing.balance(key) == 10,
               "redeeming the same licence twice grants once (%d)" % billing.balance(key))
+        # fresh IS LOAD-BEARING FOR THE PAGE. Without it the redemption field says "10 credits
+        # added" to someone pasting a licence for the second time, in the same sentence as a
+        # balance that has not moved -- a lie the reader can check. The page branches on this.
+        check(again.get("fresh") is False,
+              "and says so: fresh is False on the repeat (%s)" % again.get("fresh"))
+        check(out.get("fresh") is True, "while the first redemption reports fresh True")
 
         # quantity: Gumroad sells n of a pack in one sale
         lic["L-QTY"] = {"_prod": "prod_fifty", "success": True,

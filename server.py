@@ -725,6 +725,53 @@ class H(BaseHTTPRequestHandler):
         if self._LOG:
             print(f"  {self.command} {self.path} -> {a[1] if len(a) > 1 else ''}", flush=True)
 
+def _billing_banner():
+    """What an operator cannot otherwise find out without reading billing.py.
+
+    Both channels are configured entirely through the environment, and a variable with a typo
+    in its name is indistinguishable from one that was never set: the pricing page simply shows
+    no button and the server says nothing. That is a bad half hour. This prints, once, which
+    channels are live and -- more useful -- which packs are HALF configured, because a product
+    id with no link is a pack that can be redeemed but not bought, and a link with no product id
+    is a pack that can be bought and then not redeemed. The second one takes money.
+    """
+    try:
+        out = []
+        if billing.billing_ready():
+            miss = [p for p in billing.PACKS
+                    if not (os.environ.get("ATONAL_PRICE_" + p.upper()) or "").strip()]
+            out.append("  card checkout: Paddle, %s" % billing.PADDLE_ENV)
+            if miss:
+                out.append("    !! no ATONAL_PRICE_ for: %s -- /checkout raises for those"
+                           % ", ".join(sorted(miss)))
+            if not (os.environ.get("PADDLE_WEBHOOK_SECRET") or "").strip():
+                out.append("    !! PADDLE_WEBHOOK_SECRET unset -- the webhook refuses everything")
+        else:
+            out.append("  card checkout: off (PADDLE_API_KEY unset)")
+
+        prods = billing.gumroad_products()
+        links = {p: billing.gumroad_link(p) for p in billing.PACKS}
+        links = {k: v for k, v in links.items() if v}
+        if prods or links:
+            both = sorted(set(prods) & set(links))
+            out.append("  gumroad: %s" % (", ".join(both) if both else "nothing complete"))
+            for p in sorted(set(prods) - set(links)):
+                out.append("    !! %s has ATONAL_GUMROAD_%s but no ATONAL_GUMROAD_LINK_%s"
+                           " -- redeemable, but no buy button" % (p, p.upper(), p.upper()))
+            for p in sorted(set(links) - set(prods)):
+                out.append("    !! %s has a link but no ATONAL_GUMROAD_%s -- it can be BOUGHT"
+                           " and not redeemed" % (p, p.upper()))
+        else:
+            out.append("  gumroad: off (no ATONAL_GUMROAD_<PACK> set)")
+
+        out.append("  free tier: %d/day per IP%s" % (billing.FREE_PER_DAY,
+                   "" if os.environ.get("ATONAL_TRUST_PROXY") else " (X-Forwarded-For not trusted)"))
+        print("\n".join(out), flush=True)
+    except Exception:
+        # A banner is not worth failing a boot over.
+        traceback.print_exc()
+
+
 class _V6(ThreadingHTTPServer):
     address_family = socket.AF_INET6
 
@@ -773,6 +820,7 @@ if __name__ == "__main__":
               f"Restart without ATONAL_HOST to go back to loopback-only.", flush=True)
     print(f"ATONAL Director server on http://127.0.0.1:{PORT}   (PANNs: {tagger.available()})",
           flush=True)
+    _billing_banner()
     # THE FIRST UPLOAD SHOULD NOT PAY FOR THE IMPORTS. analyze imports librosa lazily, and
     # librosa in turn pulls numba and compiles: profiled on a cold process, 2.42s of a 12.57s
     # analysis was import machinery, 19% of it, and every bit of that landed on whoever uploaded

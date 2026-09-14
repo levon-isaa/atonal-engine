@@ -340,20 +340,34 @@ details .prose{padding:0 0 20px;font-size:14.5px}
           if(!res.ok || j.error) throw new Error(j.error || 'that licence could not be redeemed');
           /* Same origin as the renderer, so storing it here is storing it there. */
           if(j.key){ try { localStorage.setItem('atonal.key', j.key); } catch(e){} }
+          /* ALREADY REDEEMED IS NOT THE SAME AS JUST REDEEMED, and saying "10 credits added"
+             to someone pasting the licence a second time is a lie they can check: the balance
+             in the same sentence has not moved. The server already distinguishes them -- a
+             purchase that finds an existing claims row comes back fresh:false and grants
+             nothing -- the page simply was not reading it. Caught by pasting the same licence
+             twice against a stubbed provider, which is the first thing anyone does when they
+             are not sure it worked. */
+          var again = (j.fresh === false);
+          var bal = (j.balance != null) ? ' Balance ' + j.balance + '.' : '';
           if(!j.key){
             /* Paid, credited, and the key was issued on an earlier purchase. Nothing is wrong
                and the page must not say that it is. */
-            say('ok','<strong>' + j.credits + ' credits added.</strong> They went onto the key you ' +
-              'already have' + (j.balance != null ? ', which now holds ' + j.balance + '.' : '.'));
+            say('ok', again
+              ? '<strong>Already redeemed.</strong> Those credits are on the key you already' +
+                ' have.' + bal
+              : '<strong>' + j.credits + ' credits added.</strong> They went onto the key you ' +
+                'already have' + (j.balance != null ? ', which now holds ' + j.balance + '.' : '.'));
             return;
           }
           document.getElementById('redeemOut').classList.remove('hide');
           document.getElementById('redeemKey').textContent = j.key;
-          document.getElementById('redeemLab').textContent = 'Redeemed';
-          say('ok','<strong>' + j.credits + ' credits added.</strong> ' +
-            (j.restored ? 'That is the key you already had; it has just gained credits.'
-                        : 'This browser has already saved the key below.') +
-            (j.balance != null ? ' Balance ' + j.balance + '.' : ''));
+          document.getElementById('redeemLab').textContent = again ? 'Already redeemed' : 'Redeemed';
+          say('ok', again
+            ? '<strong>Already redeemed.</strong> This licence was used before; the key it gave' +
+              ' you is below and nothing was added.' + bal
+            : '<strong>' + j.credits + ' credits added.</strong> ' +
+              (j.restored ? 'That is the key you already had; it has just gained credits.'
+                          : 'This browser has already saved the key below.') + bal);
           input.value = '';
         })
         .catch(function(e){
