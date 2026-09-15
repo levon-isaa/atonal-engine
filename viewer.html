@@ -4429,7 +4429,40 @@ window.STEP=STEP;   // live-tunable for step/budget A/B; see the u_steps upload
    taps climb back to a full 128 as soon as it does. Raise it if the grain ever reads at rest. */
 const SHA_FLOOR=32;
 let shaScale=1.0;                  // 1 = full taps, 0 = SHA_FLOOR; driven by the quality governor
-const shaTaps=()=>Math.round(SHA_FLOOR+(STEP.shaN-SHA_FLOOR)*Math.max(0,Math.min(1,shaScale)));
+/* THE FOLD SPENDS THE SHADOW BUDGET ON RESOLUTION INSTEAD, and only a tier that carries more
+   than the base 48 has anything to give.
+
+   ULTRA SAYS "native floor" IN ITS OWN NOTE AND DOES NOT KEEP IT, and this does not fix that
+   -- it makes it less bad. The floor is still relaxed by KFL while the fold is open and the
+   march still reaches 0.84 there. What follows is the size of the improvement, not a claim that
+   the promise is now true. The fold relaxes the
+   march's floor by KFL -- 0.30 off -- so Ultra's 1.00 becomes 0.70 while the kaleidoscope is
+   open, and Ultra took it: measured over 90s, rscale p05 0.84 against High's 0.98, with the
+   whole gap at the bottom of the distribution rather than the middle (Ultra's median 1.34 is
+   High's 1.37, and Ultra reaches a HIGHER cap). Below native the post pass is inventing pixels,
+   which the note at the restore branch calls what made "every form look soft, permanently".
+
+   Ultra's extra is shaN 64 against 48, worth about 2.8ms and 0.267 levels at the shadow
+   terminator. The fold is exactly when that is the wrong thing to be buying: the form is
+   mirrored into a ring of small copies, so fine shadow detail is at its least legible and the
+   silhouette -- now drawn several times over -- is at its most. Handing the 2.8ms back to the
+   march while the fold is open:
+
+       tent share   0.8% -> 8.3%      rscale p05  0.84 -> 0.88
+       governor reversals per 65s   30 -> 12
+
+   MEASURED WITH THE FOLD FORCED ON for both arms, and that control is the whole reason those
+   numbers are trustworthy. Fold duty is the dominant confound in every resolution measurement
+   on this renderer -- it varies from 12% to 93% between runs depending on the music, and it
+   moves the tent share by more than any change I have made to the governor. Uncontrolled, the
+   same pair read 72.9% against 72.7% (nothing) and reversals 5 against 16 (three times worse),
+   and both readings were comparing different amounts of fold rather than different code. With
+   the duty held equal the trade is better on all three counts, including the one it looked like
+   it was hurting. */
+const shaTaps=()=>{
+  const budget = (kalAmt>0.02) ? Math.min(STEP.shaN, 48) : STEP.shaN;
+  return Math.round(SHA_FLOOR+(budget-SHA_FLOOR)*Math.max(0,Math.min(1,shaScale)));
+};
 // Morph blend shape. k is the smin fillet joining the two forms mid-transition; comp is how much
 // of the shared erosion is cancelled -- 1.0 puts both forms through at full size, below that they
 // thin as they cross, which reads as a melt rather than a double exposure. See evalForm.
