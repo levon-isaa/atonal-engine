@@ -484,14 +484,32 @@ timeslices so a crash still leaves usable footage.
 
 ## Tests
 ```bash
-python tests/test_director.py
+python tests/run.py
 ```
-Covers the `director.json` contract the whole renderer depends on: schema keys, curve alignment
-(all curves one length, no NaN/inf), section ordering, per-band onsets, and tempo accuracy within
-6% at 100/128/140bpm. Dependency-free by design — the venv installs only what the pipeline needs,
-and a test that cannot run because of a missing dev dependency protects nothing. Audio is
-synthesised rather than committed as a fixture so the true tempo is *known*; a recorded fixture
-would only assert that today's output matches yesterday's, mistakes included.
+Runs every suite and exits non-zero on the first failure, so it is also the CI command. About
+seventy seconds on a warm fixture cache.
+
+| suite | what it covers |
+|---|---|
+| `test_director.py` | the `director.json` **contract** — schema keys, curve alignment (all curves one length, no NaN/inf), section ordering, per-band onsets, tempo within 6% at 100/128/140bpm, and that degenerate audio does not crash |
+| `test_analysis.py` | the **content** — tempo, section boundaries and the bar grid, each against a fixture whose answer is known by construction |
+| `test_billing.py` | the **money** — idempotency on a provider retry, a balance that cannot go negative under concurrent uploads, the free tier's refund, the webhook signature, and Gumroad redemption |
+| `test_server.py` | the **upload path** — what a malformed request costs (nothing), a failed analysis (nothing, paid or free), a cached or stale entry (nothing) |
+| `test_tagger.py` | the **ML layer** — that each instrument and voice bucket collects the classes it claims and none of the ones it does not, and that a long upload is scored in bounded memory |
+
+Dependency-free by design — no pytest, and nothing a running install would not already have. The
+venv installs only what the pipeline needs, and a test that cannot run because of a missing dev
+dependency protects nothing. `test_tagger.py` goes further and needs neither `panns_inference`
+nor the 300MB checkpoint: it checks the rules against the real 527 AudioSet class names, vendored
+in `tests/audioset_labels.txt`, and drives `tag()` with a fake model. When the package *is*
+installed it uses the live names and checks the vendored copy against them, so a renamed class
+fails here rather than silently emptying a section.
+
+Audio is synthesised rather than committed as a fixture so the true tempo is *known*; a recorded
+fixture would only assert that today's output matches yesterday's, mistakes included.
+
+`tests/render_bench.py` is deliberately outside that list — it measures the renderer, and needs a
+running server, Chrome and three non-stdlib packages. Invoke it directly.
 
 Section palettes in `analyze.py` must carry a **clear hue** — a near-grey palette gives a
 washed-out backdrop, since the renderer slams saturation to derive the ink. `mono` is

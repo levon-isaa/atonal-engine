@@ -70,28 +70,64 @@ MOOD_TAGS = {
 # nothing the day a label is punctuated differently — the failure mode is an empty section, not
 # an error, which is the kind that survives for months.
 INSTRUMENT_RULES = [
-    ("piano",       ("piano", "electric piano")),
-    ("organ",       ("organ",)),
-    ("guitar",      ("guitar",)),
-    ("bass",        ("bass guitar", "double bass")),
-    ("drums",       ("drum", "snare", "hi-hat", "cymbal", "percussion", "timpani", "tabla")),
-    ("synth",       ("synthesizer", "sampler", "electronic organ", "theremin")),
-    ("strings",     ("violin", "cello", "fiddle", "string section", "bowed string", "harp")),
-    ("brass",       ("trumpet", "trombone", "french horn", "brass")),
-    ("woodwind",    ("saxophone", "flute", "clarinet", "oboe", "bassoon", "woodwind")),
-    ("mallet",      ("marimba", "xylophone", "vibraphone", "glockenspiel", "mallet")),
-    ("plucked",     ("banjo", "ukulele", "mandolin", "sitar", "plucked string")),
-    ("orchestra",   ("orchestra",)),
-    ("bell",        ("bell", "chime")),
-    ("accordion",   ("accordion",)),
+    ("piano",       ("piano", "electric piano", "keyboard (musical)"), ()),
+    ("organ",       ("organ",), ()),
+    ("guitar",      ("guitar",), ()),
+    ("bass",        ("bass guitar", "double bass"), ()),
+    ("drums",       ("drum", "snare", "hi-hat", "cymbal", "percussion", "timpani", "tabla",
+                     "rimshot", "wood block", "tambourine", "rattle (instrument)", "maraca"),
+                    ("drum and bass",)),
+    ("synth",       ("synthesizer", "sampler", "electronic organ", "theremin"),
+                    ("speech synth",)),
+    ("strings",     ("violin", "cello", "fiddle", "string section", "bowed string", "harp"),
+                    ("harpsichord",)),
+    ("brass",       ("trumpet", "trombone", "french horn", "brass", "didgeridoo", "shofar"), ()),
+    ("woodwind",    ("saxophone", "flute", "clarinet", "oboe", "bassoon", "woodwind",
+                     "bagpipe"), ()),
+    ("mallet",      ("marimba", "xylophone", "vibraphone", "glockenspiel", "mallet",
+                     "steelpan"), ()),
+    ("plucked",     ("banjo", "ukulele", "mandolin", "sitar", "plucked string", "zither",
+                     "harpsichord"), ()),
+    ("orchestra",   ("orchestra",), ()),
+    ("bell",        ("bell", "chime", "gong", "singing bowl"),
+                    ("belly", "bellow", "doorbell", "bicycle bell", "telephone bell")),
+    ("accordion",   ("accordion", "harmonica"), ()),
 ]
 VOICE_RULES = [
-    ("singing",  ("singing", "vocal music", "a capella", "yodeling", "humming", "chant")),
-    ("choir",    ("choir",)),
-    ("rapping",  ("rapping",)),
-    ("speech",   ("speech", "narration", "conversation")),
-    ("whistle",  ("whistling",)),
+    ("singing",  ("singing", "vocal music", "a capella", "yodeling", "humming", "chant"),
+                 ("singing bowl",)),
+    ("choir",    ("choir",), ()),
+    ("rapping",  ("rapping",), ()),
+    ("speech",   ("speech", "narration", "conversation"), ()),
+    ("whistle",  ("whistling",), ()),
 ]
+
+# EACH RULE CARRIES A DENY LIST, because a keyword that is right for a bucket is not right for
+# every label that contains it. Matching by substring is still the correct default -- see the
+# note above -- but four of the fourteen buckets were collecting labels that are not the
+# instrument at all, and the deny keywords are matched the same forgiving way so a repunctuated
+# label degrades to today's behaviour rather than to an empty bucket.
+#
+# What was landing in the wrong bucket, against the checkpoint's own 527 names:
+#
+#   "bell"      <- Belly laugh, Bellow, Doorbell, Bicycle bell, Telephone bell ringing
+#   "singing"   <- Singing bowl              (a struck metal bowl, scored as a VOICE)
+#   "synth"     <- Speech synthesizer        (already counted as speech, which is right)
+#   "strings"   <- Harpsichord               (plucked, not bowed; it moves to "plucked")
+#   "drums"     <- Drum and bass             (a GENRE_TAGS entry, not an instrument)
+#
+# The singing bowl is the one that reached the director. MEASURED on a synthesised struck bowl
+# -- five inharmonic partials, separate decays, audible beating -- the model returned
+# Singing bowl 0.194, and tag() reported vocals {presence 0.194, types {singing: 0.194}}: an
+# instrumental take, 0.006 under the is_vocal bar, one real recording away from putting a lead
+# vocal in the director where there is none. That is the same failure the speech bucket is
+# already excluded to avoid.
+#
+# The bowl, the gong and the harpsichord are not merely denied, they are re-pointed at the
+# bucket they belong to, so the fix adds information rather than dropping it. The same pass
+# picked up thirteen instruments the model scores on every run and no rule was reading --
+# zither, tambourine, maraca, gong, steelpan, harmonica, bagpipes and the rest. Their placement
+# is a judgement about instrument families, not a measurement.
 
 
 def _bucket(labels, clip, rules):
@@ -99,8 +135,8 @@ def _bucket(labels, clip, rules):
     out = {}
     for i, nm in enumerate(labels):
         low = nm.lower()
-        for bucket, keys in rules:
-            if any(k in low for k in keys):
+        for bucket, keys, deny in rules:
+            if any(k in low for k in keys) and not any(d in low for d in deny):
                 v = float(clip[i])
                 if v > out.get(bucket, 0.0):
                     out[bucket] = v
@@ -151,9 +187,12 @@ def _clipwise(model, y):
     return acc / wsum
 
 def tag(mono, sr):
-    import librosa
     model, labels = _load()
-    y = librosa.resample(mono, orig_sr=sr, target_sr=32000) if sr != 32000 else mono
+    if sr != 32000:
+        import librosa                       # only the resample needs it, and only off 32k
+        y = librosa.resample(mono, orig_sr=sr, target_sr=32000)
+    else:
+        y = mono
     clip = _clipwise(model, y)
     idx = np.argsort(clip)[::-1][:15]
     top = [{"tag": labels[i], "p": round(float(clip[i]), 3)} for i in idx]

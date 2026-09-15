@@ -10,11 +10,15 @@ test_billing.py checks the MONEY -- idempotency on a provider retry, a balance t
 negative under concurrent uploads, the free tier's refund, and the webhook signature.
 test_server.py checks the UPLOAD PATH that calls all of that: what a malformed request costs
 (nothing), what a failed analysis costs (nothing, paid or free), and what a cached or stale
-entry costs (nothing). Both run against a throwaway database and cache and never open
+entry costs (nothing). test_tagger.py checks the ML LAYER: that the instrument and voice
+buckets collect the classes they claim to and none of the ones they do not, and that a long
+upload is scored in bounded memory. It runs against the real 527 class names (vendored in
+tests/) and a fake model, so it needs neither panns_inference nor the 300MB checkpoint.
+Both run against a throwaway database and cache and never open
 out/billing.db or out/cache, and both are fast -- no audio is synthesised, nothing is analysed,
 and nothing leaves the machine.
 
-Both are dependency-free and both exit non-zero on failure, so this is also the CI command.
+All are dependency-free and all exit non-zero on failure, so this is also the CI command.
 The analysis suite synthesises and then analyses about a dozen tracks, so it takes a couple of
 minutes on a cold cache and rather less after; the fixtures are cached under _fixtures/.
 
@@ -28,7 +32,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITES = ["test_director.py", "test_analysis.py", "test_billing.py",
-          "test_server.py"]
+          "test_server.py", "test_tagger.py"]
 
 if __name__ == "__main__":
     failed = []
