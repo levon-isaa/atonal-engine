@@ -4677,6 +4677,32 @@ const HEADROOM=17.4;
 const SS_RESOLVE=1.05;   // the post pass switches FXAA -> 4-tap tent above this; see main()
 const SS_MIN=1.10;
 let ssCeil=99, ssRetry=0;
+/* A CEILING TAUGHT BY AN ACCENT EXPIRES WITH THE ACCENT, not on the 20s timer.
+   The ceiling is meant to be the MACHINE'S shelf -- what this GPU can hold -- and it is
+   remembered for 20 seconds because finding it costs an overshoot. The fold and the morph are
+   both known, deliberate, temporary costs: the fold is an accent with a duty target of 35%, the
+   morph lasts a few seconds. A ceiling learned from either is a fact about the accent reported
+   as a fact about the machine, and it outlived its cause by twenty seconds.
+
+   MEASURED over 150s of the 176bpm upload, before this existed:
+
+       ssCeil while the fold is open  p50 1.00      while shut  p50 1.10
+       frames whose ceiling blocks the climb                    27.4%
+       fold opens 6, of which the ceiling fell within 4s         3
+       a depressed ceiling lasts   p50 20.6s  p90 20.9s  max 21.0s   <- the re-probe interval
+
+   and the consequence, same run: after a fold closed the image took p50 6.2s and up to 19.8s to
+   climb back above the resolve threshold, so the frame was soft 1.4x LONGER than the fold was
+   open. With the fold held shut the same tier pinned at 1.45 with 100% of frames above it.
+
+   WHY EXPIRY RATHER THAN NOT LEARNING AT ALL. Refusing to learn during an accent was tried
+   first and measured well on High, but it is the wrong shape for Ultra: the note in the banded
+   branch records that a ceiling which cannot say no produces a 1Hz oscillator -- climb, fail,
+   fall back, every tick -- and that oscillator is the reported Ultra stutter. So the ceiling
+   still binds while the accent is running, and is dropped the moment the accent ends, which is
+   the earliest point at which it is known to be answering the wrong question. */
+let ssCeilAccent=false;
+const accentNow=()=>(kalAmt>0.02)||(phase===1);
 
 /* ======================= DIRECTOR CONSUMPTION ======================= */
 /* THE COMPOSITION PRESETS, AND WHAT IS LEFT OF THEM. These were the arrangement of the form --
@@ -7750,6 +7776,8 @@ function frame(){
        rscale not at all and cost 7 fps (69.9 -> 62.5). A one-off reading of 0.574 that suggested
        otherwise was a single moment in a busy section, not the steady state. */
     const KFL=1.0-0.30*(kOn*kOn*(3-2*kOn));
+    // The accent that taught the ceiling has ended, so the ceiling has nothing left to say.
+    if(ssCeilAccent && !accentNow()){ ssCeil=99; ssRetry=0; ssCeilAccent=false; }
     const SMIN=(TIERS[TIER].scaleMax?(TIERS[TIER].scaleMin||0):0)*KFL, SMAX=TIERS[TIER].scaleMax||0;
     const SFLOOR=(TIERS[TIER].scaleMin||1.00)*KFL;   // banded tiers use SMIN above; the rest use this
     /* window.QLOCK, NOT JUST QLOCK, AND IT WAS THE SECOND ONE ONLY. The hook block above
@@ -7820,7 +7848,8 @@ function frame(){
            until the 20s drift rescues it. Measured that way: rscale p50 0.700, on floor 95%,
            worse than High's 0.952. The ceiling's job is to cap SUPERSAMPLING attempts, never to
            hold the march under the display grid. */
-        if(rscale>SMIN){ const c=rscale-0.06; ssCeil=(c>=SS_MIN)?Math.max(1.0,c):1.0; ssRetry=now+20000; }
+        if(rscale>SMIN){ const c=rscale-0.06; ssCeil=(c>=SS_MIN)?Math.max(1.0,c):1.0; ssRetry=now+20000;
+                         ssCeilAccent=accentNow(); }
         const d=Math.max(SMIN,rscale-0.08);
         // ...and not parked in the dead zone on the way down, where the extra pixels buy nothing
         rscale=(d>SMIN && d>1.0 && d<SS_MIN)?Math.max(SMIN,1.0):d; applyScale(); }
@@ -7915,10 +7944,35 @@ function frame(){
        rays -- which is rscale, which the governor already pulls. A shadow lever would have
        bought 2ms and cost the penumbra. */
     else if(frameAvg>18.0 && rscale>SFLOOR){
-      // Only a degrade from ABOVE native says anything about the shelf. Dropping from 0.9 to
-      // 0.82 is the march running out of room at native, which is a different fact and must
-      // not be allowed to pin the ceiling down at 1.0 for the rest of the track.
-      if(rscale>1.0){ const c=rscale-0.06; ssCeil=(c>=SS_MIN)?c:1.0; ssRetry=now+20000; }
+      /* Only a degrade from ABOVE native says anything about the shelf. Dropping from 0.9 to
+         0.82 is the march running out of room at native, which is a different fact and must
+         not be allowed to pin the ceiling down at 1.0 for the rest of the track.
+
+         AND NEITHER DOES A DEGRADE CAUSED BY AN ACCENT. The ceiling is meant to be the
+         MACHINE'S shelf -- what this GPU can hold -- and it is remembered for 20 seconds
+         because finding it costs an overshoot. The fold and the morph are both known,
+         deliberate, temporary costs: the fold is an accent with a duty target of 35% and the
+         morph lasts a few seconds. A ceiling taught by either is a fact about the accent
+         reported as a fact about the machine, and it outlives its cause by twenty seconds.
+
+         MEASURED over 150s of the 176bpm upload, before this line changed:
+
+             ssCeil while the fold is open   p50 1.00      while shut   p50 1.10
+             frames whose ceiling blocks the climb (<1.10)              27.4%
+             fold opens 6, of which the ceiling fell within 4s           3
+             a depressed ceiling lasts    p50 20.6s  p90 20.9s  max 21.0s
+
+         That last row is the re-probe interval exactly. And the consequence, measured the same
+         run: after a fold closes the image takes p50 6.2s and up to 19.8s to get back above the
+         resolve threshold, so the frame is soft for 1.4x LONGER than the fold is even open --
+         40.3% of frames below the tent against 29.1% folded. With the fold held shut the same
+         tier pins at 1.45 and 100% of frames clear the threshold.
+
+         The degrade still happens; the frame really is slow and shedding pixels is right. It is
+         only the LEARNING that is suppressed, because this particular slow frame has a cause we
+         already know about and will not be there in a second. */
+      if(rscale>1.0){ const c=rscale-0.06; ssCeil=(c>=SS_MIN)?c:1.0; ssRetry=now+20000;
+                      ssCeilAccent=accentNow(); }
       const d=Math.max(SFLOOR,rscale-0.08);
       rscale=(d>1.0&&d<SS_MIN)?1.0:d; applyScale(); }
     /* SUB-NATIVE IS AN EMERGENCY, NOT A RESTING STATE -- and the dead band was keeping it there.
