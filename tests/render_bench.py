@@ -5,8 +5,19 @@
     python tests/render_bench.py morph     # every shape pair's transition, all 72
     python tests/render_bench.py edges     # how rough is the silhouette, and where
     python tests/render_bench.py costs     # what each pass actually costs, by ablation
+    python tests/render_bench.py filter    # what a filter cell costs the subject
+    python tests/render_bench.py motion    # the guarantees viewer.html makes about turning
     python tests/render_bench.py director  # the Director's timing rules, asserted
+    python tests/render_bench.py site      # the purchase pages, in three configurations
     python tests/render_bench.py all
+
+THE `site` ARM IS THE ODD ONE and does not touch the renderer at all. It is here rather than in
+run.py for the same reason as everything else in this file: it needs Chrome. It drives the two
+site pages against three servers -- a real one with Gumroad configured and only the call that
+leaves the machine stubbed (tests/site_stub.py), the ordinary one with Gumroad off, and a plain
+http.server with no API at all -- because the interesting failures there are about
+configuration rather than about code. It starts and stops its own servers and uses a throwaway
+database; it never opens out/billing.db.
 
 WHY THIS FILE EXISTS. Every measurement in viewer.html had to be rebuilt by hand before it
 could be taken, and that cost real accuracy: MORPH's constants were tuned on three shape pairs
@@ -609,6 +620,165 @@ def bench_filter(c, url):
     return out
 
 
+# ------------------------------------------------------------------ the purchase pages
+# WHY THIS EXISTS. The billing JS on the two site pages is real logic now -- it decides which
+# packs are on sale through which channel, what a licence redemption says, and whether a key is
+# stored -- and it had no coverage at all. It was verified three times by hand in one session,
+# which is the definition of something that should be a test. The parts it guards are the parts
+# where being wrong costs money or tells a paying customer something false.
+#
+# THREE SERVERS, BECAUSE THE INTERESTING CASES ARE ABOUT CONFIGURATION:
+#   the stub          a real server with Gumroad configured and only _gumroad_verify replaced
+#   the main server   already running, Gumroad not configured -- the default state
+#   http.server       no /packs at all: the page served from a host that has never heard of it
+# The third is the one the code comments claim to handle and the one nobody would think to try.
+_SITE_STUB_PORT = int(os.environ.get("ATONAL_SITE_PORT", "8791"))
+_SITE_STATIC_PORT = int(os.environ.get("ATONAL_SITE_STATIC_PORT", "8792"))
+
+
+def _wait_for(url, timeout=25):
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            urllib.request.urlopen(url, timeout=2).read()
+            return True
+        except Exception:
+            time.sleep(0.3)
+    return False
+
+
+def _goto(c, url, settle=2.2):
+    c.send("Page.navigate", {"url": url})
+    time.sleep(settle)
+
+
+def bench_site(c, url):
+    """The purchase pages, in the three configurations that change what they may show."""
+    fails = []      # subprocess, tempfile and shutil are already imported at module scope
+
+    def check(name, ok, detail=""):
+        print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, ("   " + detail) if detail else ""))
+        if not ok:
+            fails.append(name)
+
+    tmp = tempfile.mkdtemp(prefix="atonal-site-")
+    stub = subprocess.Popen([sys.executable, os.path.join(ROOT, "tests", "site_stub.py"),
+                             str(_SITE_STUB_PORT), os.path.join(tmp, "b.db")],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    static = subprocess.Popen([sys.executable, "-m", "http.server", str(_SITE_STATIC_PORT),
+                               "--bind", "127.0.0.1", "--directory", ROOT],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        S = "http://127.0.0.1:%d" % _SITE_STUB_PORT
+        T = "http://127.0.0.1:%d" % _SITE_STATIC_PORT
+        if not _wait_for(S + "/packs"):
+            raise AssertionError("the site stub did not come up on %d" % _SITE_STUB_PORT)
+        if not _wait_for(T + "/site/index.html"):
+            raise AssertionError("the static host did not come up on %d" % _SITE_STATIC_PORT)
+
+        # ---- 1. the landing page, Gumroad configured ----
+        _goto(c, S + "/site/index.html")
+        d = json.loads(c.js("""
+          return JSON.stringify({
+            gum:[...document.querySelectorAll('[data-gum]')].map(a=>({p:a.dataset.gum,
+                 shown:a.style.display!=='none', href:a.getAttribute('href'), t:a.target})),
+            prices:[...document.querySelectorAll('[data-price]')].map(e=>e.textContent.trim()),
+            redeemLine: document.getElementById('redeemLine').style.display!=='none'});"""))
+        shown = sorted(g["p"] for g in d["gum"] if g["shown"])
+        check("landing offers only the packs Gumroad actually sells",
+              shown == ["fifty", "ten"], "showed %s" % shown)
+        check("and opens them in a new tab with rel=noopener",
+              all(g["t"] == "_blank" for g in d["gum"] if g["shown"]))
+        check("landing shows the redemption route", d["redeemLine"])
+        # AUTHORED "6 EUR", NOT "6.00 EUR": the fetch is supposed to confirm the price, not
+        # restyle it. This caught Intl's two-decimal default rewriting the design.
+        check("whole prices stay whole", all(".00" not in p for p in d["prices"]),
+              "%s" % d["prices"])
+
+        # ---- 2. the landing page against a server with Gumroad off ----
+        _goto(c, "http://127.0.0.1:%d/site/index.html" % PORT)
+        d = json.loads(c.js("""
+          return JSON.stringify({
+            any:[...document.querySelectorAll('[data-gum]')].some(a=>a.style.display!=='none'),
+            line: document.getElementById('redeemLine').style.display!=='none'});"""))
+        check("with Gumroad unconfigured the landing page offers none of it",
+              (not d["any"]) and (not d["line"]))
+
+        # ---- 3. the landing page with no API at all ----
+        _goto(c, T + "/site/index.html")
+        d = json.loads(c.js("""
+          return JSON.stringify({
+            prices:[...document.querySelectorAll('[data-price]')].map(e=>e.textContent.trim()),
+            any:[...document.querySelectorAll('[data-gum]')].some(a=>a.style.display!=='none'),
+            ctas:[...document.querySelectorAll('[data-cta]')].map(a=>a.getAttribute('href')),
+            prio: !!document.querySelector('[data-prio]')});"""))
+        check("with no server the landing page keeps its authored markup",
+              d["prices"] and all("\u20ac" in p for p in d["prices"]) and not d["any"]
+              and all(h == "./pricing.html" for h in d["ctas"]) and d["prio"],
+              "%s" % d)
+
+        # ---- 4. redemption, on the pricing page, against the stub ----
+        _goto(c, S + "/site/pricing.html")
+        c.js("localStorage.removeItem('atonal.key'); return 1;")
+
+        def redeem(lic):
+            return json.loads(c.js("""
+              document.getElementById('licIn').value=%s;
+              document.getElementById('redeemBtn').click();
+              await new Promise(r=>setTimeout(r,1400));
+              return JSON.stringify({note:document.getElementById('status').textContent.trim(),
+                                     stored:localStorage.getItem('atonal.key')});"""
+                                   % json.dumps(lic), timeout=60))
+
+        r = redeem("ATONAL-REFUNDED-0002")
+        check("a refunded licence is refused and stores nothing",
+              "refunded" in r["note"] and not r["stored"], r["note"][:60])
+        r = redeem("ATONAL-TEST-LICENCE-0001")
+        check("a good licence grants and the key is saved in the browser",
+              "10 credits added" in r["note"] and (r["stored"] or "").startswith("atk_"),
+              r["note"][:70])
+        first = r["stored"]
+        # THE ONE THAT WAS LYING. A second paste granted nothing -- correctly -- and said "10
+        # credits added" beside a balance that had not moved.
+        r = redeem("ATONAL-TEST-LICENCE-0001")
+        check("a second paste says it was already redeemed, not that credits were added",
+              "Already redeemed" in r["note"] and "added" not in r["note"].split(".")[0],
+              r["note"][:70])
+        check("and the balance did not move", r["stored"] == first)
+
+        # ---- 5. the key field, which is the only way to enter a key by hand ----
+        d = json.loads(c.js("""
+          localStorage.removeItem('atonal.key');
+          document.getElementById('haveIn').value='atk_not_a_real_key_at_all';
+          document.getElementById('haveBtn').click();
+          await new Promise(r=>setTimeout(r,1200));
+          const bad={note:document.getElementById('status').textContent.trim(),
+                     stored:localStorage.getItem('atonal.key')};
+          document.getElementById('haveIn').value=%s;
+          document.getElementById('haveBtn').click();
+          await new Promise(r=>setTimeout(r,1200));
+          return JSON.stringify({bad:bad,
+            good:{note:document.getElementById('status').textContent.trim(),
+                  stored:localStorage.getItem('atonal.key')}});""" % json.dumps(first),
+                              timeout=60))
+        check("a key that does not exist is refused and NOT stored",
+              "not recognised" in d["bad"]["note"] and not d["bad"]["stored"],
+              d["bad"]["note"][:60])
+        check("a real key is checked, saved, and its balance reported",
+              d["good"]["stored"] == first and "credit" in d["good"]["note"],
+              d["good"]["note"][:60])
+    finally:
+        for p_ in (stub, static):
+            try:
+                p_.terminate()
+                p_.wait(timeout=5)
+            except Exception:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
+    if fails:
+        raise AssertionError("site failures: " + ", ".join(fails))
+
+
 # ------------------------------------------------------------------ the motion guarantees
 # WHY THIS EXISTS. viewer.html states two guarantees about the drawn rotation, in a comment at
 # SYNC.spinSwing: the bar swing returns to zero on every downbeat, and THE RATE NEVER GOES
@@ -931,6 +1101,7 @@ def main():
                         ("edges", bench_edges, ""), ("costs", bench_costs, ""),
                         ("filter", bench_filter, "?readback"),
                         ("motion", bench_motion, ""),
+                        ("site", bench_site, ""),
                         ("director", bench_director, "")):
         if what not in ("all", name):
             continue

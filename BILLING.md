@@ -158,6 +158,15 @@ answer is the fact.
 There is no sandbox. Gumroad's own test purchases are the way to try this
 without moving money, and the amount is yours either way minus their cut.
 
+**To click through the pages without a Gumroad account at all**, run
+`python tests/site_stub.py 8791 /tmp/stub.db` — a real server with Gumroad
+configured and exactly one thing replaced, the call that leaves the machine. It
+knows three licences: `ATONAL-TEST-LICENCE-0001` (grants the pack of ten),
+`ATONAL-REFUNDED-0002` (valid, and refunded, which Gumroad really does report
+that way) and `ATONAL-BULK-0003` (two of the fifty). The `site` arm of
+`tests/render_bench.py` drives the same stub, so what you click is what CI
+checks.
+
 ## How a purchase becomes credits
 
 1. The pricing page POSTs `/checkout`; the server creates a Paddle transaction
