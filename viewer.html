@@ -4247,7 +4247,30 @@ const TIERS={
      which is what the shadow-lever note already concludes: the only real lever is fewer rays,
      and that is rscale. Left as it is because changing it buys nothing either way. */
   ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.00, scaleMax:1.60,
-           dpr:1.00, ss:1.45, shaN:64, sss:1, near:1.25, far:1.55, shutter:0,
+           /* THE FINER MARCH IS GONE AND THE SHADOW STAYS, because only one of the two was
+              buying anything. Ultra differed from High in exactly three numbers -- shaN 64
+              against 48, and near/far 1.25/1.55 against 1.45/1.75 -- and MEASURED at a pinned
+              pose, with the frame pushed clear of the vsync cap so an ablation can be seen at
+              all, and each arm paired with a baseline taken beside it:
+
+                  stock ultra                29.9 ms    differs from High by 0.280 mean, max 23
+                  march reverted to High's   27.8 ms                          0.267 mean, max  6
+                  shadow reverted (shaN 48)  27.1 ms                          0.033 mean, max 23
+                  both reverted              27.1 ms                          0.000 -- identical
+                  High itself                26.8 ms
+
+              So shaN 64 costs about 2.8ms and buys 0.267 levels with a max of 23, which is the
+              shadow terminator and is real. The finer march costs about 2.1ms -- 8% of the
+              frame -- and buys 0.033 levels with a max of 6, which is nothing.
+
+              AND THE 8% WAS NOT FREE, IT WAS PAID FOR IN RESOLUTION. Over 150s of playback the
+              governor settled Ultra at a median supersampling of 1.00 against High's 1.10, and
+              1.00 is below the resolve threshold: 20% of Ultra's frames got the 4-tap tent
+              against 53% of High's. Measured against a 2.2x reference, the silhouette error at
+              1.10 is 1.30 and at 1.00 it is 1.53. Ultra was spending 8% of its frame on 0.033
+              levels and losing 15% of its silhouette to afford it -- the tier that exists to
+              look better was measurably softer than the one below it. */
+           dpr:1.00, ss:1.45, shaN:64, sss:1, near:1.45, far:1.75, shutter:0,
            note:'Ultra — native floor, adapts up to 1.60x when the frame allows'},
 };
 /* THE IBL RIG. These three apply ONLY when a prefiltered HDRI is lighting the scene; the
