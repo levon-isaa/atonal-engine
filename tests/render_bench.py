@@ -7,6 +7,7 @@
     python tests/render_bench.py costs     # what each pass actually costs, by ablation
     python tests/render_bench.py filter    # what a filter cell costs the subject
     python tests/render_bench.py motion    # the guarantees viewer.html makes about turning
+    python tests/render_bench.py shape     # AO and the reflection gate, asserted continuous
     python tests/render_bench.py director  # the Director's timing rules, asserted
     python tests/render_bench.py site      # the purchase pages, in three configurations
     python tests/render_bench.py all
@@ -1002,6 +1003,98 @@ _DIR_REC = """
 """
 
 
+# ------------------------------------------------------------------ shape and reflection
+def bench_shape(c, url):
+    """Two things that have to be CONTINUOUS, and were not.
+
+    Neither is a look: both are quantities that move on their own while a track plays, and the
+    code treated them as if they stood still. The form's scale rides the section energy and the
+    motion patch; the material's roughness is eased toward a target every frame and the Print and
+    Poster rolls change material by themselves. So an AO kernel fixed in world units, and a
+    reflection path chosen by a hard threshold on roughness, both turn a smooth sweep into a
+    visible step. These assert that neither does.
+    """
+    import numpy as np
+    fails = []
+
+    def check(name, ok, detail=""):
+        print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, ("   " + detail) if detail else ""))
+        if not ok:
+            fails.append(name)
+
+    load_track(c, url)
+    pin(c)
+    c.js(_GRAB_HOOK)
+
+    # ---- AO is a fraction of the form, so its contribution cannot depend on the form's size
+    scales = (0.50, 0.65, 0.80, 1.00, 1.20, 1.45, 1.60)
+    got, cover = [], []
+    for s in scales:
+        c.js("window.FSCALE=%f; return 1;" % s)
+        on = _grab(c, 1.00)
+        c.js("DXS.ao=0; return 1;")
+        off = _grab(c, 1.00)
+        c.js("DXS.ao=1; return 1;")
+        c.js("window.DBGMASK=1; return 1;")
+        m = _grab(c, 1.00) > 128
+        c.js("window.DBGMASK=0; return 1;")
+        cover.append(float(m.mean()))
+        d = np.abs(on - off)
+        got.append(float(d[m].mean()) if m.sum() > 500 else float(d.mean()))
+    c.js("window.FSCALE=0; return 1;")
+    # DID THE PIN DO ANYTHING? Run against a build without u_fsPin, window.FSCALE is just a
+    # property nobody reads: every row then measures the identical frame, the spread comes out at
+    # 0% and the check passes while having measured NOTHING. That is worse than no check, and it
+    # is what this arm did the first time it was pointed at the old build. The form's share of the
+    # box runs about 10% to 66% across this sweep, so if it does not move, the pin is not landing.
+    if max(cover) - min(cover) < 0.10:
+        raise AssertionError(
+            "window.FSCALE did not change the form's size (subject %.1f%%-%.1f%% of the box). "
+            "The pin is missing or ignored, so the AO sweep below would measure one frame seven "
+            "times." % (100 * min(cover), 100 * max(cover)))
+    print("  AO contribution by form scale: " +
+          "  ".join("%.2f:%.1f" % (s, v) for s, v in zip(scales, got)))
+    spread = (max(got) - min(got)) / max(1e-6, float(np.mean(got)))
+    # Fixed radii measured 18.49 down to 10.70 and back to 12.46 across this range -- a 73%
+    # spread. Scaled, 10.92 to 12.76, 17%. The bar is set between the two: the subject also grows
+    # from 10% to 66% of the box over this sweep, so the population being averaged is not the
+    # same at both ends and exact invariance is not on offer.
+    check("AO does not change strength with the form's size", spread <= 0.35,
+          "spread %.0f%% of the mean, against 73%% with the kernel fixed in world units"
+          % (100 * spread))
+
+    # ---- and the traced reflection fades in rather than switching on
+    c.js("""for(const o of [MAT,MATT]){o.metal=1.0;o.reflect=1.0;o.rough=0.30;}
+            FIN.rghMix=0;FINT.rghMix=0;window.WEAR.amt=0; return 1;""")
+    xs = [0.48, 0.50, 0.52, 0.54, 0.56, 0.58, 0.60]
+    imgs = {}
+    for x in xs:
+        c.js("MAT.rough=%f; MATT.rough=%f; return 1;" % (x, x))
+        imgs[x] = _grab(c, 1.00)
+    steps = {}
+    for a, b in zip(xs, xs[1:]):
+        d = np.abs(imgs[b] - imgs[a])
+        steps[(a, b)] = (float(d.mean()), float((d > 8).mean()))
+    print("  consecutive 0.02 roughness steps, mean |d| / share moving >8 levels:")
+    for (a, b), (mn, sh) in steps.items():
+        print("    %.2f -> %.2f   %6.3f   %6.3f%%" % (a, b, mn, 100 * sh))
+    at = steps[(0.54, 0.56)]
+    others = [v for k, v in steps.items() if k != (0.54, 0.56)]
+    ref = float(np.median([o[0] for o in others]))
+    # The gate sat at rgh 0.55. Before: 3.124 mean against a 0.75 median elsewhere, and 10.3% of
+    # the frame moving more than 8 levels against 0.03% either side. MAT and MATT are both pinned
+    # because MAT is eased toward MATT every frame -- setting only one of them measures the decay
+    # back to the old value, which cost a whole wrong reading here.
+    check("the traced reflection has no step at the roughness gate", at[0] <= 2.0 * ref,
+          "the 0.54-0.56 step is %.3f against a %.3f median elsewhere (was 3.124 vs 0.75)"
+          % (at[0], ref))
+    check("and no part of the frame jumps across it", at[1] <= 0.01,
+          "%.3f%% of pixels move more than 8 levels (was 10.31%%)" % (100 * at[1]))
+
+    if fails:
+        raise AssertionError("shape/reflection continuity failed: " + ", ".join(fails))
+
+
 def bench_director(c, url):
     """The Director's timing rules, asserted against real playback."""
     import numpy as np
@@ -1178,6 +1271,7 @@ def main():
                         ("motion", bench_motion, ""),
                         ("quality", bench_quality, ""),
                         ("site", bench_site, ""),
+                        ("shape", bench_shape, ""),
                         ("director", bench_director, "")):
         if what not in ("all", name):
             continue

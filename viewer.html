@@ -932,7 +932,12 @@ const float EXR = 1.15;                    // the radius every profile is normal
    louder passage having a slightly larger form is scale, not jitter. The beat is still visible --
    it drives the light (u_keyPulse), the density and the count, which is where the reference puts
    it too: its rosette holds absolutely steady while its blades change. */
+uniform float u_fsPin;                 // >0 = pin the form scale. window.FSCALE, measurement only
 float formScale(){
+  // MEASUREMENT PIN, in the same family as POSE and VARPIN. The scale rides the section energy
+  // and the motion patch, so two frames grabbed for an A/B are never at the same size unless
+  // it is held -- and anything measured per form-radius is then comparing two different forms.
+  if(u_fsPin>0.0) return u_fsPin;
   // 0.16 rather than 0.10 on the energy term. This is the section curve, which moves over bars
   // and not beats -- the note above is explicit that a louder passage being a larger form is
   // scale rather than jitter, so it is the one size response that is safe to widen.
@@ -1457,11 +1462,20 @@ float evalMode(vec3 p,float m){
    u_faceLean leans the spin axis out of y toward z by conjugation, which costs exactly one
    extra 2D rotation: Rx(L) Ry(spin) Rx(-L) = the lean folded into the existing tilt plus one
    rotation back. At 0 this is bit-identical to the three lines it replaces.  */
+/* SWIRL IS THE INNERMOST ROTATION, and it was the outermost. formRot maps WORLD to LOCAL, so
+   the first line here is the LAST rotation applied on the way out -- which made u_swirl a roll
+   about the world z axis wrapped around everything else, sweeping the face's azimuth through a
+   full circle. The note at the FACE bound says swirl "turns the plate about its own normal -- a
+   rotation that cannot present the edge", and that is true only of the innermost rotation. It
+   was not innermost, so the one axis chosen BECAUSE it cannot hide the face was the axis hiding
+   it, and the continuous turn had just been moved onto it.
+   Moved to the end, it is applied first on the way out: a roll in the plate's own plane, which
+   leaves the local +z normal exactly where it was. Nothing else in the chain changes order. */
 vec3 formRot(vec3 p){
-  p.xy*=rot(u_swirl);
   p.yz*=rot(u_tilt - u_faceLean);
   p.xz*=rot(u_spin);
   p.yz*=rot(u_faceLean);
+  p.xy*=rot(u_swirl);
   return p;
 }
 /* The mode pair and the morph between them, factored out of map() so the kaleidoscope below can
@@ -2059,10 +2073,26 @@ vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*u_nEps;
    frame inherits the override. */
 float mapD(vec3 p){ gShaMode=u_shaMode; float d=map(p).x*2.0; gShaMode=-1.0; return d; }
 // ambient occlusion — crevices darken, gives the form real volume (4 extra taps)
-float calcAO(vec3 p,vec3 n){ float s=0.,w=1.;
-  for(int i=1;i<=4;i++){ float h=0.04*float(i)*float(i);
+/* THE KERNEL IS A FRACTION OF THE FORM, NOT A LENGTH IN WORLD UNITS, and it was a length.
+   formScale() rides the section energy and the motion patch, so the form's radius moves over
+   roughly 0.50 to 1.60 with the music while these four probe radii (0.04 to 0.64) stood still.
+   At the small end the widest probe is larger than the whole object and every point reads as
+   occluded; at the large end the same probe is a third of the radius and the term retreats into
+   the creases. So the shading was not a property of the geometry at all -- the same crease went
+   dark or clean depending on how loud the passage was.
+   MEASURED on one frozen pose, AO differenced against DXS.ao=0 inside the DBGMASK subject:
+       formScale   0.50    0.65    0.80    1.00    1.20    1.45    1.60
+       mean |d|   18.49   13.40   11.41   10.70   11.16   11.94   12.46
+       >4 levels  99.8%   99.3%   97.1%   84.6%   82.6%   86.3%   90.0%
+   a 73% swing in the term that supplies the form's volume, and it is pure scale artefact.
+   Both halves have to scale or nothing is gained: the probe distances go up with S, and the
+   accumulator -- which is a sum of LENGTHS and therefore also grows with S -- comes back down
+   by the same S. For a form that is a scaled copy of itself the result is then exactly
+   invariant, since d_S(S*q) = S*d_1(q) makes every term in the sum scale by precisely S. */
+float calcAO(vec3 p,vec3 n){ float S=formScale(), s=0., w=1.;
+  for(int i=1;i<=4;i++){ float h=0.04*float(i)*float(i)*S;
     s+=(h-mapD(p+n*h))*w; w*=0.65; }
-  return clamp(1.0-1.6*s,0.,1.); }
+  return clamp(1.0-1.6*s/S,0.,1.); }
 // short-range soft shadow — self-shadowing is what separates 'rendered' from 'flat'
 // Soft shadow. The old version capped each step at 0.18 over 20 iterations, so it could only
 // reach t=3.6 — floor points further from the form ran OUT OF ITERATIONS at a distance that
@@ -2991,8 +3021,34 @@ void main(){
     // adds noise to. So rough and barely-reflective materials keep the cheap occlusion path, and
     // the trace is spent where it changes the image — measured 22.7fps on glass without this gate
     // against 30 with it, for a term glass cannot show anyway behind its own transmission.
+    /* THE GATE WAS A CLIFF ON A QUANTITY THAT MOVES CONTINUOUSLY. rgh is not a constant per
+       material: MAT and FIN are both eased toward their targets every frame at rate 2.5, and
+       the Print and Poster rolls change material on their own, so a roll from pearl (0.35) to
+       clay (0.95) sweeps the roughness straight through 0.55 over about a second. At the
+       crossing the traced self-reflection switched off in a single frame.
+       MEASURED on one frozen chrome pose, sweeping u_rough in equal 0.02 steps and differencing
+       consecutive frames -- the step across the gate against its own neighbours:
+           pair        0.50-0.52   0.52-0.54   0.54-0.56   0.56-0.58
+           mean |d|      0.677       0.748       3.124       0.456
+           p99 |d|       5.0         5.0        35.0         4.0
+           px > 8        0.03%       0.45%      10.31%       0.01%
+       Four times the mean and seven times the peak of an identical step either side, across a
+       tenth of the frame. The reasoning behind the gate is sound and unchanged -- one mirror ray
+       is the wrong estimator for a wide lobe -- but the argument is continuous and the code was
+       binary, so the weight is now continuous too. It costs nothing: above 0.55 the trace is
+       still skipped entirely, below 0.42 it is still taken whole, and in between the march was
+       already being run. */
+    /* AND THE OCCLUSION MARCH IS NOW ONE MARCH, which is where the rest of the step was. Fading
+       the hit shading alone moved the crossing by nothing at all -- measured, 3.591 against
+       3.487 -- because the MISS case was switching estimator underneath it: a 28-step uncapped
+       sphere trace reaching t=4 on one side of 0.55, and a 10-step march with its steps clamped
+       to 0.35 and stopping at t=2.2 on the other. Two different answers for the same occlusion,
+       swapped in one frame. The longer trace is the better estimator and it is what everything
+       now uses; only the second SHADE -- normal, AO, shadow, material -- is gated, which is the
+       part the perf note below is actually about. */
+    float traceW = smoothstep(0.55, 0.42, rgh);   // 1 = trust the traced ray, 0 = the room alone
     vec3 refl;
-    if(u_reflect>0.12 && rgh<0.55 && u_reflTrace>0.5){
+    {
       float tr=0.04, rocc=1.0; bool hit=false; vec3 hp=p;
       /* THE HIT EPSILON HAS TO MATCH THE MINIMUM STEP, and it did not: the test was 0.0035
          against a step floored at 0.012, so the acceptance band was 3.4x finer than the
@@ -3026,7 +3082,23 @@ void main(){
         tr+=max(hh,RSTEP);
         if(tr>4.0) break;
       }
-      if(hit){
+      if(hit && traceW>0.0 && u_reflect>0.12 && u_reflTrace>0.5){
+        /* NEWTON-REFINING THIS HIT DOES NOTHING, and the reasoning that says it should is
+           wrong, so it is recorded here rather than left to be rediscovered. The march stops on
+           an absolute epsilon equal to its minimum step (RSTEP, 0.012) while calcN reads the
+           normal over u_nEps, 0.0018 -- the normal is sampled at a position varying by nearly
+           seven times its own stencil, which is exactly the fault the SURFACE REFINEMENT note on
+           the camera ray describes. Three Newton steps fix that residual for three evaluations.
+           MEASURED, chrome with the fold open at kalAmt 0.83 so nearly every visible surface is a
+           reflection of the petal beside it, band-passed 5-25px inside the DBGMASK subject and
+           alternated three times each way in one page load:
+               refine on    band rms 22.607   isolated 34.15%
+               refine off   band rms 22.646   isolated 34.24%
+           Nothing, in either direction. The primary ray's normal feeds a sharp specular lobe
+           straight to the eye; this one feeds envL at rgh+0.12, an AO and a soft shadow, none of
+           which resolve anything at 0.012, and the result is then weighted by Fresnel and mixed
+           with the room. The residual is real and it is invisible. Not worth three evaluations
+           per reflected hit. */
         vec3 rn=calcN(hp);
         float rAO=calcAO(hp,rn);
         float rNoL=max(0.0,dot(rn,L));
@@ -3062,18 +3134,17 @@ void main(){
                       + envL(rn,1.0)*1.22*mix(0.22,1.0,rAO) );
         vec3 rSpec = envL(reflect(R,rn), min(1.0,rgh+0.12), eFoot)
                      *mix(vec3(0.22), rF, u_reflMat)*mix(0.3,1.0,rAO);
-        refl = rDiff + rSpec;
+        /* Faded against the room rather than replacing it outright, so the crossing at 0.55 is
+           smooth. The target is the room dimmed to 0.30 -- which is exactly what the cheap path
+           below returns for a fully occluded point -- so the two branches agree in the limit and
+           nothing above the gate changes at all. */
+        refl = mix(envL(R,rgh,eFoot)*0.30, rDiff + rSpec, traceW);
       } else {
-        refl = envL(R,rgh,eFoot)*mix(0.35,1.0,clamp(rocc,0.0,1.0));
+        /* A hit means the form itself blocks the room, so the room term takes its fully-occluded
+           value -- the same 0.30 floor a miss reaches as rocc goes to zero, which is what makes
+           the crossing continuous in both directions. A miss keeps its occlusion. */
+        refl = envL(R,rgh,eFoot)*(hit ? 0.30 : mix(0.30,1.0,clamp(rocc,0.0,1.0)));
       }
-    } else {
-      // cheap path: short occlusion march only, as before
-      float rocc=1.0, tr=0.035;
-      for(int i=0;i<10;i++){
-        float hh=mapD(p+R*tr);
-        if(hh<0.004){ rocc=0.0; break; }
-        rocc=min(rocc,6.0*hh/tr); tr+=clamp(hh,0.03,0.35); if(tr>2.2) break; }
-      refl=envL(R,rgh,eFoot)*mix(0.30,1.0,clamp(rocc,0.0,1.0));
     }
     // Schlick-with-roughness: the standard IBL Fresnel. The old pow(1-NoV,2.6) ramp ignored
     // roughness entirely, so a matte surface still lit a bright reflective rim and a polished
@@ -4927,7 +4998,7 @@ const FACE_LEAN={deg:25, get rad(){ return this.deg*Math.PI/180; }}; window.FACE
 /* The face-to-camera bound; see the note where spin and tilt are summed. deg values are the
    amplitude each out-of-plane axis is allowed, in degrees. FACE.on=false restores the free
    three-axis rotation exactly. Live from the console: FACE.spinDeg=40 and so on. */
-const FACE={on:true, spinDeg:26, tiltDeg:18,
+const FACE={on:true, follow:1.0, spinDeg:26, tiltDeg:18,
             get spinRad(){ return this.spinDeg*Math.PI/180; },
             get tiltRad(){ return this.tiltDeg*Math.PI/180; }}; window.FACE=FACE;
 /* SELF-SPIN. A constant turn about the form's own axis, ADDED to whatever the Director is doing
@@ -9169,13 +9240,37 @@ function frame(){
      stalled instead of turning, and a shape change landing in a stall reads as a glitch rather
      than a turn. The guarantee it broke is written down two hundred lines up, at SYNC.spinSwing:
      the swing returns to zero on every downbeat AND THE RATE NEVER GOES NEGATIVE.
-     So the continuous part of the turn is handed to swirl, which formRot's note says is the one
-     axis that is "always readable" because it turns the plate about its own normal -- a rotation
-     that cannot present the edge. spinRaw carries spinSwing and spinPhr with it, so the bar
+     So the continuous part of the turn is handed to swirl, which turns the plate about its own
+     normal -- a rotation that cannot present the edge.
+     THAT WAS TRUE OF THE AXIS AND FALSE OF THE CODE when it was written. formRot applied swirl
+     as the OUTERMOST rotation, which makes it a roll about the world z axis rather than about
+     the plate's normal, so the axis picked because it cannot hide the face was the one hiding
+     it -- and the turn had just been moved onto it. See the note at formRot; it is innermost
+     now, and only then does this paragraph describe what the code does.
+     spinRaw carries spinSwing and spinPhr with it, so the bar
      swing and the phrase arc arrive on the axis that is now doing the turning, at the same
      moment and in the same proportion to the rate. What stays on spin and tilt is the bounded
      sway, which is now a lean on top of a turn rather than the turn itself. */
-  const spin = FACE.on ? FACE.spinRad*Math.sin(spinRaw) : spinRaw;
+  /* AND THE YAW FOLLOWS THE VIEW AGAIN, because the table above is wrong and the assertion it
+     was written beside has never passed. bench_motion checks |n.v| < 0.30 on at most 12% of
+     frames; at the commit that INTRODUCED the check it measured 17.8%, and it has measured
+     17.8-19.0% at every commit since. I reported it as verified. It was not.
+     What the table missed is that bounding spin does not bound the ANGLE BETWEEN the face and
+     the camera, and that angle is what |n.v| is. camAng is an integrator that sweeps 239 degrees
+     in forty seconds, so with spin held inside +-26 the two simply drift apart: recorded over
+     2363 frames, |cos(camAng - spin)| is the strongest single correlate of FACEDOT at r 0.346,
+     against 0.086 for swirl. "Once spin itself is bounded the camera's orbit is not what carries
+     the face away" is exactly backwards -- once spin is bounded the orbit is the ONLY thing left
+     that can carry it away.
+     Following the view does not put back the free revolution the sin() removed, which is the
+     other half of what that note got wrong: spin becomes camYaw plus a bounded wobble, so the
+     form is stationary RELATIVE TO THE CAMERA and turns in world space exactly as fast as the
+     camera orbits -- while the turn the eye reads still comes from swirl, which is untouched.
+     camKick is deliberately left out. It is a short decaying punch on the camera, and a form
+     that cancels it cancels the punch; it is also the one term here that moves backwards, which
+     is the guarantee two hundred lines up. */
+  const camYaw = camAng + userAz;
+  const spin = FACE.on ? camYaw*FACE.follow + FACE.spinRad*Math.sin(spinRaw) : spinRaw;
   const tilt = FACE.on ? FACE.tiltRad*Math.sin(tiltRaw) : tiltRaw;
   if(FACE.on) swirlA += spinRaw;
   /* SYNC.spinOut IS THE ANGLE THAT IS DRAWN, and with the bound above that is no longer the sum
@@ -9410,10 +9505,13 @@ function frame(){
      plate seen face and edge, so the sign and the order are right. It is a proxy and not the
      silhouette: the remaining spread is the profile's own area changing with the pose. */
   { let nx=0,ny=0,nz=1,a,c,s;
+    // Same order as formRot, reversed and negated. swirl first now, and on the local normal it
+    // is a no-op by construction -- which is the point of moving it, and it is left in so the
+    // two chains stay line-for-line comparable rather than quietly diverging.
+    a=-swirlA;               c=Math.cos(a);s=Math.sin(a); { const x=nx,y=ny; nx=c*x-s*y; ny=s*x+c*y; }
     a=-FACE_LEAN.rad;        c=Math.cos(a);s=Math.sin(a); { const y=ny,z=nz; ny=c*y-s*z; nz=s*y+c*z; }
     a=-spin;                 c=Math.cos(a);s=Math.sin(a); { const x=nx,z=nz; nx=c*x-s*z; nz=s*x+c*z; }
     a=-(tilt-FACE_LEAN.rad); c=Math.cos(a);s=Math.sin(a); { const y=ny,z=nz; ny=c*y-s*z; nz=s*y+c*z; }
-    a=-swirlA;               c=Math.cos(a);s=Math.sin(a); { const x=nx,y=ny; nx=c*x-s*y; ny=s*x+c*y; }
     FACEDOT=Math.abs(nx*fx+ny*fy+nz*fz); window.FACEDOT=FACEDOT; }
   /* THE UP FLIPS WITH THE POLE CROSSING. rx,rz are the world-up cross forward, with up pinned to
      +Y -- which is why elevation had to be clamped short of vertical: at the pole this is the zero
@@ -9801,6 +9899,7 @@ function frame(){
      them moved it (1024 vs 2048: no change; extra blur passes: no change; step 1.75/1.10/0.70:
      no change; all post off: no change). It is reconstruction error in the normal, and the
      stencil width is the only thing that touches it. */
+  gl.uniform1f(US('u_fsPin'),(window.FSCALE!==undefined)?window.FSCALE:0.0);
   const svgNEps=(2.0/SVG_RES)*4.1;
   gl.uniform1f(US('u_nEps'),
     (volOn&&volTex) ? (2.0*VOL.pad/VOL.res)*0.75
