@@ -1333,6 +1333,28 @@ def bench_shape(c, url):
     check("and no part of the frame jumps across it", at[1] <= 0.01,
           "%.3f%% of pixels move more than 8 levels (was 10.31%%)" % (100 * at[1]))
 
+    # ---- the shadow's sample skip has to change the ANSWER by nothing at all
+    # calcSha skips samples the Lipschitz bound proves cannot lower the running minimum. That is
+    # a speed change with no quality knob in it, and the only thing that makes it safe is that
+    # the result is the same number. It is worth asserting rather than trusting, because the
+    # first version of it was NOT exact -- map() steps at the bounding-sphere early-out, and a
+    # skip that crossed that shell moved 31.9% of pixels by up to 40 levels. Bit-identical is
+    # the whole claim, so bit-identical is the test.
+    # Run at two form scales because the shell radius scales with formScale(), so the crossing
+    # the skip has to stop at is in a different place each time.
+    worst = 0.0
+    for fs in (0.70, 1.30):
+        c.js("window.FSCALE=%f; return 1;" % fs)
+        c.js("window.SHASKIP=1; return 1;")
+        on = _grab(c, 1.00)
+        c.js("window.SHASKIP=0; return 1;")
+        off = _grab(c, 1.00)
+        worst = max(worst, float(np.abs(on - off).max()))
+    c.js("window.SHASKIP=1; window.FSCALE=0; return 1;")
+    check("the shadow's skipped samples change no pixel", worst == 0.0,
+          "worst difference %.0f levels against every sample evaluated (was 40 before the "
+          "shell crossing was handled)" % worst)
+
     if fails:
         raise AssertionError("shape/reflection continuity failed: " + ", ".join(fails))
 

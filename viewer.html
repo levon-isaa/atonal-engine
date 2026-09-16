@@ -737,6 +737,7 @@ uniform float u_volOn,u_volPad,u_nEps,u_shaJit;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
 uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR,u_morphB;
 uniform int u_shaN;
+uniform float u_shaSkip;               // 0 = evaluate every shadow sample. window.SHASKIP, A/B only
 uniform float u_shaMode;          // <0 = shadows use the blend; else the one profile to march
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
@@ -2204,14 +2205,54 @@ float calcSha(vec3 p,vec3 l,int N){
      the prefiltered environment sets how much light the shadow term modulates, so it scales the
      stripes without being their source. */
   float jit=mix(0.5, fract(sin(dot(gl_FragCoord.xy,vec2(23.1406,9.1265)))*17137.3271), u_shaJit);
-  for(int i=0;i<N;i++){
+  /* SKIPPING THE SAMPLES THAT CANNOT MATTER, WITHOUT MOVING ANY OF THEM.
+     Everything above is about WHERE the samples go, and all of it stands: the positions are a
+     fixed count evenly spread over the chord, so none can pop. This is about which of them have
+     to be EVALUATED, which is a different question and was never asked -- the loop spent a full
+     mapD() on every one of N, including the many that land in open space inside the bounding
+     sphere where the answer cannot change.
+     r is a running minimum of 7h/t, so sample j can only lower it if h_j < r*t_j/7. map() is
+     1-Lipschitz -- the property the march already relies on to step safely -- so from one
+     evaluation h_i we know h_j >= h_i - (j-i)*ds for every later sample. Putting those together,
+     sample j is provably incapable of lowering r while
+         h_i - k*ds  >=  r*(t_i + k*ds)/7 + 0.0015        (k = j - i)
+     and solving for k gives the skip below. The 0.0015 keeps the hard-shadow early return exact
+     as well, so a skipped sample cannot have been one that would have returned 0.
+     This is not an approximation and there is no quality knob in it: in exact arithmetic the
+     result is the same number, reached with fewer evaluations. The samples that get skipped are
+     exactly the ones whose contribution was already determined.
+     MEASURED -- see the commit -- frame time and a pixel-for-pixel difference against the
+     unskipped loop, which is what says "same image" rather than "looks the same". */
+  /* WHERE THE LIPSCHITZ ARGUMENT BREAKS, AND THE ONE PLACE IT DOES.
+     map() early-outs to the bounding sphere once br exceeds a threshold, and its own note says
+     the two branches "disagree by the gap between the two -- roughly 0.45". That is a STEP in
+     the field, and a field with a step is not 1-Lipschitz: crossing the shell outward, h drops
+     without the ray having travelled, so h_j >= h_i - (j-i)*ds is simply false across it.
+     MEASURED before this was handled: the skip saved 22.6% of the frame and changed 31.9% of
+     pixels, up to 40 levels. It was not exact and calling it exact would have been wrong.
+     The step is at ONE radius, and the ray crosses it at most once outward. Inside, the field is
+     the real estimator; outside, it is length(p) - 1.45*s, which is exactly 1-Lipschitz. So the
+     skip is sound within either region and unsound only across the boundary -- and the boundary
+     is a sphere this function is already set up to intersect. Capping the skip at that crossing
+     restores the argument in full. */
+  float thr=mix(0.10,0.85,u_scene);
+  float Rs=formScale()*(1.45+thr);
+  float dsc=b*b-(dot(p,p)-Rs*Rs);
+  float tExit=(dsc>0.0)? -b+sqrt(dsc) : -1.0;    // <0: the ray never leaves through that shell
+  int i=0;
+  while(i<N){
     float t=t0+(float(i)+jit)*ds;
     float h=mapD(p+l*t);
     if(h<0.0015) return 0.0;
     r=min(r, 7.0*h/t);
     // r only ever decreases, and the result is smoothstep(0,1,r) -- below 0.02 that is 0.0012,
     // which no amount of further sampling can meaningfully change. Deep shadow stops early.
-    if(r<0.02) break; }
+    if(r<0.02) break;
+    float k=(u_shaSkip>0.5) ? floor((h - (r*t/7.0 + 0.0015)) / (ds*(1.0 + r/7.0))) : 0.0;
+    // Never skip across the shell: the sample that straddles it has to be taken.
+    if(tExit>t) k=min(k, floor((tExit-t)/ds));
+    i += 1 + int(clamp(k, 0.0, float(N)));
+  }
   // The sphere test is itself a hard cutoff, and a hard cutoff is a discontinuity: a ray grazing
   // the sphere takes one sample at h ~ R minus the form's radius, and 7h/t drops below 1 for any
   // shaded point far enough away, so the boundary printed a single crisp arc across the floor.
@@ -9873,6 +9914,7 @@ function frame(){
   // baseline alone moved 98.0ms to 70.8ms on this machine, which swamps the effect entirely.
   gl.uniform1f(US('u_shaMode'),
     (phase===1 && !window.SHABLEND) ? ((mix<0.5)?mode:mode2) : -1);
+  gl.uniform1f(US('u_shaSkip'),(window.SHASKIP!==undefined)?window.SHASKIP:1.0);
   gl.uniform1f(US('u_shaJit'), (window.SHAJIT!==undefined)?window.SHAJIT:1.0);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);
   gl.uniform1f(US('u_volPad'),VOL.pad);
