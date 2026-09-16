@@ -4368,8 +4368,20 @@ const TIERS={
      that will not drift.
      Raising a ceiling cannot cost frames: it is a cap the governor climbs to only when it has
      the headroom, it collapses on the first failed probe, and applyScale clamps the request to
-     MARCH_MAX_PX regardless, so the memory end is already guarded. */
-  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.75, shaN:48, sss:1, near:1.45, far:1.75, shutter:0,
+     MARCH_MAX_PX regardless, so the memory end is already guarded.
+
+     BOTH TIERS NOW CEIL AT 2.00, which was a deliberate second step and not a tidy-up. 1.75 was
+     picked to keep the tiers visibly apart, and that is the wrong reason to leave the DEFAULT
+     tier off the one ratio the resolve reconstructs exactly -- measured over six poses, edge
+     RMSE 1.472 at 1.75 against 1.238 at 2.00, a 16% error reduction for the tier nearly everyone
+     runs. It asks 31% more march pixels at the ceiling, which is a request and not a cost: a
+     machine that cannot pay it degrades and the learned ssCeil collapses, exactly as it does
+     today at 1.75.
+     What separates the tiers is now the FLOOR and the shadow budget -- High rests at 0.82 and
+     spends 48 taps, Ultra rests at native and spends 64 -- which is a difference in what each
+     guarantees rather than in what each is allowed to reach. That is the more honest split: a
+     ceiling was never something a tier delivered, only something it permitted. */
+  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:2.00, shaN:48, sss:1, near:1.45, far:1.75, shutter:0,
            note:'High — shadows, adaptive scale'},
   /* ULTRA IS A BAND, NOT A PIN. It used to fix rscale at 1.35 and switch the governor off
      entirely -- its own tooltip promised "no adaptation, will drop frames", and it delivered:
