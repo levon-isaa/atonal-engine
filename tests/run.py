@@ -32,7 +32,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITES = ["test_director.py", "test_analysis.py", "test_billing.py",
-          "test_server.py", "test_tagger.py"]
+          "test_server.py", "test_tagger.py", "test_env.py"]
 
 if __name__ == "__main__":
     failed = []

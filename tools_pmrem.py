@@ -127,6 +127,71 @@ def convolve(src, W, H, rough, nsamp, cosine=False):
         wsum += w if not cosine else 1.0
     return (acc / np.maximum(wsum, 1e-9)).astype(np.float32)
 
+SAMPLE_BUDGET = 262144      # sample-lookups per level, for every level small enough to afford it
+
+
+def samples_for(level, texels, cosine):
+    """How many importance samples a level gets.
+
+    IT WAS A CONSTANT, 192 (256 for the cosine level), AND THE SMALL LEVELS NEED FAR MORE. A
+    Monte Carlo estimate converges with the sample count and nothing else, and the error that
+    survives into the finished map is the error left in the MEAN of each level -- but a level's
+    mean is itself an average over its texels, so the big levels hide their noise by having tens
+    of thousands of texels to average over and the small ones have nowhere to hide it. Level 7 is
+    eight texels.
+
+    MEASURED against a 16384-sample reference, on a synthetic source with a studio's dynamic
+    range (background 0.25, sources up to 900):
+
+        level  texels   192/256 samples        with the rule below
+          4       512   mean  -1.43%            512   mean +1.26%
+          5       128   mean  +3.46%           2048   mean +0.25%
+          6        32   mean  -6.33%           8192   mean +0.05%
+          7         8   mean -12.32%           8192   mean -1.32%
+
+    Level 7 is the cosine convolution -- the irradiance every diffuse surface reads -- so that
+    12% was a systematic error in the ambient level of every material in the renderer.
+
+    The budget is per LEVEL rather than per texel, which is what makes this nearly free: the
+    levels that need more samples are exactly the ones with almost no texels to spend them on.
+    Whole-bake cost is 12.58M sample-lookups against 13.30M, or +6%.
+
+    Levels 1-3 keep 192 and are NOT fixed by this. Their means are already within 1% for the same
+    reason -- thousands of texels -- but individual texels are still noisy (worst-texel error
+    1060%, 673% and 339% in the same measurement) because a narrow GGX lobe either catches a
+    bright source or misses it. Bringing those to the same standard costs 8500% of level 0 and is
+    not affordable here; the honest fix is a firefly clamp on the source, which changes what the
+    room looks like and is not a change to make without the original HDRIs to check it against.
+    """
+    if level == 0:
+        return 32               # roughness 0: the lobe is a delta, every sample lands together
+    lo = 256 if cosine else 192
+    return int(min(8192, max(lo, SAMPLE_BUDGET // max(1, texels))))
+
+
+def level_plan(W0=512, H0=256, levels=8):
+    """The chain to bake: one (level, w, h, roughness, cosine, samples) per level.
+
+    Lifted out of __main__ so it can be tested. It was four lines inside the loop, and four lines
+    nothing could reach without running the tool against a real HDRI -- which meant the two
+    decisions that define the whole chain (that level L is roughness L/(levels-1), and that the
+    LAST level is a cosine convolution rather than GGX) were the only part of this file a test
+    could not see. Both are silent if wrong: a chain baked entirely at one roughness, or with no
+    cosine level at all, loads and lights the scene without complaint.
+
+    The sizes floor at 4x2 rather than running to 1x1: the shader declares exactly `levels` mip
+    levels with texStorage2D, and an equirect narrower than 4 texels has no azimuth left to
+    interpolate across.
+    """
+    out = []
+    for L in range(levels):
+        w, h = max(4, W0 >> L), max(2, H0 >> L)
+        rough = L / (levels - 1)
+        cos = (L == levels - 1)
+        out.append((L, w, h, rough, cos, samples_for(L, w * h, cos)))
+    return out
+
+
 if __name__ == '__main__':
     # Both paths come from the command line. They were hardcoded when this was committed —
     # an absolute path into a temp directory on one machine, which meant the tool in the repo
@@ -142,11 +207,7 @@ if __name__ == '__main__':
     src = img[::2, ::2]
     W0, H0, LEVELS = 512, 256, 8
     blobs, meta = [], []
-    for L in range(LEVELS):
-        w, h = max(4, W0 >> L), max(2, H0 >> L)
-        rough = L / (LEVELS - 1)
-        cos = (L == LEVELS - 1)
-        ns = 32 if L == 0 else (192 if not cos else 256)
+    for L, w, h, rough, cos, ns in level_plan(W0, H0, LEVELS):
         lv = convolve(src, w, h, rough, ns, cosine=cos)
         blobs.append(lv.astype(np.float16))
         meta.append((w, h, rough, float(lv.mean())))
