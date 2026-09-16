@@ -4108,6 +4108,33 @@ function morphStepFactor(){
   if(rscale<=SS_RESOLVE) return MORPH_RSCALE;
   return Math.max(MORPH_RSCALE, Math.min(1, keep/rscale));
 }
+/* WHY THE RSCALE STEPS ARE NOT SNAPPED TO "GOOD" RATIOS, having tried.
+   The request was reasonable and the premise is half true: edge error against a high-resolution
+   reference really does vary non-monotonically with rscale, the same way in every pose, so some
+   ratios genuinely resolve better than others. Two explanations were tested and only one
+   survives, and it is not one that supports snapping.
+
+   THE FOUR-TAP FILTER'S OWN GEOMETRY, derived rather than measured: one output pixel covers R
+   source texels and the taps sit at +-R/4, so the weight each texel receives is a closed form.
+   Its L1 distance from an ideal box falls smoothly from 0.126 at R=1.05 to EXACTLY ZERO at
+   R=2.00 -- which is the note at that filter, confirmed -- and rises again after. One minimum,
+   no structure, nothing to snap to. It also does not match the frames: it says 1.90 should beat
+   1.75, and measured over six poses 1.90 was 25% worse.
+
+   BUFFER PARITY looked like the answer and fit the high range seven times out of seven: the bad
+   ratios were exactly the ones asking for an odd march height (1317, 1353) and the good ones the
+   even ones. Rounding to even improved both -- 1.740 -> 1.617 and 1.736 -> 1.535. THEN IT FAILED
+   OUT OF SAMPLE. In the low range the only two ratios it changes are 1.10 (783 -> 782) and 1.15
+   (819 -> 818), and both got WORSE: 2.321 -> 2.703 and 2.197 -> 2.345, consistently in all six
+   poses. Every other ratio was already even and moved by under 0.5%, which is what says those
+   four are the whole effect. Parity helps above and hurts below, so parity is not the mechanism.
+
+   So: the structure is real, it is reproducible, and I cannot explain it. Snapping the governor
+   to ratios chosen from an unexplained curve would be fitting one canvas and one build, and the
+   ratios the governor actually RESTS at -- its ceilings, 1.75 and 2.00 -- are unaffected by any
+   of this. It only ever touches the transient steps on the way up. Not worth a change made on a
+   hypothesis that failed its own test. What is solid and already used: 2.00 is the exact-box
+   ratio, by derivation and in every pose, and Ultra's ceiling sits on it. */
 function applyScale(){
   scaleSettle=2;                 // see frameAvg: the governor may not measure its own resize
   const s=rscale*morphScale;
