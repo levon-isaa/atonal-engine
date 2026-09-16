@@ -200,6 +200,12 @@ CACHE_DIR = os.path.join(HERE, "out", "cache")
 # memory in one call below, on a thread per request -- it just bounds a different thing.
 MAX_UPLOAD = 300 * 1024 * 1024
 
+# The site's public origin, when there is one. Unset for every local run, which keeps the dev
+# server permissive; set on a deployment, which locks CORS to that origin. See _cors().
+_ALLOWED_ORIGIN = (os.environ.get("ATONAL_ORIGIN") or "").strip().rstrip("/")
+# True once main() has bound anything other than loopback. Read by _cors(); see the note there.
+_PUBLIC_BIND = False
+
 
 def cache_path(digest):
     return os.path.join(CACHE_DIR, digest + ".json")
@@ -260,8 +266,46 @@ def cache_put(digest, director):
         traceback.print_exc()   # caching is best-effort; never fail the request over it
 
 class H(BaseHTTPRequestHandler):
+    # A HALF-OPEN CONNECTION HELD A THREAD FOREVER. BaseHTTPRequestHandler leaves the socket
+    # with no timeout, and ThreadingHTTPServer gives every connection a thread, so a client that
+    # opens a socket and sends "GET / HTTP/1.1\r\nHost: x\r\n" without the blank line owns that
+    # thread until it decides otherwise. MEASURED before this line existed: eight such
+    # connections were all still held after twelve seconds, and nothing frees them. That is
+    # slowloris, it needs no bandwidth and no credits, and a few hundred sockets from one host
+    # take the service off the air.
+    #
+    # socketserver applies this PER SOCKET OPERATION, not to the request as a whole, so it does
+    # not put a ceiling on a legitimate slow upload: a 300MB body over a poor connection keeps
+    # resetting the clock as data arrives. It also does not touch the analysis, which is compute
+    # between a read and a write rather than a socket operation. What it bounds is a connection
+    # that has STOPPED talking, which is the only thing being defended against.
+    #
+    # BaseHTTPRequestHandler already handles the timeout cleanly -- handle_one_request catches
+    # socket.timeout, logs it and closes -- so nothing else here has to change.
+    timeout = float(os.environ.get("ATONAL_SOCKET_TIMEOUT", "30"))
+
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        """Who may call this from a browser.
+
+        "*" IS THE RIGHT ANSWER FOR A DEV SERVER AND THE WRONG ONE FOR A DEPLOYED ONE, so it
+        depends on whether a public origin has been configured. With ATONAL_ORIGIN unset --
+        every local run -- nothing changes and any page may call it, which is what makes
+        file:// and a second dev port work. With it set, the header is sent only to that
+        origin, so a deployment is locked to its own site without a second setting to forget.
+        There is no credential here for a hostile page to ride on (the key travels in
+        X-Render-Key, which no browser attaches by itself, so this is not a CSRF fix) -- it
+        narrows who can BUILD on the API, and with it the abuse and support surface.
+
+        Vary: Origin because the response now differs by request header, and a cache that does
+        not know that will hand one origin's response to another.
+        """
+        allowed = _ALLOWED_ORIGIN
+        if allowed:
+            if (self.headers.get("Origin") or "").strip().rstrip("/") == allowed:
+                self.send_header("Access-Control-Allow-Origin", allowed)
+            self.send_header("Vary", "Origin")
+        else:
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Render-Key")
         # Private Network Access. Chrome treats a request from a public or opaque origin (which
@@ -269,9 +313,15 @@ class H(BaseHTTPRequestHandler):
         # Access-Control-Request-Private-Network, and BLOCKS it unless the response opts in.
         # Without this, opening viewer.html by double-clicking it gives a page that loads fine and
         # an upload that fails as a bare network error — indistinguishable from the server being
-        # down. Scoped to a loopback-only dev server, so it grants nothing that was not already
-        # reachable from this machine.
-        self.send_header("Access-Control-Allow-Private-Network", "true")
+        # down.
+        # ONLY WHILE THIS IS A LOOPBACK SERVER. The note above says the header is "scoped to a
+        # loopback-only dev server" and nothing enforced that, so a deployment bound to a public
+        # address sent it too -- where it means the opposite of what it was added for: it is a
+        # public host volunteering to be reached from inside other people's networks. It grants
+        # nothing on a real deployment and it is exactly the wrong signal, so it is now tied to
+        # the bind rather than to a comment.
+        if not _PUBLIC_BIND:
+            self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def _json(self, code, obj):
         body = json.dumps(obj).encode()
@@ -610,25 +660,44 @@ class H(BaseHTTPRequestHandler):
         charged = None            # (key, attempt-ref) once a credit has been taken
         freed = None              # (ip, day) once a FREE take has been recorded
         try:
-            data = self.rfile.read(n)
+            # STRAIGHT TO DISK, A MEGABYTE AT A TIME. This was one read of the whole body,
+            # which meant MAX_UPLOAD -- 300MB -- of resident memory per upload IN FLIGHT, before
+            # anything had been queued or charged. The analysis slot serialises the expensive
+            # work, but nothing serialises this: ThreadingHTTPServer gives every connection a
+            # thread, so twenty simultaneous uploads were six gigabytes of Python bytes with no
+            # gate in front of them and no credit spent to get there.
+            #
+            # Streaming caps it at the chunk regardless of how many arrive at once, and the
+            # digest is taken as the bytes go past, so the content-addressed cache costs nothing
+            # extra. The file has to be written anyway -- ffmpeg needs a path to probe -- so the
+            # only thing given up is the disk write on a cache HIT, which used to be skipped.
+            # That is one write of a file already in the page cache against an unbounded memory
+            # multiplier, and it is the right way round.
+            fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
             # Cache on the CONTENT, not the filename: the same track renamed is the same
-            # analysis, and a different track under a reused name is not. The digest has to be
-            # taken here, before `del data` below drops the upload copy.
-            digest = hashlib.sha256(data).hexdigest()
+            # analysis, and a different track under a reused name is not.
+            sha = hashlib.sha256()
+            got = 0
+            with os.fdopen(fd, "wb") as fp:
+                while got < n:
+                    chunk = self.rfile.read(min(1 << 20, n - got))
+                    if not chunk:
+                        break                            # client hung up mid-body
+                    sha.update(chunk)
+                    fp.write(chunk)
+                    got += len(chunk)
+            if got != n:
+                # Content-Length promised more than arrived. Nothing has been charged yet.
+                return self._json(400, {"error": "upload ended early "
+                                                 f"({got} of {n} bytes)"})
+            digest = sha.hexdigest()
             hit = cache_get(digest)
             if hit is not None:
                 # Returned WITHOUT taking the analysis slot: a cache hit does no CPU work, so queueing it
-                # behind a running analysis would stall it for no reason.
+                # behind a running analysis would stall it for no reason. tmp is removed in the
+                # finally below like every other path out of here.
                 print(f"[cache] {name} -> {digest[:12]}", flush=True)
-                del data
                 return self._json(200, hit)
-            # Written HERE, above the gate, and that ordering is the point: ffmpeg needs a
-            # path to read a header from, and the length check below has to happen before a
-            # credit is taken. Writing a temp file is bounded by MAX_UPLOAD and costs a disk
-            # write we were going to do anyway.
-            fd, tmp = tempfile.mkstemp(suffix=ext)      # mkstemp, not mktemp: no race, and we own the fd
-            with os.fdopen(fd, "wb") as fp: fp.write(data)
-            del data                                     # drop the upload copy before analysis allocates
             # ---- THE LENGTH CHECK ----
             # ABOVE THE GATE, because a track we refuse is a track nobody should pay for. It
             # costs ~11ms (analyze.probe_duration reads the container header and stops), against
@@ -732,6 +801,58 @@ class H(BaseHTTPRequestHandler):
         if self._LOG:
             print(f"  {self.command} {self.path} -> {a[1] if len(a) > 1 else ''}", flush=True)
 
+def _preflight():
+    """The go-live checklist, printed at boot, because none of it is visible from outside.
+
+    Every line here is something that is FINE on a laptop and a problem on a public host, and
+    all of them are silent either way: CORS wide open, a free tier counting the proxy instead of
+    the customer, an upload cap that disagrees with nginx. An operator should not have to read
+    server.py to find out which way each one is set today.
+
+    It reports rather than refuses. The one thing it cannot know is whether there is a reverse
+    proxy in front, and guessing wrong in either direction would either block a valid setup or
+    give false comfort -- so the two settings that depend on it are printed as what they are and
+    what that implies. See DEPLOY.md.
+    """
+    out = ["  socket timeout: %.0fs (a stalled connection is dropped, not held)" % H.timeout,
+           "  upload cap: %d MB, max track %d min" % (MAX_UPLOAD // (1024 * 1024),
+                                                      analyze.MAX_SECONDS // 60)]
+    if _PUBLIC_BIND:
+        out.append("  !! bound to %s -- reachable off this machine, and this server speaks"
+                   % os.environ.get("ATONAL_HOST", "?"))
+        out.append("  !! PLAIN HTTP with no rate limiting. Put nginx in front of it and bind")
+        out.append("  !! loopback instead; see deploy/nginx.conf.")
+    if _ALLOWED_ORIGIN:
+        out.append("  CORS: locked to %s" % _ALLOWED_ORIGIN)
+    else:
+        out.append("  CORS: open to any origin (ATONAL_ORIGIN unset)"
+                   + ("  !! set it before going live" if _PUBLIC_BIND else ""))
+    # The count itself is on the billing banner above; what is missing there is what the
+    # identity behind it actually is, which is the half that goes wrong on a deployment.
+    if os.environ.get("ATONAL_TRUST_PROXY"):
+        out.append("  free tier identity: X-Forwarded-For -- correct ONLY with a proxy in front")
+        out.append("                      that overwrites it; without one it is client-settable")
+        out.append("                      and the free tier is one header away from unlimited.")
+    else:
+        out.append("  free tier identity: the socket address. Behind a proxy that is the PROXY,")
+        out.append("                      so every visitor shares one bucket -- set"
+                   " ATONAL_TRUST_PROXY.")
+    try:
+        db = billing.DB_PATH
+        d = os.path.dirname(db) or "."
+        out.append("  ledger: %s (%s)" % (db, "writable" if os.access(d, os.W_OK) else "!! NOT WRITABLE"))
+    except Exception:
+        pass
+    try:
+        n = len([f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]) if os.path.isdir(CACHE_DIR) else 0
+        mb = sum(os.path.getsize(os.path.join(CACHE_DIR, f))
+                 for f in os.listdir(CACHE_DIR)) / 1e6 if os.path.isdir(CACHE_DIR) else 0.0
+        out.append("  analysis cache: %d entries, %.0f MB, no automatic bound -- see DEPLOY.md" % (n, mb))
+    except OSError:
+        pass
+    print("\n".join(out), flush=True)
+
+
 def _billing_banner():
     """What an operator cannot otherwise find out without reading billing.py.
 
@@ -808,6 +929,8 @@ if __name__ == "__main__":
     host_env = os.environ.get("ATONAL_HOST", "").strip()
     if host_env:
         binds = [(ThreadingHTTPServer, host_env)]
+        if host_env not in ("127.0.0.1", "::1", "localhost"):
+            globals()["_PUBLIC_BIND"] = True
     else:
         binds = [(ThreadingHTTPServer, "127.0.0.1"), (_V6, "::1")]
 
@@ -828,6 +951,7 @@ if __name__ == "__main__":
     print(f"ATONAL Director server on http://127.0.0.1:{PORT}   (PANNs: {tagger.available()})",
           flush=True)
     _billing_banner()
+    _preflight()
     # THE FIRST UPLOAD SHOULD NOT PAY FOR THE IMPORTS. analyze imports librosa lazily, and
     # librosa in turn pulls numba and compiles: profiled on a cold process, 2.42s of a 12.57s
     # analysis was import machinery, 19% of it, and every bit of that landed on whoever uploaded

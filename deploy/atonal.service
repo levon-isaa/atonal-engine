@@ -1,0 +1,55 @@
+# systemd unit for the ATONAL director server.
+#
+#   sudo cp deploy/atonal.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now atonal
+#
+# Loopback only. TLS, rate limiting and the body cap belong to nginx in front of it -- see
+# deploy/nginx.conf and DEPLOY.md. Nothing here should ever set ATONAL_HOST.
+[Unit]
+Description=ATONAL director server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atonal
+Group=atonal
+WorkingDirectory=/srv/atonal
+# Secrets live here, root-owned and 0600. NOT in the repo, NOT in this file: a unit file is
+# world-readable and ends up in support pastes.
+EnvironmentFile=/etc/atonal/atonal.env
+ExecStart=/srv/atonal/.venv/bin/python /srv/atonal/server.py
+Restart=always
+RestartSec=3
+# MEMORY IS A FUNCTION OF ATONAL_MAX_MINUTES, NOT A ROUND NUMBER. analyze.py measured the
+# cost law directly: peak RSS is 1495 MB fixed (the PANNs model and the libraries) plus
+# 4.95 MB for every second of audio. At the default 20-minute cap that is
+#
+#     1495 + 4.95 * 20 * 60  =  7435 MB
+#
+# so 8G, with the fixed part meaning even a tiny cap cannot go below about 2G. If you lower
+# ATONAL_MAX_MINUTES, lower this with it; if you raise either, raise both. Set to 4G here
+# first, which silently OOM-kills any upload over about nine minutes -- the customer sees the
+# analysis die and the ledger refunds them, and nothing anywhere says why.
+MemoryMax=8G
+# An analysis is CPU-bound and serialised, so it cannot starve the box on its own, but a
+# runaway import or a decoder loop can.
+CPUQuota=200%
+
+# --- hardening. The process needs to read the repo and write out/ and nothing else. ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+# billing.db and the analysis cache. The ONLY writable path.
+ReadWritePaths=/srv/atonal/out
+
+[Install]
+WantedBy=multi-user.target

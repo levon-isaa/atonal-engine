@@ -324,6 +324,46 @@ def test_redeem_endpoint():
         os.environ.pop("ATONAL_GUMROAD_TEN", None)
 
 
+def test_truncated_upload():
+    """A body that stops short of its Content-Length is a 400, and costs nothing.
+
+    The upload is streamed to disk a megabyte at a time rather than read whole, so this case
+    exists where it did not before: read() returns empty at the hang-up instead of raising, and
+    without the short-read check the server would have gone on to analyse a truncated file --
+    charging for it, and very likely failing inside ffmpeg where the error means nothing to
+    anyone. Nothing has been charged at this point, and the assertions below say so.
+    """
+    print("truncated upload")
+    import socket
+    before_free = billing.free_left(IP)
+    with billing._conn() as c:
+        rows_before = c.execute("SELECT COUNT(*) FROM ledger").fetchone()[0]
+
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+    body = b"x" * 2048
+    s.sendall(b"POST /analyze HTTP/1.1\r\nHost: x\r\n"
+              b"Content-Length: 999999\r\nX-Filename: short.mp3\r\n\r\n" + body)
+    s.shutdown(socket.SHUT_WR)          # promised 999999, sent 2048, then hung up
+    resp = b""
+    try:
+        while True:
+            b2 = s.recv(4096)
+            if not b2:
+                break
+            resp += b2
+    except OSError:
+        pass
+    s.close()
+    status = resp.split(b" ")[1].decode() if resp.startswith(b"HTTP/") else "(no response)"
+    check(status == "400", "a short body is answered 400, not dropped (%s)" % status)
+    check(b"ended early" in resp, "and the reason says so")
+    check(billing.free_left(IP) == before_free,
+          "a truncated upload does not touch the free allowance")
+    with billing._conn() as c:
+        rows_after = c.execute("SELECT COUNT(*) FROM ledger").fetchone()[0]
+    check(rows_after == rows_before, "nor writes a ledger row")
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CANARY = b"CANARY-should-never-be-served"
 
@@ -454,7 +494,7 @@ if __name__ == "__main__":
                test_failed_analysis_refunds_a_credit, test_failed_analysis_refunds_the_free_tier,
                test_failure_leaves_nothing_behind, test_cache_hit_is_free,
                test_stale_entry_is_not_charged_again, test_redeem_endpoint,
-               test_static_allowlist):
+               test_static_allowlist, test_truncated_upload):
         fn()
     print()
     if FAILURES:

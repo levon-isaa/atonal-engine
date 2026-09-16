@@ -22,6 +22,10 @@ renderer consumes. The renderer never sees FFT; it reads the Director's decision
    bloom / grain.
 10. **Prediction**: upcoming events (e.g. drop) with lead time, for visual anticipation.
 
+**Going live?** `DEPLOY.md` is the checklist — the topology, the two environment variables that
+are wrong by default behind a proxy, how much memory a track-length cap actually needs, and what
+is still yours to decide (backups, retention, legal). `deploy/` has the nginx and systemd files.
+
 ## Run it on any computer (macOS / Linux / Windows)
 **Prerequisites:** Python 3.9+ and ~2 GB free disk (deps + a 300 MB model). Internet for first-time setup.
 
