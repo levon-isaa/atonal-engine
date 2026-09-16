@@ -8,6 +8,7 @@
     python tests/render_bench.py filter    # what a filter cell costs the subject
     python tests/render_bench.py motion    # the guarantees viewer.html makes about turning
     python tests/render_bench.py shape     # AO and the reflection gate, asserted continuous
+    python tests/render_bench.py export    # the MP4 the export path writes, parsed and decoded
     python tests/render_bench.py director  # the Director's timing rules, asserted
     python tests/render_bench.py site      # the purchase pages, in three configurations
     python tests/render_bench.py all
@@ -1003,6 +1004,247 @@ _DIR_REC = """
 """
 
 
+# ------------------------------------------------------------------ the exported file
+# WHY THIS EXISTS. viewer.html contains a hand-written MP4 muxer -- box sizes, sample tables,
+# chunk offsets, an esds descriptor -- and nothing had ever opened a file it produced. Every
+# claim about the export path was an argument from the source rather than from a file.
+#
+# So this builds real files through the real muxer and READS THEM BACK: the box tree is parsed
+# here in Python against the spec, and the audio is decoded out of the finished file by the
+# browser and located by its onset. The muxer turned out to be correct, which is worth having
+# pinned; the SYNC did not.
+_MP4_CONTAINERS = {"moov", "trak", "mdia", "minf", "stbl", "dinf", "edts"}
+
+
+def _mp4_walk(buf, start, end, path=(), out=None):
+    """Every box as (path, offset, size). Raises on anything that does not parse."""
+    import struct
+    out = [] if out is None else out
+    o = start
+    while o < end:
+        if end - o < 8:
+            raise AssertionError("%d trailing bytes at %d are not a box" % (end - o, o))
+        sz = struct.unpack(">I", buf[o:o + 4])[0]
+        typ = buf[o + 4:o + 8].decode("latin1")
+        if sz == 0:
+            sz = end - o
+        if sz < 8 or o + sz > end:
+            raise AssertionError("box %r at %d claims %d bytes, %d remain"
+                                 % (typ, o, sz, end - o))
+        p = path + (typ,)
+        out.append((p, o, sz))
+        if typ in _MP4_CONTAINERS:
+            _mp4_walk(buf, o + 8, o + sz, p, out)
+        elif typ == "stsd":                       # full box, then a count, then sample entries
+            _mp4_walk(buf, o + 16, o + sz, p, out)
+        elif typ == "avc1":                       # 78 bytes of visual fields, then child boxes
+            _mp4_walk(buf, o + 8 + 78, o + sz, p, out)
+        elif typ == "mp4a":                       # 28 bytes of audio fields, then child boxes
+            _mp4_walk(buf, o + 8 + 28, o + sz, p, out)
+        o += sz
+    return out
+
+
+def _u32(b, o):
+    import struct
+    return struct.unpack(">I", b[o:o + 4])[0]
+
+
+def _mp4_build_js(nv, na, extra=""):
+    return """
+      const mk=(n,base,keyEvery)=>{const a=[];for(let i=0;i<n;i++){
+        const b=new Uint8Array(4+(i%%7));b.fill(base+(i&15));
+        a.push({bytes:b,key:keyEvery?(i%%keyEvery===0):false});}return a;};
+      const desc=new Uint8Array([1,0x42,0xE0,0x1E,0xFF,0xE1,0,4,0x67,0x42,0xE0,0x1E,
+                                 1,0,4,0x68,0xCE,0x3C,0x80]);
+      const asc=new Uint8Array([0x11,0x90]);
+      %s
+      const blob=MP4.build(mk(%d,0xA0,6), desc, 1080,1920,60,
+        %s);
+      const buf=new Uint8Array(await blob.arrayBuffer());
+      let s=''; for(let i=0;i<buf.length;i++) s+=String.fromCharCode(buf[i]);
+      return JSON.stringify({b:btoa(s),type:blob.type});""" % (
+        extra, nv,
+        ("{samples:mk(%d,0x50,0), asc:asc, sampleRate:48000, channels:2}" % na) if na else "null")
+
+
+# A 1kHz burst written at a known sample of the source, encoded, muxed, then DECODED BACK OUT
+# of the finished file and located by its onset. This is the only check here that exercises the
+# whole audio path at once, and it is the one that found the 44ms offset: everything upstream --
+# chunk counts, sample tables, durations -- was already correct while the audio was still late.
+_SYNC_JS = r"""
+  const sr=48000, ch=2, N=1024, M=140, BURST=48000;
+  const cfg={codec:'mp4a.40.2', sampleRate:sr, numberOfChannels:ch, bitrate:192000};
+  try{ const s=await AudioEncoder.isConfigSupported(cfg);
+       if(!s||!s.supported) return JSON.stringify({err:'AAC not supported in this browser'}); }
+  catch(e){ return JSON.stringify({err:'AAC unavailable: '+e.message}); }
+  const src=new Float32Array(M*N);
+  for(let i=0;i<M*N;i++){ const d=i-BURST;
+    src[i]=(d>=0&&d<2400)?Math.sin(2*Math.PI*1000*d/sr)*Math.exp(-d/600):0; }
+  const samples=[]; let asc=null;
+  const enc=new AudioEncoder({
+    output:(chunk,md)=>{ if(md&&md.decoderConfig&&md.decoderConfig.description&&!asc)
+                           asc=new Uint8Array(md.decoderConfig.description);
+                         const b=new Uint8Array(chunk.byteLength); chunk.copyTo(b);
+                         samples.push({bytes:b,key:true}); },
+    error:e=>{}});
+  enc.configure(cfg);
+  for(let k=0;k<M;k++){
+    const data=new Float32Array(N*ch);
+    for(let i=0;i<N;i++){ data[i*ch]=src[k*N+i]; data[i*ch+1]=src[k*N+i]; }
+    enc.encode(new AudioData({format:'f32',sampleRate:sr,numberOfFrames:N,
+      numberOfChannels:ch,timestamp:Math.round(k*N/sr*1e6),data}));
+  }
+  await enc.flush(); enc.close();
+  if(!samples.length||!asc) return JSON.stringify({err:'the encoder produced nothing'});
+  const vdesc=new Uint8Array([1,0x42,0xE0,0x1E,0xFF,0xE1,0,4,0x67,0x42,0xE0,0x1E,
+                              1,0,4,0x68,0xCE,0x3C,0x80]);
+  const vs=[]; for(let i=0;i<180;i++){ const b=new Uint8Array(8); b.fill(1);
+                                       vs.push({bytes:b,key:i===0}); }
+  const blob=MP4.build(vs, vdesc, 320,240,60, {samples,asc,sampleRate:sr,channels:ch});
+  const ab=await blob.arrayBuffer();
+  const actx=new (window.OfflineAudioContext||window.webkitOfflineAudioContext)(1,sr,sr);
+  let dec;
+  try{ dec=await actx.decodeAudioData(ab.slice(0)); }
+  catch(e){ return JSON.stringify({err:'the browser could not decode the muxed file: '+e.message}); }
+  const d0=dec.getChannelData(0);
+  let peak=0; for(let i=0;i<d0.length;i++){ const a=Math.abs(d0[i]); if(a>peak) peak=a; }
+  let onset=-1; for(let i=0;i<d0.length;i++){ if(Math.abs(d0[i])>peak*0.1){ onset=i; break; } }
+  return JSON.stringify({burstAt:BURST, onsetAt:onset, offsetSamples:onset-BURST,
+                         offsetMs:(onset-BURST)/sr*1000, decLen:d0.length});
+"""
+
+
+def bench_export(c, url):
+    """The MP4 the export path writes, parsed and decoded rather than argued about."""
+    import base64
+    import numpy as np
+    fails = []
+
+    def check(name, ok, detail=""):
+        print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, ("   " + detail) if detail else ""))
+        if not ok:
+            fails.append(name)
+
+    NV, NA = 24, 17
+    d = json.loads(c.js(_mp4_build_js(NV, NA), timeout=120))
+    buf = base64.b64decode(d["b"])
+    vsz = [4 + (i % 7) for i in range(NV)]
+    asz = [4 + (i % 7) for i in range(NA)]
+
+    try:
+        boxes = _mp4_walk(buf, 0, len(buf))
+        structural = ""
+    except AssertionError as e:
+        boxes, structural = [], str(e)
+    check("the box tree parses to exactly the file length", not structural, structural)
+    if structural:
+        raise AssertionError("export: the file does not parse; nothing further is meaningful")
+
+    top = [b for b in boxes if len(b[0]) == 1]
+    check("ftyp, mdat, moov, in that order, covering the file",
+          [b[0][0] for b in top] == ["ftyp", "mdat", "moov"]
+          and sum(b[2] for b in top) == len(buf),
+          "%s, %d bytes" % ([b[0][0] for b in top], len(buf)))
+
+    def one(t, within=None):
+        m = [b for b in boxes if b[0][-1] == t
+             and (within is None or (within[1] < b[1] < within[1] + within[2]))]
+        return m[0] if m else None
+
+    def payload(box):
+        return buf[box[1] + 12:box[1] + box[2]]        # past header and version/flags
+
+    mvhd = payload(one("mvhd"))
+    mvts, mvdur = _u32(mvhd, 8), _u32(mvhd, 12)
+    traks = [b for b in boxes if b[0][-1] == "trak"]
+    check("both tracks are present", len(traks) == 2, "%d traks" % len(traks))
+
+    mdat = one("mdat")
+    for tk in traks:
+        mdhd, hdlr = payload(one("mdhd", tk)), payload(one("hdlr", tk))
+        kind = hdlr[4:8].decode("latin1")
+        mts, mdur = _u32(mdhd, 8), _u32(mdhd, 12)
+        tkhd = payload(one("tkhd", tk))
+        tdur = _u32(tkhd, 16)
+        stts = payload(one("stts", tk))
+        total = sum(_u32(stts, 4 + 8 * j) * _u32(stts, 8 + 8 * j) for j in range(_u32(stts, 0)))
+        stsz = payload(one("stsz", tk))
+        sizes = [_u32(stsz, 8 + 4 * j) for j in range(_u32(stsz, 4))]
+        off = _u32(payload(one("stco", tk)), 4)
+        want = vsz if kind == "vide" else asz
+
+        check("%s sample table matches what was handed in" % kind, sizes == want,
+              "%d entries, %d bytes" % (len(sizes), sum(sizes)))
+        check("%s stts total == mdhd duration" % kind, total == mdur,
+              "%d vs %d" % (total, mdur))
+        check("%s track duration agrees with the movie timescale" % kind,
+              tdur == round(mdur / mts * mvts), "%d vs %d" % (tdur, round(mdur / mts * mvts)))
+        check("%s data sits inside mdat" % kind,
+              mdat[1] + 8 <= off and off + sum(sizes) <= mdat[1] + mdat[2],
+              "[%d,%d) in [%d,%d)" % (off, off + sum(sizes), mdat[1] + 8, mdat[1] + mdat[2]))
+        # THE STRONGEST CHECK HERE: the bytes a player would read at the offsets the table gives
+        # are the bytes that went in. A wrong offset or a wrong size passes every check above.
+        exp = b"".join(bytes([(0xA0 if kind == "vide" else 0x50) + (i & 15)]) * want[i]
+                       for i in range(len(want)))
+        check("%s samples round-trip byte for byte" % kind, buf[off:off + sum(sizes)] == exp)
+        check("%s hdlr name is null-terminated" % kind, hdlr[20:].endswith(b"\x00"),
+              repr(bytes(hdlr[20:])))
+        if kind == "vide":
+            stss = payload(one("stss", tk))
+            keys = [_u32(stss, 4 + 4 * j) for j in range(_u32(stss, 0))]
+            check("the video track has sync samples", len(keys) > 0 and all(1 <= k <= NV
+                  for k in keys), "%d of %d frames" % (len(keys), NV))
+
+    # esds is what makes the audio track decodable at all; an inconsistent descriptor chain is
+    # silent -- the file plays with no sound rather than failing to open.
+    esds = one("esds")
+    check("esds is present inside mp4a", esds is not None and "mp4a" in esds[0])
+    if esds:
+        p = payload(esds)
+        tag, o = p[0], 1
+        n = 0
+        for _ in range(4):
+            cbyte = p[o]; o += 1; n = (n << 7) | (cbyte & 0x7F)
+            if not (cbyte & 0x80):
+                break
+        check("the ES descriptor length matches its box", tag == 0x03 and o + n == len(p),
+              "tag 0x%02X, length %d, ends at %d of %d" % (tag, n, o + n, len(p)))
+
+    # ---- the edit list, and the thing it exists for
+    elst = one("elst")
+    check("the audio track carries an edit list", elst is not None)
+    if elst:
+        p = payload(elst)
+        check("it skips the AAC encoder delay", _u32(p, 8) == 2112,
+              "media_time %d samples (%.1fms at 48k)" % (_u32(p, 8), _u32(p, 8) / 48.0))
+
+    print("  --   decoding the finished file back to find where the audio actually landed")
+    r = json.loads(c.js(_SYNC_JS, timeout=180))
+    if r.get("err"):
+        check("audio lands where it was written", False, r["err"])
+    else:
+        # A 1kHz burst written at sample 48000 of the source, muxed, then decoded out of the
+        # finished file. Without the edit list this came back at 50113 -- 2113 samples, 44.0ms.
+        check("audio lands where it was written", abs(r["offsetSamples"]) <= 64,
+              "burst at %d, decoded at %d, %+d samples (%+.2fms); was +2113 (+44.0ms)"
+              % (r["burstAt"], r["onsetAt"], r["offsetSamples"], r["offsetMs"]))
+
+    # ---- and the sample tables have to survive a long take
+    lim = json.loads(c.js("""
+        const out={};
+        for(const n of [1000, 200000]){
+          try{ out[n]=(MP4.u32a(new Array(n).fill(7)).length===4*n)?'ok':'wrong length'; }
+          catch(e){ out[n]=e.constructor.name; }
+        }
+        return JSON.stringify(out);""", timeout=90))
+    check("a long take's sample table can be built", all(v == "ok" for v in lim.values()),
+          "%s  (u32(...spread) threw RangeError between 100k and 125k)" % lim)
+
+    if fails:
+        raise AssertionError("export: " + ", ".join(fails))
+
+
 # ------------------------------------------------------------------ shape and reflection
 def bench_shape(c, url):
     """Two things that have to be CONTINUOUS, and were not.
@@ -1272,6 +1514,7 @@ def main():
                         ("quality", bench_quality, ""),
                         ("site", bench_site, ""),
                         ("shape", bench_shape, ""),
+                        ("export", bench_export, ""),
                         ("director", bench_director, "")):
         if what not in ("all", name):
             continue

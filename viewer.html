@@ -10324,6 +10324,8 @@ async function pickAvcCodec(w,h){
    however slowly they were fed -- but it emits raw H.264 access units and no container. So the
    container is written here. It is the simplest possible MP4: one AVC video track, no audio, one
    chunk, constant frame duration, which removes most of what makes muxing fiddly. */
+/* The AAC-LC encoder delay, in samples. See the edit list in build() for the measurement. */
+const AAC_DELAY=2112;
 const MP4={
   b(type, ...parts){                       // one box: size, type, payload
     let n=0; for(const p of parts) n+=p.length;
@@ -10336,8 +10338,17 @@ const MP4={
     const h=new Uint8Array(4); h[0]=ver; h[1]=(flags>>16)&255; h[2]=(flags>>8)&255; h[3]=flags&255;
     return MP4.b(type, h, ...parts);
   },
-  u32(...v){ const a=new Uint8Array(4*v.length), d=new DataView(a.buffer);
-             v.forEach((x,i)=>d.setUint32(i*4, x>>>0)); return a; },
+  u32(...v){ return MP4.u32a(v); },
+  /* THE ARRAY FORM IS NOT A CONVENIENCE. stsz carries one entry per sample and stss one per key
+     frame, and both were built by spreading the whole list into u32(...) -- which is an argument
+     list, and argument lists have a ceiling. MEASURED in this Chrome: 100000 spread arguments is
+     fine and 125000 throws RangeError, Maximum call stack size exceeded. At 60fps that is a take
+     somewhere around 35 minutes, and "to the end of the track" is an option in the length menu.
+     The cost of getting it wrong is the whole point: the throw lands in the MUXER, after every
+     frame has already been rendered, so an export that took hours dies at the last step with a
+     stack overflow. Nothing about the data needs an argument list. */
+  u32a(v){ const a=new Uint8Array(4*v.length), d=new DataView(a.buffer);
+           for(let i=0;i<v.length;i++) d.setUint32(i*4, v[i]>>>0); return a; },
   u16(...v){ const a=new Uint8Array(2*v.length), d=new DataView(a.buffer);
              v.forEach((x,i)=>d.setUint16(i*2, x&65535)); return a; },
   str(s){ const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; },
@@ -10386,15 +10397,15 @@ const MP4={
     const vStbl=MP4.b('stbl',
       MP4.fb('stsd',0,0, MP4.u32(1), avc1),
       MP4.fb('stts',0,0, MP4.u32(1), MP4.u32(n, sdur)),
-      MP4.fb('stss',0,0, MP4.u32(keys.length), MP4.u32(...keys)),
+      MP4.fb('stss',0,0, MP4.u32(keys.length), MP4.u32a(keys)),
       MP4.fb('stsc',0,0, MP4.u32(1), MP4.u32(1,n,1)),
-      MP4.fb('stsz',0,0, MP4.u32(0,n), MP4.u32(...samples.map(s=>s.bytes.length))),
+      MP4.fb('stsz',0,0, MP4.u32(0,n), MP4.u32a(samples.map(s=>s.bytes.length))),
       MP4.fb('stco',0,0, MP4.u32(1), MP4.u32(vStart)));
     const dref=MP4.fb('dref',0,0, MP4.u32(1), MP4.fb('url ',0,1));
     const vMinf=MP4.b('minf', MP4.fb('vmhd',0,1, MP4.u16(0,0,0,0)), MP4.b('dinf', dref), vStbl);
     const vMdia=MP4.b('mdia',
       MP4.fb('mdhd',0,0, MP4.u32(0,0,TS,durTS), MP4.u16(0x55C4,0)),
-      MP4.fb('hdlr',0,0, MP4.u32(0), MP4.str('vide'), MP4.u32(0,0,0), MP4.str('ATONAL ')),
+      MP4.fb('hdlr',0,0, MP4.u32(0), MP4.str('vide'), MP4.u32(0,0,0), MP4.str('ATONAL\u0000')),
       vMinf);
     const vTrak=MP4.b('trak',
       MP4.fb('tkhd',0,3, MP4.u32(0,0,1,0,durMS), MP4.u32(0,0), MP4.u16(0,0,0,0), MTX,
@@ -10414,19 +10425,38 @@ const MP4={
         MP4.fb('stsd',0,0, MP4.u32(1), mp4a),
         MP4.fb('stts',0,0, MP4.u32(1), MP4.u32(an, aFrame)),
         MP4.fb('stsc',0,0, MP4.u32(1), MP4.u32(1,an,1)),
-        MP4.fb('stsz',0,0, MP4.u32(0,an), MP4.u32(...audio.samples.map(s=>s.bytes.length))),
+        MP4.fb('stsz',0,0, MP4.u32(0,an), MP4.u32a(audio.samples.map(s=>s.bytes.length))),
         MP4.fb('stco',0,0, MP4.u32(1), MP4.u32(aStart)));
       // No stss: every AAC frame is a sync sample, and that is what its absence means.
       const aMinf=MP4.b('minf', MP4.fb('smhd',0,0, MP4.u16(0,0)), MP4.b('dinf',
         MP4.fb('dref',0,0, MP4.u32(1), MP4.fb('url ',0,1))), aStbl);
       const aMdia=MP4.b('mdia',
         MP4.fb('mdhd',0,0, MP4.u32(0,0,sr,aDurTS), MP4.u16(0x55C4,0)),
-        MP4.fb('hdlr',0,0, MP4.u32(0), MP4.str('soun'), MP4.u32(0,0,0), MP4.str('ATONAL ')),
+        MP4.fb('hdlr',0,0, MP4.u32(0), MP4.str('soun'), MP4.u32(0,0,0), MP4.str('ATONAL\u0000')),
         aMinf);
+      /* AN EDIT LIST, BECAUSE AAC HAS AN ENCODER DELAY AND THE TRACK STARTS AT ZERO WITHOUT ONE.
+         The encoder emits priming frames before any of the input reaches it -- feed it 140 frames
+         and 143 come back, the first of them 6 bytes, which is an empty AAC frame. Laying all of
+         them out contiguously from t=0, as this did, puts the priming on screen as audio and
+         everything real behind it.
+         MEASURED end to end rather than reasoned about: a 1kHz burst written at exactly sample
+         48000 of the source, muxed, then decoded back out of the finished file with
+         decodeAudioData and located by its onset. It came back at 50113 -- 2113 samples, 44.0ms
+         late, on every offline export with sound. That is about a sixteenth note at 170bpm, on a
+         renderer whose whole subject is hitting the beat.
+         AAC_DELAY is 2112 rather than the 2113 measured: 2112 is the AAC-LC encoder delay every
+         encoder in this family writes, and the extra sample is the 10%-of-peak onset threshold
+         reading a lossy codec's attack, not a real offset. The edit list is the container's own
+         mechanism for this -- media_time says which media sample the presentation starts at, so
+         the priming is skipped rather than deleted, and the samples themselves are untouched. */
+      const aEdit=MP4.b('edts', MP4.fb('elst',0,0, MP4.u32(1),
+        MP4.u32(Math.max(0, Math.round((aDurTS-AAC_DELAY)/sr*1000))),   // in the MOVIE timescale
+        MP4.u32(AAC_DELAY),                                             // in the MEDIA timescale
+        MP4.u16(1,0)));
       aTrak=MP4.b('trak',
         MP4.fb('tkhd',0,3, MP4.u32(0,0,2,0,aDurMS), MP4.u32(0,0),
                MP4.u16(0x0100,0,0,0), MTX, MP4.u32(0,0)),
-        aMdia);
+        aEdit, aMdia);
     }
 
     const movieMS=Math.max(durMS, aDurMS);
