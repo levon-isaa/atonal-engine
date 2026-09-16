@@ -525,7 +525,10 @@ class H(BaseHTTPRequestHandler):
     # this file -- and each was served in full, verified with a canary. Directory entries keep
     # their trailing slash and stay a prefix test; file entries are now matched exactly.
     # BOTH TUPLES KEEP THEIR TRAILING COMMA. Without it these are plain strings, and then
-    # `rel_posix not in _STATIC_FILES` becomes a SUBSTRING test -- "ew.htm" would pass it.
+    # `rel_posix not in _STATIC_FILES` becomes a SUBSTRING test: any path that is a substring of
+    # "viewer.html" AND exists on disk is served. "r.html" and ".html" are two of them -- checked,
+    # because the example this note carried before ("ew.htm") is NOT a substring of viewer.html
+    # and so would not have passed anything. tests/test_server.py plants r.html as a canary.
     _STATIC_FILES = ("viewer.html",)
     _STATIC_DIRS = ("assets/", "site/")
     _MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -548,6 +551,10 @@ class H(BaseHTTPRequestHandler):
             inside = os.path.relpath(fp, root)
         except ValueError:                       # different drive on Windows
             return False
+        # Belt and braces, and known to be: with realpath already applied, anything that escaped
+        # the root arrives here as "../..." and the allowlist below refuses it on its own --
+        # removing this line breaks no test. It stays because it states the invariant directly
+        # rather than relying on the allowlist happening to be narrow.
         if inside == os.pardir or inside.startswith(os.pardir + os.sep) or os.path.isabs(inside):
             return False
         rel_posix = inside.replace(os.sep, "/")

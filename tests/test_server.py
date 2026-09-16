@@ -24,6 +24,7 @@ about a tenth of a second: ffmpeg rejects the bytes without librosa ever being i
 import json
 import os
 import sys
+import shutil
 import tempfile
 import threading
 import time
@@ -323,12 +324,137 @@ def test_redeem_endpoint():
         os.environ.pop("ATONAL_GUMROAD_TEN", None)
 
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CANARY = b"CANARY-should-never-be-served"
+
+
+def get(path):
+    """(status, body). A refusal is a 404 here; anything else is the interesting case."""
+    try:
+        r = urllib.request.urlopen("http://127.0.0.1:%d%s" % (PORT, path), timeout=5)
+        return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except Exception as e:                       # a 500, a reset, a traceback in the handler
+        return type(e).__name__, str(e).encode()[:120]
+
+
+def test_static_allowlist():
+    """What the server will hand out, and what it will not.
+
+    _serve_static has no other test and its own comment records TWO breaks, both of which served
+    source: a directory traversal ("assets/../server.py" passes a prefix test on the request and
+    a containment test on the result while having left the prefix entirely), and a prefix match
+    on the file entry, which also matched viewer.html.bak, viewer.html~ and viewer.html.orig --
+    the editor leavings that collect beside exactly that file. Neither is reachable now. The
+    point of writing it down is that both were reachable once, in a handler nobody was testing.
+
+    The canaries are real files, planted and removed, because a 404 for a path that does not
+    exist proves nothing at all about a path that does.
+
+    MUTATION TESTED, six ways: serving on the raw request instead of the resolved path, a prefix
+    match on the file entries, the trailing comma dropped from _STATIC_FILES, abspath instead of
+    realpath, and the allowlist removed outright -- all five caught, 2 to 21 checks each.
+    The sixth survives and should: deleting the `inside == os.pardir` containment check changes
+    nothing, because realpath runs first, so a path that escaped the root arrives as "../..." and
+    the ALLOWLIST is what refuses it. The containment check is the invariant stated plainly and
+    is worth keeping; it is simply not the line doing the work.
+    """
+    print("static allowlist")
+    for path, what in (("/", "the viewer at the root"),
+                       ("/viewer.html", "the viewer by name"),
+                       ("/site/pricing.html", "a page under site/"),
+                       ("/assets/mesh_meta.json", "a file under assets/")):
+        st, body = get(path)
+        check(st == 200 and len(body) > 0, "%s is served (%s)" % (what, st))
+
+    # Source, secrets and the operator's data. .env holds the Paddle and Gumroad keys and
+    # out/billing.db is the revenue ledger.
+    for path in ("/server.py", "/billing.py", "/analyze.py", "/tagger.py",
+                 "/.env", "/out/billing.db", "/requirements.txt", "/tests/test_server.py"):
+        st, body = get(path)
+        check(st == 404, "%s is refused (%s)" % (path, st))
+
+    # The traversal, in the spellings that reach the handler differently: the path is unquoted
+    # BEFORE the allowlist runs, so the encoded forms arrive as the literal ones.
+    for path in ("/assets/../server.py", "/assets/../../etc/passwd", "/%2e%2e%2fserver.py",
+                 "/assets%2f..%2fserver.py", "/assets/./../server.py", "/./server.py",
+                 "/site/../billing.py", "/assets/../.env"):
+        st, body = get(path)
+        check(st == 404 and CANARY not in body and b"import" not in body[:200],
+              "traversal %s is refused (%s)" % (path, st))
+
+    planted = []
+    try:
+        # Exact match on the file entries, not a prefix and not a substring. Without its trailing
+        # comma _STATIC_FILES is a plain string and `rel_posix not in ...` becomes a substring
+        # test, which serves any existing path that is a substring of "viewer.html". "r.html" and
+        # ".html" are two; "ew.htm", which server.py's note used to give as the example, is not a
+        # substring of viewer.html at all and would never have demonstrated anything. These are
+        # planted as real files because the bug only serves paths that EXIST.
+        for name in ("r.html", ".html"):
+            p = os.path.join(ROOT, name)
+            with open(p, "wb") as fh:
+                fh.write(CANARY)
+            planted.append(p)
+            st, body = get("/" + name)
+            check(st == 404 and CANARY not in body,
+                  "%r is not matched as a substring of viewer.html (%s)" % (name, st))
+
+        for name in ("viewer.html.bak", "viewer.html~", "viewer.html.orig", "viewer.html.rej"):
+            p = os.path.join(ROOT, name)
+            with open(p, "wb") as fh:
+                fh.write(CANARY)
+            planted.append(p)
+            st, body = get("/" + name)
+            check(st == 404 and CANARY not in body,
+                  "the editor backup %s is refused even though it exists (%s)" % (name, st))
+
+        # realpath collapses symlinks, so a link planted inside an allowed directory cannot
+        # redirect out of it -- as a file, and as a directory somewhere along the path.
+        link = os.path.join(ROOT, "assets", "_t_link.json")
+        os.symlink(os.path.join(ROOT, "server.py"), link)
+        planted.append(link)
+        st, body = get("/assets/_t_link.json")
+        check(st == 404 and b"import" not in body[:200],
+              "a symlink out of assets/ is refused (%s)" % st)
+
+        d = os.path.join(ROOT, "assets", "_t_dir")
+        os.makedirs(d, exist_ok=True)
+        dl = os.path.join(d, "up")
+        os.symlink(ROOT, dl)
+        planted.append(dl)
+        planted.append(d)
+        st, body = get("/assets/_t_dir/up/server.py")
+        check(st == 404 and b"import" not in body[:200],
+              "a symlinked DIRECTORY out of assets/ is refused (%s)" % st)
+    finally:
+        for p in reversed(planted):
+            try:
+                if os.path.islink(p) or os.path.isfile(p):
+                    os.remove(p)
+                elif os.path.isdir(p):
+                    shutil.rmtree(p)
+            except OSError:
+                pass
+        left = [p for p in planted if os.path.exists(p) or os.path.islink(p)]
+        check(not left, "every planted canary was removed" + (" -- LEFT: %s" % left if left else ""))
+
+    # Odd paths must fail closed rather than raise out of the handler: an unhandled exception
+    # there is a traceback and a dropped connection, not a 404.
+    for path in ("/assets/%00", "/assets/a%00b.json", "/assets/", "/site/", "//server.py",
+                 "/" + "a" * 300 + ".json"):
+        st, _ = get(path)
+        check(st == 404, "%r fails closed with a 404, not an error (%s)" % (path[:40], st))
+
+
 if __name__ == "__main__":
     print("server tests — throwaway db and cache under %s" % TMP)
     for fn in (test_bad_requests_are_free, test_bad_key_is_rejected_before_charging,
                test_failed_analysis_refunds_a_credit, test_failed_analysis_refunds_the_free_tier,
                test_failure_leaves_nothing_behind, test_cache_hit_is_free,
-               test_stale_entry_is_not_charged_again, test_redeem_endpoint):
+               test_stale_entry_is_not_charged_again, test_redeem_endpoint,
+               test_static_allowlist):
         fn()
     print()
     if FAILURES:
