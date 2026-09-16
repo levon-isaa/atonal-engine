@@ -4324,7 +4324,25 @@ const TIERS={
         rscale 1.15  edge RMSE 4.31     rscale 1.60  edge RMSE 3.06
      0.82 is below the bottom of that table and will be visibly softer. It is a floor, not a
      target: it exists for the case where the alternative is 15 fps. */
-  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.45, shaN:48, sss:1, near:1.45, far:1.75, shutter:0,
+  /* THE CEILINGS ARE RATIOS, NOT AMOUNTS, AND ONLY SOME RATIOS RESOLVE WELL.
+     More supersampling is not monotonically better here, because the resolve is a FOUR-TAP
+     filter and where its taps land depends on the ratio. The note at that filter says it
+     outright: at R=2 the taps sit at +-0.5 source texels, exactly on texel centres, and the
+     four of them return the four covered texels -- an exact 2x2 box. At any other ratio they
+     land off-centre and each bilinear fetch straddles the footprint, pulling in texels that
+     belong to the neighbouring output pixel.
+     MEASURED, edge RMSE against a 2.60x reference, averaged over THREE pinned poses (the
+     structure is systematic, not noise -- it repeats in every pose):
+         rscale   1.00   1.25   1.45   1.60   1.75   1.90   2.00   2.20
+         RMSE     3.784  2.370  2.228  2.350  2.032  2.484  1.764  1.851
+     1.60 IS WORSE THAN 1.45, so Ultra's ceiling was measurably worse than High's -- a higher
+     tier resolving less well than the one below it, because the number was chosen as an amount
+     and not as a ratio. 2.00 is the best of them by a wide margin and it is best for a reason
+     that will not drift.
+     Raising a ceiling cannot cost frames: it is a cap the governor climbs to only when it has
+     the headroom, it collapses on the first failed probe, and applyScale clamps the request to
+     MARCH_MAX_PX regardless, so the memory end is already guarded. */
+  high:   {label:'High',    scale:0, dpr:1.00, scaleMin:0.82, ss:1.75, shaN:48, sss:1, near:1.45, far:1.75, shutter:0,
            note:'High — shadows, adaptive scale'},
   /* ULTRA IS A BAND, NOT A PIN. It used to fix rscale at 1.35 and switch the governor off
      entirely -- its own tooltip promised "no adaptation, will drop frames", and it delivered:
@@ -4358,7 +4376,9 @@ const TIERS={
      5.6% of the frame across the whole range, for 1.5% of the error. The cost is march PIXELS,
      which is what the shadow-lever note already concludes: the only real lever is fewer rays,
      and that is rscale. Left as it is because changing it buys nothing either way. */
-  ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.00, scaleMax:1.60,
+  // 2.00, not 1.60: the exact-box ratio. See the note at High for the measurement, and for why
+  // 1.60 made this tier resolve WORSE than the one below it.
+  ultra:  {label:'Ultra',   scale:1.35, scaleMin:1.00, scaleMax:2.00,
            /* THE FINER MARCH IS GONE AND THE SHADOW STAYS, because only one of the two was
               buying anything. Ultra differed from High in exactly three numbers -- shaN 64
               against 48, and near/far 1.25/1.55 against 1.45/1.75 -- and MEASURED at a pinned
