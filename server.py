@@ -122,8 +122,17 @@ class _Slot:
             # flashes a "waiting" state it is not in.
             if _BUSY or _WAITING:
                 self._seat()
-                self._say_waiting()
+                # THE TRY STARTS AT THE SEAT, NOT AFTER THE FIRST REPORT. This was
+                #     self._seat(); self._say_waiting(); try: ... except: unseat
+                # with the first _say_waiting OUTSIDE the handler and the identical call inside
+                # it. Raise there -- a KeyboardInterrupt landing in that window, or anything at
+                # all out of _progress_set -- and the seat is never given back and notify_all is
+                # never called, so this slot sits at the head of _WAITING belonging to a thread
+                # that is gone and every upload behind it waits on it forever. That is the same
+                # total stall as a leaked _BUSY, reached from the other side, and it needs a
+                # restart to clear. Nothing between the seat and the handler now.
                 try:
+                    self._say_waiting()
                     while _BUSY or _WAITING[0] is not self:
                         _QCOND.wait(0.5)         # timed, so the countdown keeps ticking
                         self._say_waiting()
