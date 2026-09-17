@@ -737,6 +737,7 @@ uniform float u_volOn,u_volPad,u_nEps,u_shaJit;
 uniform sampler2D u_bvhNodes,u_bvhTris;   // packed BVH: 2 texels/node, 6 texels/triangle
 uniform float u_meshOn,u_stepK,u_stepFar,u_steps,u_morphU,u_morphK,u_morphC,u_morphBlob,u_morphR,u_morphB;
 uniform int u_shaN;
+uniform float u_kalSkip;               // 0 = always evaluate the unfolded field. window.KALSKIP, A/B
 uniform float u_shaSkip;               // 0 = evaluate every shadow sample. window.SHASKIP, A/B only
 uniform float u_shaMode;          // <0 = shadows use the blend; else the one profile to march
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
@@ -1959,7 +1960,29 @@ vec2 map(vec3 wp){
     // Through blendField, not mix(): the plain form and the ring are very different fields, and
     // averaging them faceted the fade for exactly the reason the shape morph did.
     float kk=clamp(u_kal,0.,1.); kk=kk*kk*kk*(kk*(kk*6.0-15.0)+10.0);
-    d=blendField(p, evalForm(p), kalEval(p,kalN), kk);
+    float bK=kalEval(p,kalN);
+    /* THE UNFOLDED FIELD IS USUALLY ALREADY THROWN AWAY, SO STOP EVALUATING IT.
+       This branch is not the rare one. The Director holds kalAmt around 0.82-0.85 for the whole
+       time the fold is open and only u_kal>0.998 takes the single-evaluation path above, so in
+       practice the fold ALWAYS costs two evalForms. MEASURED, one frozen pose clear of vsync:
+       fold shut 20.0 ms, fade branch 52.7 ms at kalAmt 0.85, full-fold branch 34.0 ms. The
+       expensive branch is the one that is always running.
+       blendField is smin3(a+K*m, b+K*(1-m), k) - comp with K=1, and smin3 is EXACTLY min() once
+       its arguments differ by more than k. At m near 1 the erosion lifts a by almost the whole
+       of K and b by almost nothing, so a is past that margin nearly everywhere -- which is the
+       same thing as saying the blend is already 99.9% folded, and it was paying a full evalForm
+       per map() call for the last 0.1%.
+       length(p)-1.45 is a valid LOWER bound on evalForm: the form lives inside that sphere and
+       for nested sets the signed distance to the inner one is never smaller. It is the same
+       bound map()'s own early-out treats as a distance. If even that bound clears the margin
+       then the true value does too, and passing the bound in place of the value returns the
+       identical number -- min() cannot tell them apart. No approximation, no tuning knob.
+       Guarded on u_morphU because the legacy mix() path inside blendField weights a by (1-m)
+       instead of discarding it, and there the substitution would be wrong. */
+    float aLow=length(p)-1.45;
+    float a=aLow;
+    if(u_morphU<0.5 || u_kalSkip<0.5 || aLow+kk < bK+(1.0-kk)+u_morphK) a=evalForm(p);
+    d=blendField(p, a, bK, kk);
   }
   /* THE LIVING SURFACE IS GONE, AND IT WAS THE LINES.
      A band-driven fbm used to displace the field here. It was cut back twice -- once off the
@@ -9973,6 +9996,7 @@ function frame(){
   // baseline alone moved 98.0ms to 70.8ms on this machine, which swamps the effect entirely.
   gl.uniform1f(US('u_shaMode'),
     (phase===1 && !window.SHABLEND) ? ((mix<0.5)?mode:mode2) : -1);
+  gl.uniform1f(US('u_kalSkip'),(window.KALSKIP!==undefined)?window.KALSKIP:1.0);
   gl.uniform1f(US('u_shaSkip'),(window.SHASKIP!==undefined)?window.SHASKIP:1.0);
   gl.uniform1f(US('u_shaJit'), (window.SHAJIT!==undefined)?window.SHAJIT:1.0);
   gl.uniform1f(US('u_volOn'),volOn&&volTex?1:0);

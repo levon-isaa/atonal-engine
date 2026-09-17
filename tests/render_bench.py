@@ -1355,6 +1355,39 @@ def bench_shape(c, url):
           "worst difference %.0f levels against every sample evaluated (was 40 before the "
           "shell crossing was handled)" % worst)
 
+    # ---- and the same for the kaleidoscope's skipped evalForm
+    # The fade branch discards the unfolded field through a smin3 that is exactly min() once its
+    # arguments differ by more than the blend radius, so where a lower bound already clears that
+    # margin the evaluation is pure waste. Same claim as the shadow's, same test: identical
+    # pixels or it is not a free optimisation. Swept across the fade because the margin depends
+    # on the blend weight, so a single amount would only prove one point of it.
+    # POSES AS WELL AS FOLD AMOUNTS. The bound is a radius in object space, so what tests it is
+    # which part of the form is sitting between that radius and the surface -- and that is the
+    # pose, not the blend weight. Swept at one pose, a deliberately WRONG bound (1.00 instead of
+    # 1.45, inside the form's own reach of ~1.15) produced no visible difference and passed.
+    kal = float(c.js("return kalAmt;"))
+    pose = c.js("return JSON.stringify(window.POSE||null);")
+    worst_k, at = 0.0, None
+    for ps in ('{"spin":1.0,"cam":0.6,"tumble":0.4,"swirl":0.2}',
+               '{"spin":2.3,"cam":1.7,"tumble":0.1,"swirl":1.1}',
+               '{"spin":0.4,"cam":2.9,"tumble":0.8,"swirl":2.0}'):
+        c.js("window.POSE=%s; await new Promise(r=>setTimeout(r,300)); return 1;" % ps)
+        for amt in (0.30, 0.55, 0.85):
+            c.js("kalAmt=%f; kalTS=%f; return 1;" % (amt, amt))
+            c.js("window.KALSKIP=1; return 1;")
+            on = _grab(c, 1.00)
+            c.js("window.KALSKIP=0; return 1;")
+            off = _grab(c, 1.00)
+            d = float(np.abs(on - off).max())
+            if d > worst_k:
+                worst_k, at = d, amt
+    c.js("window.KALSKIP=1; kalAmt=%f; kalTS=%f; return 1;" % (kal, kal))
+    if pose and pose != "null":
+        c.js("window.POSE=%s; return 1;" % pose)
+    check("the fold's skipped evalForm changes no pixel", worst_k == 0.0,
+          "worst difference %.0f levels over three poses x three fold amounts%s"
+          % (worst_k, "" if at is None else " (at kalAmt %.2f)" % at))
+
     if fails:
         raise AssertionError("shape/reflection continuity failed: " + ", ".join(fails))
 
