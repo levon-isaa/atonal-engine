@@ -4813,16 +4813,86 @@ const MORPH={k:0.35, comp:0.94, blob:0.20, r:1.15, bump:0.15};  window.MORPH=MOR
    the measurement. A high value therefore scores well by erasing the thing being scored, which
    is worth knowing before reading this table as "higher is smoother". Each pair takes the
    LOWEST value that avoids a spike, not the one with the best number. */
+/* RE-DERIVED, AND THE TABLE ABOVE HAD DRIFTED FAR ABOVE WHAT IT MEASURES.
+   The criterion is the one this file set: the smallest dilation at which the blend stops
+   opening a hole neither endpoint has, plus one step of margin. Re-run against the profiles as
+   they stand -- three of the nine have been replaced since the old table was fitted -- over 36
+   unordered pairs, three mix points and two camera poses, with the form's piece count and the
+   background it encloses both compared against its own two endpoints:
+
+       34 of 36 pairs need NOTHING        the maximum required is 0.02
+
+   The shipped table floored at 0.05 and reached 0.15. That is not a margin, it is three to
+   seven times the requirement, and it is paid in the only thing the middle of a transition has
+   to show. MEASURED, mid-morph structure against the mean of the two endpoints, band-passed
+   5-25px inside the subject:
+
+       baseline                    0.207        melt off                 0.811
+       smin radius 0.35 -> 0.04    0.297        melt off AND radius      1.311
+
+   So the melt is what blanks the form -- not the smin radius, and not blendField's K. The
+   earlier conclusion that "the melt alone is not what blanks the form" was drawn from a SELF
+   pair, a->a, which takes the dilation but never exercises the interaction between two
+   different fields, and it does not hold for real pairs.
+
+   WHAT WAS TRADED AWAY FOR IT. Row and column 1 were set to 0.15 -- by me, last session -- on
+   the grounds that melting the Volute into another shape "leaves recognisable coils sitting
+   inside the destination". That is a real thing and at 0.15 it is gone, along with everything
+   else: pinned at Volute->Lattice mix 0.5 the frame is a featureless spiral pillow. At 0.02 the
+   coils read AND the Lattice grid reads through them, as one body rather than two, and the
+   piece count says one at every mix and pose tested. Two shapes being legible in the middle of
+   a morph is the morph, not a defect.
+
+   DERIVED ON A DENSE LADDER, because a sparse one kept missing faults. Fitted at three mix
+   points the table looked clean; checking it at four different ones found Rotor->Star splitting
+   in two at 0.60, and at fifteen found Star->Plate at 0.40 as well. A per-pair constant fitted
+   to a handful of samples will always have gaps between them, so the final derivation sweeps
+   0.15 to 0.85 every 0.05, at two camera poses, escalating only the pairs that fail.
+
+   FRAGMENTATION IS THE HARD CRITERION AND THE HOLE COUNT IS NOT. What the melt exists for is
+   written down: "to fuse the outgoing and incoming forms so they do not read as two separate
+   pieces with the background showing between them". That is the piece count, and two pairs
+   fail it -- Rotor->Star and Star->Plate, both fixed at 0.04.
+   Chevron->Knot is the one place the two criteria disagree. It never fragments, at any melt,
+   at any mix, in either pose; only the enclosed-background proxy exceeds its endpoints, and it
+   does so NON-MONOTONICALLY -- 8124 at 0.02, 1925 at 0.06, 3555 at 0.10, 112 at 0.16 -- which
+   is not a requirement curve, it is a pocket opening and closing as the melt moves. Taking the
+   proxy at its word would put that pair at 0.16 and hand back the pillow to prevent a fault it
+   does not have. It is at 0.06, where the pocket is near its endpoints' own, and the reasoning
+   is here so the next pass does not silently resolve it the other way.
+
+   AND THEN PACING DECIDED THE NUMBER, not structure alone. Going all the way down to what the
+   fusion criterion allows (0.02) buys a great deal of structure and breaks the transition's
+   TIMING: per-step image change across Star->Gear, 40 steps, worst step over the median --
+
+       old table (0.10)    2.24        new floor (0.02)    8.55
+
+   which is a third of the transition where almost nothing moves, then a burst, then another
+   third where almost nothing moves. That is the complaint this change set out to fix, arriving
+   from the other direction, and structure that appears all at once is not legibility.
+
+   Swept against both, over four pairs, 25 mix points:
+
+       fuse    0.02    0.04    0.06    0.08    0.10
+       pacing  3.15    3.02    2.46    2.37    2.55      (worst step / median, lower is smoother)
+       detail  0.565   0.369   0.299   0.264   0.236     (mid-morph structure / endpoint mean)
+
+   0.06 DOMINATES the old table on both axes: more structure than 0.10 and smoother than it too.
+   0.02 wins only the axis I was measuring when I started, which is how it nearly shipped.
+
+   Uniform, because with the base at 0.06 every pair's measured requirement is already covered --
+   the two that asked for anything asked for 0.04. It stays a table so the next pair that needs
+   more has somewhere to say so. */
 const MORPH_FUSE=[
-  [0.05,0.15,0.15,0.05,0.10,0.05,0.05,0.05,0.05],
-  [0.15,0.05,0.10,0.15,0.15,0.15,0.15,0.15,0.15],
-  [0.15,0.10,0.05,0.05,0.10,0.05,0.15,0.15,0.10],
-  [0.05,0.15,0.05,0.05,0.10,0.05,0.05,0.05,0.05],
-  [0.10,0.15,0.10,0.10,0.05,0.10,0.10,0.10,0.10],
-  [0.05,0.15,0.05,0.05,0.10,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.15,0.05,0.10,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.15,0.05,0.10,0.05,0.05,0.05,0.05],
-  [0.05,0.15,0.10,0.05,0.10,0.05,0.05,0.05,0.05]];
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06],
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06],
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06],
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06],
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06],
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06],
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06],
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06],
+  [0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06,0.06]];
 function fuseBlob(a,b){
   const r=MORPH_FUSE[a|0], v=r&&r[b|0];
   return (v===undefined)?MORPH.blob:v;      // an SVG or mesh mode is outside the table

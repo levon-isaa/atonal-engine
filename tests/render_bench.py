@@ -349,6 +349,83 @@ def bench_morph(c, url, modes=9, n=21):
     dl = [abs(res[k]["lurch"] - res["%s->%s" % tuple(k.split("->")[::-1])]["lurch"])
           for k in res if "%s->%s" % tuple(k.split("->")[::-1]) in res]
     print("  symmetry check (a->b vs b->a): worst lurch disagreement %.4f" % max(dl))
+
+    # ---- THE TWO THINGS THE MELT IS BETWEEN, asserted rather than left to lurch
+    # lurch and evenness compare CURVES and cannot say whether a transition is any good -- the
+    # docstring says so. These two can, and they pull in opposite directions, which is the whole
+    # difficulty: too little melt and the form comes apart mid-morph, too much and the middle is
+    # a featureless pillow with nothing of either shape in it. MORPH_FUSE sits between them and
+    # a change to it has to be checked against both or it just moves the fault.
+    from scipy import ndimage
+    # _grab reads window.__GOT, which only exists once _GRAB_HOOK has wrapped rAF. This arm has
+    # its own readback and never installs it, so without this the first _grab returns None.
+    c.js(_GRAB_HOOK)
+    fails = []
+
+    def check(name, ok, detail=""):
+        print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, ("   " + detail) if detail else ""))
+        if not ok:
+            fails.append(name)
+
+    def bandpass(a):
+        return _boxblur(a, 5) - _boxblur(a, 19)
+
+    def pieces_of(mask):
+        lab, n = ndimage.label(mask)
+        if n == 0:
+            return 99
+        sz = ndimage.sum(mask, lab, range(1, n + 1))
+        return int((sz > 0.01 * mask.sum()).sum())      # a fleck under 1% is not a piece
+
+    def frame_at(f, t, m):
+        c.js("window.MORPHPIN={from:%d,to:%d,mix:%f}; await new Promise(r=>setTimeout(r,200)); "
+             "return 1;" % (f, t, m))
+        c.js("window.DBGMASK=1; return 1;")
+        msk = _grab(c, 1.00) > 128
+        c.js("window.DBGMASK=0; return 1;")
+        return _grab(c, 1.00), msk
+
+    # A subset, because the full 36 x 15 x 2 sweep the table was derived on is ten minutes.
+    PAIRS = [(4, 6), (4, 5), (0, 4), (3, 7), (1, 8), (2, 8), (7, 8), (0, 1), (0, 2), (5, 6)]
+    ends = {}
+    for i in sorted({x for pr in PAIRS for x in pr}):
+        img, msk = frame_at(i, i, 0.0)
+        ends[i] = (float(np.sqrt((bandpass(img)[msk] ** 2).mean())) if msk.sum() > 500 else 0.0,
+                   pieces_of(msk))
+    ratios, split = [], []
+    for f, t in PAIRS:
+        for m in (0.35, 0.50, 0.65):
+            img, msk = frame_at(f, t, m)
+            if pieces_of(msk) > max(ends[f][1], ends[t][1]):
+                split.append((f, t, m))
+            if m == 0.50 and msk.sum() > 500:
+                mid = float(np.sqrt((bandpass(img)[msk] ** 2).mean()))
+                ratios.append(mid / max(1e-6, 0.5 * (ends[f][0] + ends[t][0])))
+    c.js("window.MORPHPIN=null; return 1;")
+
+    # THE MELT'S STATED PURPOSE: "to fuse the outgoing and incoming forms so they do not read as
+    # two separate pieces with the background showing between them." Nothing subtle to tune here
+    # -- either the form is one piece through the transition or the melt is not doing its job.
+    check("the form never comes apart mid-morph", not split,
+          "%d of %d sampled points split%s" % (len(split), len(PAIRS) * 3,
+          "" if not split else " (first: %d->%d at mix %.2f)" % split[0]))
+    # AND THE OTHER SIDE OF IT. With the melt where it was, the middle of a transition was a
+    # featureless pillow: over all 36 pairs this ratio ran a median of 0.300, 34 of them under
+    # 0.50. At 0.06 it is 0.369, and on this subset 0.427.
+    # THE BAR IS COARSE AND DELIBERATELY SO. The previous table scores 0.341 on this same subset,
+    # so a bar that caught it would sit about 12% under the shipped value -- tight enough to fail
+    # on pose variation rather than on a real change. The improvement is 23% and no honest
+    # threshold separates those two at that distance. 0.30 catches the melt being wound back to
+    # its maximum, which is the regression worth guarding; it will NOT catch a return to the
+    # previous per-pair table. Said plainly because a green check here is weaker evidence than it
+    # looks, and the numbers above are the real record.
+    med = float(np.median(ratios)) if ratios else 0.0
+    check("the middle of a transition still shows both shapes", med >= 0.30,
+          "structure at mid-morph is %.3f of the endpoints' (0.427 shipped, 0.341 at the "
+          "previous table, 0.207 at the old melt)" % med)
+
+    if fails:
+        raise AssertionError("morph: " + ", ".join(fails))
     return res
 
 
