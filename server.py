@@ -617,10 +617,39 @@ class H(BaseHTTPRequestHandler):
         if inside == os.pardir or inside.startswith(os.pardir + os.sep) or os.path.isabs(inside):
             return False
         rel_posix = inside.replace(os.sep, "/")
+        # A DIRECTORY RESOLVES TO ITS index.html, and that expansion happens HERE -- after
+        # realpath, before the allowlist -- so the allowlist still gets the last word on the
+        # file that is actually read. The order is the whole point, in both directions.
+        # Checking the allowlist first would refuse "site" outright (it is neither "site/..."
+        # nor viewer.html) and the index would stay unreachable, which is the bug being fixed.
+        # Expanding AFTER the check would be the worse half: any directory inside the root
+        # could then hand over its index.html having been tested under a name that is not the
+        # file served -- the same shape as the traversal in the note above.
+        # The os.curdir half is the same kind of line as the os.pardir check above: it states
+        # that the root is not a directory to expand, and removing it changes no behaviour and
+        # fails no test -- "." would expand to "./index.html", which the allowlist refuses on
+        # its own. Mutation tested, and kept on those terms rather than on false ones.
+        was_dir = os.path.isdir(fp) and rel_posix != os.curdir
+        if was_dir:
+            fp = os.path.join(fp, "index.html")
+            rel_posix += "/index.html"
         if rel_posix not in self._STATIC_FILES and not rel_posix.startswith(self._STATIC_DIRS):
             return False
         if not os.path.isfile(fp):
             return False
+        # The redirect is decided only once the index is known to be allowed AND to exist, so a
+        # 301 never reports a directory the allowlist would refuse: /deploy and /tests 404 like
+        # any other path rather than answering "yes, that is a directory" one status code early.
+        # It has to be a redirect and not the file, because without the trailing slash the
+        # browser resolves the page's relative links one level too high -- /site served in place
+        # turns ./pricing.html into /pricing.html, which 404s.
+        if was_dir and not unquote(self.path.split("?")[0]).endswith("/"):
+            q = urlparse(self.path).query
+            self.send_response(301); self._cors()
+            self.send_header("Location", "/" + rel_posix[:-len("/index.html")] + "/" + (("?" + q) if q else ""))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
         try:
             with open(fp, "rb") as fh:
                 body = fh.read()

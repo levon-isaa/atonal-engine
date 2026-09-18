@@ -379,6 +379,21 @@ def get(path):
         return type(e).__name__, str(e).encode()[:120]
 
 
+def get_noredirect(path):
+    """(status, Location). urlopen FOLLOWS a 301, which would hide the redirect entirely."""
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    try:
+        r = urllib.request.build_opener(_NoRedirect).open(
+            "http://127.0.0.1:%d%s" % (PORT, path), timeout=5)
+        return r.status, r.headers.get("Location")
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Location")
+    except Exception as e:
+        return type(e).__name__, str(e)[:120]
+
+
 def test_static_allowlist():
     """What the server will hand out, and what it will not.
 
@@ -482,10 +497,34 @@ def test_static_allowlist():
 
     # Odd paths must fail closed rather than raise out of the handler: an unhandled exception
     # there is a traceback and a dropped connection, not a 404.
-    for path in ("/assets/%00", "/assets/a%00b.json", "/assets/", "/site/", "//server.py",
+    for path in ("/assets/%00", "/assets/a%00b.json", "/assets/", "//server.py",
                  "/" + "a" * 300 + ".json"):
         st, _ = get(path)
         check(st == 404, "%r fails closed with a 404, not an error (%s)" % (path[:40], st))
+
+    # A DIRECTORY WITH AN index.html SERVES IT; a directory without one does not become a
+    # listing, and a directory the allowlist refuses does not become a redirect either. That
+    # last one is the leak worth naming: deciding the 301 before the allowlist would answer
+    # "/deploy" with a 301 to "/deploy/" and 404 only on the second request, which reports
+    # that the directory exists to anyone who asks. /assets/ stays in the list above -- it is
+    # allowlisted and has no index.html, so it still fails closed.
+    st, body = get("/site/")
+    check(st == 200 and b"<title>" in body.lower(),
+          "/site/ serves site/index.html (%s)" % st)
+    st_named, named = get("/site/index.html")
+    check(st_named == 200 and named == body,
+          "and it is byte-for-byte the same file as /site/index.html (%s)" % st_named)
+
+    for path in ("/site", "/site?a=1"):
+        st, loc = get_noredirect(path)
+        check(st == 301 and loc == "/site/" + ("?a=1" if "?" in path else ""),
+              "%s redirects to the slash so relative links resolve (%s %r)" % (path, st, loc))
+
+    # Real directories in the project root, neither of them allowlisted.
+    for path in ("/deploy", "/tests", "/deploy/"):
+        st, loc = get_noredirect(path)
+        check(st == 404,
+              "%s is a directory the allowlist refuses, with no 301 first (%s %r)" % (path, st, loc))
 
 
 if __name__ == "__main__":
