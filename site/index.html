@@ -2124,7 +2124,7 @@ addEventListener('scroll',condense,{passive:true}); condense();
 })();
 
 /* the nav marks where you are */
-var links=[].slice.call(document.querySelectorAll('.nav nav a'));
+var links=[].slice.call(document.querySelectorAll('.nav nav a[href^="#"]'));
 var secs=links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
 addEventListener('scroll',function(){
   var y=scrollY+innerHeight*0.35, cur=-1;
