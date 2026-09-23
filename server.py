@@ -399,6 +399,10 @@ class H(BaseHTTPRequestHandler):
             if key:
                 out["known"] = billing.key_exists(key)
                 out["balance"] = billing.balance(key) if out["known"] else 0
+                # Reported so a client can tell "replaced" from "spent" without waiting for an
+                # upload to be refused. A key that was never reissued answers False cheaply.
+                if out["known"]:
+                    out["retired"] = billing.retired(key)
             self._json(200, out)
             return True
         if path.startswith("/packs"):
@@ -772,6 +776,16 @@ class H(BaseHTTPRequestHandler):
                     return self._json(402, {"error": "That render key is not recognised.",
                                             "code": "bad_key"})
                 if not billing.spend(key, "analyze " + name[:60], "an:" + attempt):
+                    # A REPLACED KEY IS NOT AN EMPTY ONE. After a reissue the old key's balance
+                    # has moved, so it fails here looking exactly like a key that has run out --
+                    # and "No credits left" would send someone who has already been given a
+                    # working key to the pricing page to buy credits they already own. Checked
+                    # only on the failure path, so the ordinary case pays nothing for it.
+                    if billing.retired(key):
+                        return self._json(402, {
+                            "error": "This key was replaced. Use the one we sent you instead "
+                                     "\u2014 the credits moved with it.",
+                            "code": "retired"})
                     return self._json(402, {"error": "No credits left on this key.",
                                             "code": "no_credits", "balance": 0})
                 charged = (key, attempt)

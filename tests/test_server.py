@@ -159,6 +159,19 @@ def test_bad_key_is_rejected_before_charging():
     check(st == 402 and body.get("code") == "no_credits",
           "a key with no credits is refused with no_credits (%d %s)" % (st, body.get("code")))
 
+    # A REPLACED KEY LOOKS EXACTLY LIKE AN EMPTY ONE AT THE GATE -- it exists and its balance
+    # has moved -- so without this the customer who has just been SENT a working key is told to
+    # go and buy credits they already own.
+    old_key = billing.new_key()
+    billing.grant(billing._hash(old_key), 4, "purchase:ten:t1", "t-reissue", email="r@example.com")
+    billing.reissue(billing._hash(old_key), note="test")
+    st, body = post(GARBAGE, key=old_key)
+    check(st == 402 and body.get("code") == "retired",
+          "a replaced key is refused with retired, not no_credits (%d %s)"
+          % (st, body.get("code")))
+    check("replaced" in (body.get("error") or ""),
+          "and the message says it was replaced (%r)" % (body.get("error") or "")[:60])
+
 
 # ------------------------------------------------------------------ the refunds
 

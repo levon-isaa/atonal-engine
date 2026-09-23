@@ -486,12 +486,93 @@ def test_gumroad_redeem():
         os.environ.pop("ATONAL_GUMROAD_FIFTY", None)
 
 
+def test_reissue():
+    """The support path: a customer has lost their key and the pages promise a replacement.
+
+    What is actually being checked is that the replacement carries EVERYTHING the old key held
+    and that the old one stops being useful -- the balance is the obvious part and the one that
+    a wrong implementation still gets right. The two that were missed on the first pass are the
+    email, because _grant_purchase resolves a repeat purchase to the OLDEST key on an address
+    and would have topped up the retired one, and priority, because has_priority reads the
+    reasons on a single hash and a replaced Pack of 50 would have lost its queue position.
+    """
+    print("\nreissue")
+    fresh()
+    # A customer with a Pack of 50 and some of it spent, so the balance under test is not the
+    # same number as the grant.
+    key = billing.new_key()
+    kh = billing._hash(key)
+    billing.grant(kh, 50, "purchase:fifty:txn_1", "paddle:txn_1", email="Lost.Key@Example.com ")
+    for i in range(3):
+        billing.spend(key, "analyze t%d" % i, "an:t%d" % i)
+    check(billing.balance(key) == 47, "setup: 47 credits on the old key (%d)" % billing.balance(key))
+    check(billing.has_priority(key), "setup: and it has priority")
+
+    found = billing.key_records(email="lost.key@example.com")
+    check(len(found) == 1 and found[0]["key_hash"] == kh and found[0]["balance"] == 47,
+          "an operator can find the key from the address on the receipt (%s)" % found)
+
+    out = billing.reissue(kh, note="support #12")
+    new = out["key"]
+    check(new.startswith("atk_") and new != key, "the replacement is a new key")
+    check(out["credits"] == 47, "and it is issued against the balance that was there (%s)"
+          % out["credits"])
+
+    check(billing.balance(new) == 47, "the balance is on the replacement (%d)" % billing.balance(new))
+    check(billing.balance(key) == 0, "and off the old one (%d)" % billing.balance(key))
+    # The ledger is append-only, so the move has to be two rows and the total must not change.
+    with billing._conn() as c:
+        total = c.execute("SELECT COALESCE(SUM(delta),0) FROM ledger").fetchone()[0]
+        n = c.execute("SELECT COUNT(*) FROM ledger WHERE reason LIKE 'reissue%'").fetchone()[0]
+    check(total == 47 and n == 2, "moved by a pair of rows, not an edit (total %s, rows %s)"
+          % (total, n))
+
+    check(billing.retired(key) and not billing.retired(new),
+          "the old key reads as retired and the new one does not")
+    check(not billing.spend(key, "analyze after", "an:after"),
+          "the retired key cannot spend")
+    check(billing.has_priority(new), "PRIORITY FOLLOWS: the replacement still has the queue "
+                                     "position the Pack of 50 paid for")
+
+    # THE EMAIL. The next purchase on that address must land on the replacement.
+    txn = {"id": "txn_2", "status": "completed", "customer": {"email": "lost.key@example.com"},
+           "custom_data": {"pack": "ten", "credits": 10}}
+    billing._grant_for_session(txn)
+    check(billing.balance(new) == 57, "a later purchase tops up the REPLACEMENT (%d)"
+          % billing.balance(new))
+    check(billing.balance(key) == 0, "and not the retired key (%d)" % billing.balance(key))
+
+    # A claim inside its window still held the retired key in plaintext.
+    fresh()
+    k2 = billing.new_key(); kh2 = billing._hash(k2)
+    with billing._conn() as c:
+        c.execute("INSERT INTO claims(session_id,key_plain,key_hash,credits,created)"
+                  " VALUES(?,?,?,?,?)", ("s1", k2, kh2, 10, time.time()))
+    billing.grant(kh2, 10, "purchase:ten:s1", "paddle:s1", email="c@example.com")
+    billing.reissue(kh2)
+    with billing._conn() as c:
+        left = c.execute("SELECT key_plain FROM claims WHERE session_id='s1'").fetchone()[0]
+    check(left is None, "a live claim row stops handing out the key that was just retired")
+
+    # And it refuses to run twice on the same key.
+    try:
+        billing.reissue(kh2)
+        check(False, "reissuing an already-replaced key is refused")
+    except ValueError as e:
+        check("already replaced" in str(e), "reissuing an already-replaced key is refused (%s)" % e)
+    try:
+        billing.reissue("deadbeef" * 8)
+        check(False, "an unknown key is refused")
+    except ValueError as e:
+        check("no such key" in str(e), "an unknown key is refused (%s)" % e)
+
+
 if __name__ == "__main__":
     print("billing tests — throwaway database under %s" % TMP)
     for fn in (test_ledger_basics, test_spend_is_atomic, test_priority_is_ever_not_currently,
                test_free_tier, test_webhook_signature, test_webhook_grants_once,
                test_grant_races_agree_on_one_key, test_claim_plaintext_expires,
-               test_claim, test_gumroad_redeem):
+               test_claim, test_gumroad_redeem, test_reissue):
         fn()
     print()
     if FAILURES:

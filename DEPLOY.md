@@ -135,6 +135,11 @@ Set it and the `Access-Control-Allow-Origin` header goes only to your own site.
   is safe. Watch it or cap it with a cron job.
 - **Monitoring.** `/health` returns `{ok, panns, build}`. Point an uptime check at it. There is
   no metrics endpoint and no alerting.
+- **Someone has to answer the mail.** The site tells a customer who has lost their key to reply
+  to their receipt. `python tools_reissue.py find <address>` then `issue <hash>` is what answers
+  it — on the box, because the tool moves a balance between two bearer tokens and the decision
+  that the person asking is the person who paid is a human one. See BILLING.md. Nobody reading
+  the mailbox means that promise is still unkept, whatever the code can do.
 - **Logs.** Everything goes to stdout, so journald owns rotation. There is no request log — add
   one in nginx if you want per-request visibility.
 - **Legal.** Both payment providers are merchants of record, which is why VAT is theirs and not
@@ -156,3 +161,5 @@ curl -sS https://atonal.example/health   # {"ok": true, ...}
 - [ ] `curl -X POST https://atonal.example/analyze` with no body returns JSON, not nginx HTML
 - [ ] an oversize upload returns the JSON 413, not nginx's page (means the two caps agree)
 - [ ] the ledger backup has run once and you have restored it somewhere as a test
+- [ ] `python tools_reissue.py find <an address you know>` prints a record — proves the tool can
+      reach the live ledger **before** the first customer needs it, not during

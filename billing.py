@@ -118,6 +118,17 @@ def init():
               PRIMARY KEY(ip, day)
             );
             """)
+            # reissued_from: the hash this key REPLACED, written by reissue(). It is the only
+            # link between a retired key and its successor, and three things read it -- the
+            # priority walk, the retired() check, and an operator asking what happened. Added
+            # by ALTER rather than in the CREATE above so a database from before this exists
+            # keeps its rows; SQLite has no IF NOT EXISTS for a column, so the duplicate is
+            # caught and ignored.
+            try:
+                c.execute("ALTER TABLE keys ADD COLUMN reissued_from TEXT")
+            except sqlite3.OperationalError:
+                pass        # already there
+            c.execute("CREATE INDEX IF NOT EXISTS keys_reissued ON keys(reissued_from)")
             # Fold any address stored before _norm_email existed into the same form, so the
             # lookup in _grant_for_session keeps using the index and an older key is still
             # found. Touches only rows that actually differ, and runs once per process.
@@ -234,10 +245,161 @@ def has_priority(key: str) -> bool:
     want = tuple("purchase:%s:" % p for p, v in PACKS.items() if v.get("priority"))
     if not want:
         return False
+    # ACROSS A REISSUE TOO. A replacement key holds the balance but not the history -- its only
+    # credit row says the balance was moved, not what it was bought with -- so a customer who
+    # lost the key to a Pack of 50 would have silently lost the queue position they paid for.
+    # Walked rather than copied, because writing "purchase:fifty:" onto the new key would put a
+    # purchase in the ledger that never happened. Bounded by the visited set; the cap is belt
+    # and braces for a cycle that the append-only chain cannot produce.
+    kh, seen = _hash(key), set()
     with _conn() as c:
-        rows = c.execute("SELECT reason FROM ledger WHERE key_hash=? AND delta>0",
-                         (_hash(key),)).fetchall()
-    return any((r[0] or "").startswith(want) for r in rows)
+        while kh and kh not in seen and len(seen) < 16:
+            seen.add(kh)
+            rows = c.execute("SELECT reason FROM ledger WHERE key_hash=? AND delta>0",
+                             (kh,)).fetchall()
+            if any((r[0] or "").startswith(want) for r in rows):
+                return True
+            row = c.execute("SELECT reissued_from FROM keys WHERE key_hash=?", (kh,)).fetchone()
+            kh = row[0] if row else None
+    return False
+
+
+# ---------------------------------------------------------------- reissue
+#
+# WHY THIS IS A LOCAL TOOL AND NOT AN ENDPOINT. Three places on the site promise a customer who
+# has lost their key that we will issue a replacement against their purchase, and until this
+# existed nothing could: keys are stored hashed and the plaintext is wiped after CLAIM_TTL, by
+# design, so the answer to "send me my key again" is necessarily a NEW key. That is a transfer
+# of a balance from one bearer token to another on nothing but an email, which is exactly the
+# shape of an account-takeover -- so the decision that the person asking is the person who paid
+# is a HUMAN one, made against the provider's own receipt, and there is deliberately no route
+# to it over the network. tools_reissue.py is the interface; this is the transaction.
+#
+# WHAT MOVES. The balance, the email, and the priority. Moving only the balance was the version
+# that looked right and was not: the email lookup in _grant_purchase takes the OLDEST key on an
+# address, so the customer's NEXT purchase would have topped up the key they had just been told
+# to stop using, and has_priority reads the reasons on one hash, so a replaced Pack of 50 would
+# have quietly lost its queue position. See the notes on each.
+
+
+def retired(key: str) -> bool:
+    """True when this key has been replaced. Distinct from "no credits left", which is what a
+    retired key would otherwise look like once its balance has moved."""
+    init()
+    with _conn() as c:
+        return c.execute("SELECT 1 FROM keys WHERE reissued_from=?",
+                         (_hash(key),)).fetchone() is not None
+
+
+def key_records(email: str = None, key: str = None, key_hash: str = None) -> list:
+    """The rows an operator can identify a customer by, oldest first.
+
+    `email` is what a support request actually arrives with; `key` is for the case where they
+    still have the key and want it rotated; `key_hash` (a prefix is enough) is for picking one
+    out of a list this function just printed. Never returns anything secret -- the plaintext is
+    not in the database to return.
+    """
+    init()
+    if key:
+        key_hash = _hash(key)
+    where, args = [], []
+    if email:
+        where.append("k.email = ?"); args.append(_norm_email(email))
+    if key_hash:
+        where.append("k.key_hash LIKE ?"); args.append(key_hash.strip().lower() + "%")
+    if not where:
+        return []
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT k.key_hash, k.email, k.created, k.reissued_from,"
+            "       COALESCE((SELECT SUM(delta) FROM ledger WHERE key_hash=k.key_hash),0),"
+            # The two halves of a reissue are excluded from the COUNTS but kept in `reasons`:
+            # they are a move and not a purchase or an analysis, and a retired key reading
+            # "4 spends" against three analyses is a number an operator would have to explain.
+            "       COALESCE((SELECT COUNT(*) FROM ledger WHERE key_hash=k.key_hash AND delta>0"
+            "                 AND COALESCE(reason,'') NOT LIKE 'reissue%'),0),"
+            "       COALESCE((SELECT COUNT(*) FROM ledger WHERE key_hash=k.key_hash AND delta<0"
+            "                 AND COALESCE(reason,'') NOT LIKE 'reissue%'),0),"
+            "       (SELECT MAX(created) FROM ledger WHERE key_hash=k.key_hash),"
+            "       (SELECT key_hash FROM keys WHERE reissued_from=k.key_hash)"
+            " FROM keys k WHERE " + " AND ".join(where) + " ORDER BY k.created", args).fetchall()
+        out = []
+        for r in rows:
+            out.append({"key_hash": r[0], "email": r[1], "created": r[2], "reissued_from": r[3],
+                        "balance": int(r[4] or 0), "grants": int(r[5]), "spends": int(r[6]),
+                        "last": r[7], "reissued_to": r[8],
+                        "reasons": [x[0] for x in c.execute(
+                            "SELECT reason FROM ledger WHERE key_hash=? AND delta>0"
+                            " ORDER BY created", (r[0],)).fetchall()]})
+    return out
+
+
+def reissue(key_hash: str, note: str = None) -> dict:
+    """Retire a key and mint its replacement. Returns the new key IN PLAINTEXT, once.
+
+    Nothing stores what comes back. The caller prints it, the operator sends it, and from then
+    on the database holds a hash like every other key -- which is the same promise the success
+    page makes, kept on the support path too.
+
+    ONE TRANSACTION, because a balance that has left one key and not arrived at the other is
+    money destroyed. The balance is read inside it for the same reason spend() reads inside its
+    own: between a read and a write, an analysis can land.
+    """
+    init()
+    key_hash = (key_hash or "").strip().lower()
+    if not key_hash:
+        raise ValueError("no key to reissue")
+    new_plain = new_key()
+    new_hash = _hash(new_plain)
+    now = time.time()
+    with _conn() as c:
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            # BOTH CHECKS INSIDE THE TRANSACTION, not before it. They are the same
+            # read-then-write that spend() takes an IMMEDIATE lock for: two operators working
+            # the same support thread would otherwise both find one key and mint two
+            # replacements, and the customer would be sent the one whose ledger rows lost.
+            row = c.execute("SELECT email FROM keys WHERE key_hash=?", (key_hash,)).fetchone()
+            if not row:
+                raise ValueError("no such key")
+            if c.execute("SELECT 1 FROM keys WHERE reissued_from=?", (key_hash,)).fetchone():
+                # Reissuing a key that was already replaced would move a balance of zero onto a
+                # third key and leave the customer holding the second one. Say so instead.
+                raise ValueError("that key was already replaced -- reissue its replacement instead")
+            email = row[0]
+            bal = int((c.execute("SELECT COALESCE(SUM(delta),0) FROM ledger WHERE key_hash=?",
+                                 (key_hash,)).fetchone() or [0])[0] or 0)
+            c.execute("INSERT INTO keys(key_hash,email,created,reissued_from) VALUES(?,?,?,?)",
+                      (new_hash, email, now, key_hash))
+            # THE EMAIL MOVES WITH THE BALANCE. _grant_purchase resolves a repeat purchase by
+            # `SELECT key_hash FROM keys WHERE email=? ORDER BY created LIMIT 1` -- the OLDEST
+            # -- so leaving the address on the retired row would send the customer's next pack
+            # to the key we have just told them to stop using. Cleared rather than deleted: the
+            # row is what retired() and the priority walk hang off.
+            c.execute("UPDATE keys SET email=NULL WHERE key_hash=?", (key_hash,))
+            if bal > 0:
+                # Two rows, never one. The ledger is append-only and its balance is SUM(delta),
+                # so a move is a pair and the refs are derived from the NEW hash, which is 256
+                # bits of urandom and therefore unique without a counter.
+                c.execute("INSERT INTO ledger(key_hash,delta,reason,ref,created)"
+                          " VALUES(?,?,?,?,?)",
+                          (key_hash, -bal, "reissue: retired, balance moved to %s" % new_hash[:8],
+                           "ri-out:" + new_hash[:32], now))
+                c.execute("INSERT INTO ledger(key_hash,delta,reason,ref,created)"
+                          " VALUES(?,?,?,?,?)",
+                          (new_hash, bal, "reissue: balance moved from %s%s"
+                           % (key_hash[:8], (" -- " + note) if note else ""),
+                           "ri-in:" + new_hash[:32], now))
+            # A claim row inside its 24 hours still holds the RETIRED key in plaintext. It can
+            # no longer spend anything, but it is a bearer token for a key we have just revoked
+            # and there is no reason to keep it.
+            c.execute("UPDATE claims SET key_plain=NULL WHERE key_hash=?", (key_hash,))
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    return {"key": new_plain, "key_hash": new_hash, "from": key_hash,
+            "credits": bal, "email": email}
 
 
 def refund(key: str, reason: str, ref: str):

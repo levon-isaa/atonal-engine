@@ -583,6 +583,11 @@ window.RKEY=RKEY;
       .then(r=>r.json())
       .then(c=>{
         if(!c.known){ say('Not recognised — nothing saved', true); return; }
+        /* A REPLACED KEY IS NOT AN EMPTY ONE. After a reissue the old key still exists and
+           still answers `known`, with a balance of zero — so saving it would say "0 credits"
+           and then fail every upload with a message about buying more. Refused here, where
+           the person is looking at the field they just pasted into. */
+        if(c.retired){ say('That key was replaced — use the new one', true); return; }
         RKEY.set(k);
         say(c.balance===1 ? '1 credit' : c.balance+' credits');
       })
@@ -7676,7 +7681,9 @@ async function loadFile(file){
             /* The message has to carry the whole route now that the panel is gone --
                it was the only place that said what a key is or where one comes from. */
             if(xhr.status===402){
-              m += (j.code==='bad_key')
+              /* `retired` already says what happened and what to do; sending someone who
+                 owns a working key to the pricing page is the opposite of the advice. */
+              if(j.code!=='retired') m += (j.code==='bad_key')
                  ? '  That render key was not recognised.'
                  : '  Credits are at site/pricing.html; set one with RKEY.set(\'atk_...\').';
             }

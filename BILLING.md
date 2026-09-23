@@ -50,6 +50,7 @@ for the tagger) and nothing else.
 | `site/pricing.html` | The pricing page. Prices come from `/packs`, so page and ledger cannot disagree. Also the Gumroad buy links, the licence redemption field, and the one place a key can be entered by hand |
 | `site/success.html` | Post-checkout. Shows the render key once, stores it in `localStorage`, and waits out a payment Paddle has not settled yet |
 | `viewer.html` | Credits group in the panel: a key field that checks the key once and remembers it. Sends `X-Render-Key` with each upload |
+| `tools_reissue.py` | Operator command. Finds a customer's key from the address on their receipt and issues a replacement carrying the balance. Not an endpoint, on purpose |
 
 Database: `out/billing.db` (override with `ATONAL_DB`). It holds **hashed** keys.
 The one exception is the `claims` table, which keeps the plaintext for 24 hours
@@ -245,6 +246,46 @@ not ask of them:
 - **`/redeem` is public and unauthenticated**, exactly like `/claim`. The only
   thing between it and free credits is that the provider is the one answering.
 
+## When a customer loses their key
+
+This is not an edge case: there is no account and no password, so the key is the
+only thing they have, and the plaintext is wiped after `CLAIM_TTL`. The honest
+answer is a **new key carrying the old one's balance**, which is what
+`tools_reissue.py` issues.
+
+```bash
+python tools_reissue.py find  buyer@example.com
+python tools_reissue.py issue <key-hash prefix> --note "ticket 412"
+```
+
+`find` prints the address, the balance, what was bought and when it was last
+used. `issue` shows the same record, says what is about to change, and asks for
+the first eight characters of the hash before it does anything.
+
+**Verify who is asking first.** Moving a balance between two bearer tokens on
+the strength of an email is the shape of an account takeover, and no program can
+make that call — the request must come from, or quote, the receipt Paddle or
+Gumroad sent, and that receipt's address must be the one `find` shows. This is
+why there is no `/reissue` endpoint and why the tool only runs on the machine
+holding the ledger.
+
+**What moves, in one transaction:**
+
+| | why |
+|---|---|
+| the balance | a matching pair of ledger rows — the ledger is append-only, nothing is edited |
+| the email | `_grant_purchase` resolves a repeat purchase to the **oldest** key on an address, so leaving it behind would top up the key you just retired |
+| priority | `has_priority` reads the reasons on one hash, so a replaced Pack of 50 would otherwise lose the queue position it paid for. Walked through `keys.reissued_from` rather than copied, because writing `purchase:fifty:` onto the new key would put a purchase in the ledger that never happened |
+| any live claim plaintext | a claim row inside its 24 hours still holds the retired key; it can no longer spend, but there is no reason to keep it |
+
+The old key keeps existing and holds nothing. It does **not** report "no credits
+left" — the gate answers `code: "retired"` and the viewer's key field refuses to
+save it, because telling someone who has just been sent a working key to go and
+buy credits is the opposite of the advice they need.
+
+The new key is printed once and stored nowhere. If it scrolls away, the only fix
+is another reissue.
+
 ## Still to do before taking real money
 
 - [ ] **Decide whether the key should be emailed.** It currently is not, and the
@@ -256,6 +297,9 @@ not ask of them:
       match the Paddle prices exactly, since `PACKS` amounts are only used for
       display.
 - [ ] **A real support address.** `hello@example.com` appears on both pages.
+      The pages tell a customer who has lost their key to reply to their
+      receipt; `tools_reissue.py` is what answers that, but somebody has to be
+      reading the mailbox.
 - [ ] **Terms and refund policy** pages; the FAQ promises 14-day refunds on
       unspent credits.
 - [ ] **Move the ledger off SQLite** if you ever run more than one instance —
