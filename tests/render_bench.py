@@ -1642,6 +1642,15 @@ def bench_shape(c, url):
     # the whole claim, so bit-identical is the test.
     # Run at two form scales because the shell radius scales with formScale(), so the crossing
     # the skip has to stop at is in a different place each time.
+    # THE FOLD HAS TO BE PINNED, AND WAS NOT. kalAmt eases toward kalTS every frame, so the two
+    # grabs below were taken of two slightly different FORMS and the difference was read as the
+    # skip changing pixels. Measured: 3 of 8 runs reported "worst difference 1" against an
+    # assertion of exactly 0, on the shipped build and on the one before it -- an intermittent
+    # failure on a claim that is actually true, which is the kind that gets blessed away. Both
+    # the value and its target, the same discipline MAT/MATT needed one block up and the fold's
+    # own check below already had; this check was the one that skipped it.
+    kal0 = float(c.js("return kalAmt;"))
+    c.js("kalAmt=%f; kalTS=%f; return 1;" % (kal0, kal0))
     worst = 0.0
     for fs in (0.70, 1.30):
         c.js("window.FSCALE=%f; return 1;" % fs)
