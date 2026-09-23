@@ -48,9 +48,9 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
     <div class="card">
 
       <div id="loading">
-        <span class="pill"><i></i><span class="lab on"><span class="spin"></span>&nbsp; Confirming with Paddle</span></span>
-        <h1 style="margin-top:22px">One moment.</h1>
-        <p class="prose" style="margin-top:16px">Checking the payment and issuing your key. This
+        <span class="pill"><i></i><span class="lab on"><span class="spin"></span>&nbsp; <span id="loadPill">Confirming with Paddle</span></span></span>
+        <h1 style="margin-top:22px" id="loadHead">One moment.</h1>
+        <p class="prose" style="margin-top:16px" id="loadBody">Checking the payment and issuing your key. This
           takes a second or two &mdash; the page will fill in on its own.</p>
       </div>
 
@@ -132,14 +132,18 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
         </div>
       </div>
 
+      <!-- ONE PANEL, TWO ENDINGS. A payment that has not settled yet is not a payment that
+           went wrong, and the advice for it is the opposite: wait and reload, rather than write
+           to us. Both endings live here because everything around the wording is the same. -->
       <div id="fail" class="hide">
-        <span class="pill"><i></i><span class="lab on">Something is off</span></span>
-        <h1 style="margin-top:22px">We couldn&rsquo;t confirm that.</h1>
+        <span class="pill"><i></i><span class="lab on" id="failPill">Something is off</span></span>
+        <h1 style="margin-top:22px" id="failHead">We couldn&rsquo;t confirm that.</h1>
         <div class="note warn" style="margin-top:20px" id="failMsg"></div>
-        <p class="prose" style="margin-top:18px">If you were charged, nothing is lost &mdash; the
+        <p class="prose" style="margin-top:18px" id="failHelp">If you were charged, nothing is lost &mdash; the
           payment is on record with Paddle and your key exists. Reply to the receipt Paddle emailed
           you and we will send it over.</p>
         <div style="display:flex;gap:12px;margin-top:26px;flex-wrap:wrap">
+          <a class="btn" id="failRetry" href="#" style="display:none">Check again <span class="k">&rarr;</span></a>
           <a class="btn o" href="./pricing.html">Back to pricing</a>
         </div>
       </div>
@@ -179,6 +183,21 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
     $('failMsg').innerHTML = '<strong>' + String(msg).replace(/[<>]/g,'') + '</strong>';
   }
 
+  /* The other ending of the same panel: paid, not settled, nothing to do but look again.
+     It says a minute because that is what the retries below have already spent. */
+  function stillSettling(){
+    $('failPill').textContent = 'Still settling';
+    $('failHead').textContent = 'Your payment hasn\u2019t settled yet.';
+    $('failHelp').innerHTML = 'Nothing is lost and nothing needs doing. Reload this page in a ' +
+      'minute and the key will be here &mdash; the link works for 24 hours, and it is the one ' +
+      'in the receipt Paddle emailed you.';
+    var r = $('failRetry');
+    r.style.display = '';
+    r.addEventListener('click', function(e){ e.preventDefault(); location.reload(); });
+    fail('Paddle has not reported this transaction as complete. That is normal for a bank ' +
+         'transfer, and for a card that went through an extra security check.');
+  }
+
   if(!sid){ fail('This page needs a checkout transaction to look up, and the link has none.'); return; }
 
   /* The key this browser already holds rides along in a HEADER, not the query string: it is a
@@ -188,11 +207,45 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
   var held = null;
   try { held = localStorage.getItem('atonal.key') || null; } catch(e){}
 
-  fetch(API + '/claim?session_id=' + encodeURIComponent(sid),
-        held ? { headers: { 'X-Render-Key': held } } : undefined)
-    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+  /* PADDLE SETTLES THE TRANSACTION SEPARATELY FROM THE REDIRECT, so `pending` is what a real
+     payment looks like for the first moment after checkout and the page has to keep asking. The
+     waits are spaced rather than fixed: most settle on the first retry, and the ones that do not
+     are the slow methods, which are not helped by being asked ten times a second. Roughly half a
+     minute in total, after which reloading is the honest advice -- the claim is good for 24
+     hours and the webhook has credited it either way.
+     ONLY `pending` IS RETRIED. Every other answer /claim gives is final, and retrying those is
+     just a slower way to show the same error. */
+  var WAITS = [1200, 2000, 3000, 4000, 6000, 8000, 12000];
+  var tries = 0;
+
+  function ask(){
+    return fetch(API + '/claim?session_id=' + encodeURIComponent(sid),
+                 held ? { headers: { 'X-Render-Key': held } } : undefined)
+      /* A body that is not JSON is an origin with no API behind it, not a purchase problem;
+         it becomes an ordinary failure rather than a parser error shown to a customer. */
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; },
+                                              function(){ return {ok:false, j:{}}; }); });
+  }
+
+  function attempt(){
+    ask()
     .then(function(res){
       var j = res.j || {};
+
+      if(j.pending){
+        if(tries >= WAITS.length){ stillSettling(); return; }
+        /* Said once, on the first retry: the original wording promises a second or two, and by
+           the time we are waiting it is no longer true. */
+        if(tries === 0){
+          $('loadPill').textContent = 'Waiting for Paddle';
+          $('loadHead').textContent = 'Still confirming.';
+          $('loadBody').textContent = 'Paddle has not reported this payment as settled yet. ' +
+            'That is normal and usually takes a few seconds \u2014 the page will fill in on its own.';
+        }
+        setTimeout(attempt, WAITS[tries++]);
+        return;
+      }
+
       if(!res.ok || j.error) throw new Error(j.error || 'could not confirm the purchase');
 
       /* Paid, credited, and the key was issued on an earlier purchase. Nothing is wrong here and
@@ -248,6 +301,9 @@ main{min-height:70vh;display:flex;align-items:center;padding:clamp(40px,6vw,90px
       });
     })
     .catch(function(e){ fail(e.message || e); });
+  }
+
+  attempt();
 })();
 </script>
 </body>

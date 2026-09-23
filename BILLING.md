@@ -48,7 +48,7 @@ for the tagger) and nothing else.
 | `server.py` | `/packs` `/credits` `/checkout` `/claim` `/redeem` `/paddle/webhook`, and the gate in `/analyze` |
 | `site/index.html` | The landing page. Prices and the Gumroad links come from `/packs` too, and it falls back to its own authored markup when there is no server to ask |
 | `site/pricing.html` | The pricing page. Prices come from `/packs`, so page and ledger cannot disagree. Also the Gumroad buy links, the licence redemption field, and the one place a key can be entered by hand |
-| `site/success.html` | Post-checkout. Shows the render key once, stores it in `localStorage` |
+| `site/success.html` | Post-checkout. Shows the render key once, stores it in `localStorage`, and waits out a payment Paddle has not settled yet |
 | `viewer.html` | Credits group in the panel: a key field that checks the key once and remembers it. Sends `X-Render-Key` with each upload |
 
 Database: `out/billing.db` (override with `ATONAL_DB`). It holds **hashed** keys.
@@ -178,6 +178,20 @@ checks.
    Paddle** and grants if the webhook has not landed yet.
 4. The webhook grants too. Both paths are idempotent on the transaction id, so
    whichever runs first wins and the other is a no-op.
+
+**Step 3 races Paddle's own state machine, and the page waits it out.** The
+buyer is returned to the success page the moment the checkout is finished with
+them; the transaction reaches `completed` separately — at once for a card that
+authorises, several seconds later through 3-D Secure, longer for a bank
+transfer. A read in between answers `ready`, and `claim()` reports that as
+`{"error": "not paid", "pending": true}`. `pending` is the flag and the string
+is for logs: the success page retries **only** on it, seven times over about
+36 seconds, and fails immediately on everything else. If it is still unsettled
+after that it says *so* — reload in a minute, the claim is good for
+`CLAIM_TTL` — rather than showing the error panel, which used to tell someone
+whose payment was still in flight to contact support. Covered by
+`python tests/render_bench.py claim`, whose stub settles on the clock rather
+than on a count of reads, so the retry schedule has a floor under it.
 
 Through Gumroad it is shorter, and the buyer does one thing the card flow does
 not ask of them:

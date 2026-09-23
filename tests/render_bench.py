@@ -11,15 +11,18 @@
     python tests/render_bench.py export    # the MP4 the export path writes, parsed and decoded
     python tests/render_bench.py director  # the Director's timing rules, asserted
     python tests/render_bench.py site      # the purchase pages, in three configurations
+    python tests/render_bench.py claim     # the success page, in every state /claim can reach
     python tests/render_bench.py all
 
-THE `site` ARM IS THE ODD ONE and does not touch the renderer at all. It is here rather than in
-run.py for the same reason as everything else in this file: it needs Chrome. It drives the two
-site pages against three servers -- a real one with Gumroad configured and only the call that
-leaves the machine stubbed (tests/site_stub.py), the ordinary one with Gumroad off, and a plain
-http.server with no API at all -- because the interesting failures there are about
-configuration rather than about code. It starts and stops its own servers and uses a throwaway
-database; it never opens out/billing.db.
+`site` AND `claim` ARE THE ODD ONES and do not touch the renderer at all. They are here rather
+than in run.py for the same reason as everything else in this file: they need Chrome. `site`
+drives the landing and pricing pages against three servers -- a real one with Gumroad configured
+and only the call that leaves the machine stubbed (tests/site_stub.py), the ordinary one with
+Gumroad off, and a plain http.server with no API at all -- because the interesting failures
+there are about configuration rather than about code. `claim` drives success.html, the page that
+hands a customer the key they paid for, through all of /claim's outcomes against the same stub
+with Paddle stubbed too. Both start and stop their own servers and use a throwaway database;
+neither ever opens out/billing.db, and no money moves.
 
 WHY THIS FILE EXISTS. Every measurement in viewer.html had to be rebuilt by hand before it
 could be taken, and that cost real accuracy: MORPH's constants were tuned on three shape pairs
@@ -933,6 +936,226 @@ def bench_site(c, url):
         raise AssertionError("site failures: " + ", ".join(fails))
 
 
+# ------------------------------------------------------------------ the success page
+# WHY THIS EXISTS. site/success.html is the one page in the product where a customer RECEIVES
+# what they paid for, and it was the only page with no coverage at all -- the `site` arm drives
+# the landing and pricing pages, and stops at the door of the one that hands over the key.
+# Everything it does is a branch: paid or not, a key to show or a key that already exists, a
+# server with billing on or off, an origin with no API behind it. billing.claim's four outcomes
+# are tested in Python; what is NOT tested is whether the page renders them, and the page's own
+# comments record that it once rendered a successful repeat purchase as an error telling
+# somebody who had just paid to contact support.
+#
+# It runs against tests/site_stub.py with ATONAL_STUB_PADDLE=1: a real server with only
+# billing._paddle replaced, so the ledger, the claims row, the email lookup, the ownership race
+# and /claim itself are the shipped code. Nothing here reaches Paddle and no money moves.
+_CLAIM_STUB_PORT = int(os.environ.get("ATONAL_CLAIM_PORT", "8793"))
+
+# What the page is showing, and the numbers it is showing in it. Read as one object per load so
+# a panel and its contents can never come from two different moments.
+_CLAIM_READ = """
+  const vis = id => { const e=document.getElementById(id);
+                      return !!e && !e.classList.contains('hide'); };
+  const txt = id => { const e=document.getElementById(id); return e ? e.textContent.trim() : null; };
+  let stored=null; try{ stored=localStorage.getItem('atonal.key'); }catch(e){}
+  const k=document.getElementById('key');
+  return JSON.stringify({
+    panel: vis('done') ? 'done' : vis('topup') ? 'topup' : vis('fail') ? 'fail'
+           : vis('loading') ? 'loading' : 'none',
+    msg: txt('failMsg'), head: txt('failHead'), pill: txt('failPill'),
+    retry: (document.getElementById('failRetry')||{style:{}}).style.display !== 'none',
+    key: txt('key'), blurred: !!(k && k.classList.contains('blur')),
+    credits: txt('credits'), total: txt('total'),
+    tuCredits: txt('tuCredits'), tuTotal: txt('tuTotal'), stored: stored});
+"""
+
+
+def bench_claim(c, url):
+    """The page a paying customer lands on, in every state /claim can put it in."""
+    fails = []
+
+    def check(name, ok, detail=""):
+        print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, ("   " + detail) if detail else ""))
+        if not ok:
+            fails.append(name)
+
+    tmp = tempfile.mkdtemp(prefix="atonal-claim-")
+    db = os.path.join(tmp, "b.db")
+    env = dict(os.environ, ATONAL_STUB_PADDLE="1")
+    stub = subprocess.Popen([sys.executable, os.path.join(ROOT, "tests", "site_stub.py"),
+                             str(_CLAIM_STUB_PORT), db],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    static = subprocess.Popen([sys.executable, "-m", "http.server", str(_SITE_STATIC_PORT),
+                               "--bind", "127.0.0.1", "--directory", ROOT],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        S = "http://127.0.0.1:%d" % _CLAIM_STUB_PORT
+        T = "http://127.0.0.1:%d" % _SITE_STATIC_PORT
+        if not _wait_for(S + "/packs"):
+            raise AssertionError("the claim stub did not come up on %d" % _CLAIM_STUB_PORT)
+        if not _wait_for(T + "/site/success.html"):
+            raise AssertionError("the static host did not come up on %d" % _SITE_STATIC_PORT)
+
+        def land(qs, host=None, clear=False, settle=8.0):
+            """Load the success page with a query string and read the panel it comes to rest on.
+
+            Polled rather than slept, so the elapsed time in a detail line is the page's and not
+            this function's -- the retry schedule is a thing worth being able to see.  `settle`
+            is the ceiling; a page still on the spinner at that point is reported as `loading`,
+            which every check treats as a failure."""
+            u = (host or S) + "/site/success.html" + ("?" + qs if qs else "")
+            _goto(c, u, settle=0.6)
+            if clear:
+                c.js("try{localStorage.removeItem('atonal.key');}catch(e){} return 1;")
+                _goto(c, u, settle=0.3)
+            end = time.time() + settle
+            while True:
+                d = json.loads(c.js(_CLAIM_READ))
+                if d["panel"] != "loading" or time.time() >= end:
+                    return d
+                time.sleep(0.4)
+
+        # ---- 1. a link with no transaction on it ----
+        # Someone bookmarks the success page, or Paddle's redirect loses the parameter. The
+        # spinner must not be what they are left looking at.
+        d = land("")
+        check("a link with no transaction fails instead of spinning",
+              d["panel"] == "fail" and "transaction" in (d["msg"] or ""), d["msg"] or d["panel"])
+
+        # ---- 2. one that never settles ----
+        # This costs the whole retry schedule -- about 36 seconds of the page asking again --
+        # and that IS the check: where it gives up, and on which of the two endings. An
+        # unsettled payment is not a refused one, and "Something is off" is the wrong thing to
+        # tell someone whose bank transfer is still in flight.
+        d = land("_ptxn=txn_unpaid", clear=True, settle=60.0)
+        check("an unpaid transaction is not turned into a key",
+              d["panel"] == "fail" and not d["stored"], (d["msg"] or "")[:60])
+        check("and one that never settles says so, rather than that something went wrong",
+              "settled" in (d["head"] or "") and d["pill"] == "Still settling" and d["retry"],
+              "%r / %r / retry %s" % (d["head"], d["pill"], d["retry"]))
+
+        # ---- 3. the first purchase: the whole point of the page ----
+        d = land("_ptxn=txn_first", clear=True)
+        first = d["stored"]
+        check("a completed purchase shows the key", d["panel"] == "done"
+              and (d["key"] or "").startswith("atk_"), (d["key"] or d["msg"] or "")[:40])
+        check("and saves it in the browser, so the renderer is already unlocked",
+              first == d["key"], "stored %s" % (first or "nothing"))
+        check("and reports the credits bought and the balance they landed on",
+              d["credits"] == "10" and d["total"] == "10",
+              "added %s, balance %s" % (d["credits"], d["total"]))
+        # The page's own claim: a bearer token may not sit in plain sight on a shared screen.
+        check("the key is hidden until it is asked for", d["blurred"])
+        r = json.loads(c.js("""
+          document.getElementById('key').click();
+          await new Promise(r=>setTimeout(r,120));
+          return JSON.stringify({blur:document.getElementById('key').classList.contains('blur'),
+                                 lab:document.getElementById('revealLab').textContent.trim()});"""))
+        check("and one click reveals it", (not r["blur"]) and r["lab"] == "Visible", "%s" % r)
+
+        # ---- 4. the refresh. A key shown once and lost on F5 is a support ticket. ----
+        d = land("_ptxn=txn_first")
+        check("a refresh shows the same key and does not buy it again",
+              d["panel"] == "done" and d["key"] == first and d["total"] == "10",
+              "key %s, balance %s" % ("same" if d["key"] == first else "DIFFERENT", d["total"]))
+
+        # ---- 5. the pre-Paddle parameter name, which old links still carry ----
+        d = land("session_id=txn_first")
+        check("a session_id link still resolves rather than erroring",
+              d["panel"] == "done" and d["key"] == first, d["panel"])
+
+        # ---- 6. `paid`, which is the state some payment methods come back on ----
+        d = land("_ptxn=txn_paid_state")
+        check("a transaction in `paid` is honoured as well as `completed`",
+              d["panel"] == "done" and d["credits"] == "50", "%s %s" % (d["panel"], d["credits"]))
+        second_key = d["stored"]
+
+        # ---- 7. paid, and nothing says what for ----
+        d = land("_ptxn=txn_nopack")
+        check("a transaction with no credit count fails rather than granting zero",
+              d["panel"] == "fail", "%s %s" % (d["panel"], (d["msg"] or "")[:40]))
+        d = land("_ptxn=txn_never_existed")
+        check("an invented transaction id fails", d["panel"] == "fail",
+              "%s %s" % (d["panel"], (d["msg"] or "")[:40]))
+
+        # ---- 8. THE TOP-UP, which is the one that used to end on the error page ----
+        # The plaintext is wiped after CLAIM_TTL on purpose, so a returning customer's second
+        # pack tops up a key the database can no longer print. Aged here rather than waited for.
+        import sqlite3
+        with sqlite3.connect(db) as cn:
+            cn.execute("UPDATE claims SET created=0 WHERE session_id='txn_first'")
+        d = land("_ptxn=txn_second", clear=True)
+        check("a repeat purchase with no key to show reports a top-up, not a failure",
+              d["panel"] == "topup", "%s %s" % (d["panel"], (d["msg"] or "")[:60]))
+        check("and names both the credits added and the balance they are on",
+              d["tuCredits"] == "10" and d["tuTotal"] == "20",
+              "added %s, balance %s" % (d["tuCredits"], d["tuTotal"]))
+
+        # ---- 9. the same top-up from the browser that still holds the key ----
+        # The server cannot read the key back, but it can confirm one that is offered: hash it,
+        # compare, hand the same string back. The customer sees their key rather than a panel
+        # explaining why they cannot.
+        c.js("localStorage.setItem('atonal.key', %s); return 1;" % json.dumps(first))
+        d = land("_ptxn=txn_second")
+        check("but a browser that still holds the key is shown it, not the top-up panel",
+              d["panel"] == "done" and d["key"] == first,
+              "%s %s" % (d["panel"], "same key" if d["key"] == first else "key %r" % d["key"]))
+        check("and the key it confirms is the one the credits landed on, not the newer one",
+              d["key"] != second_key and d["total"] == "20",
+              "balance %s" % d["total"])
+        # NOT CHECKED HERE, DELIBERATELY: that a browser offering the WRONG key is refused. The
+        # page cannot tell -- it sends what it holds and renders what comes back -- so the only
+        # place that decision is visible is billing._finish, and test_billing already drives it
+        # with a foreign key and with one that differs by a character. Mutating the
+        # compare_digest away passes this arm and fails that suite, which is where it belongs.
+
+        # ---- 10. THE PAYMENT THAT IS STILL SETTLING ----
+        # Paddle returns the browser to this page as soon as the checkout is finished with it,
+        # and moves the transaction to its terminal state separately. A card through 3-D Secure,
+        # or any of the slower methods, lands the customer here while a read of the transaction
+        # still answers `ready` -- which /claim correctly reports as "not paid" and which is NOT
+        # a customer who failed to pay. Before the retry this ended on the error panel.
+        #
+        # The stub settles on the CLOCK, at ATONAL_STUB_SETTLE_SECS (9s, a 3-D Secure round
+        # trip), so this also fixes a floor under the retry schedule: a page that asks twice and
+        # gives up fails here, where a stub that settled on a count of reads would let it pass.
+        t0 = time.time()
+        d = land("_ptxn=txn_settling", clear=True, settle=30.0)
+        check("a payment that settles after the redirect ends on the key, not on an error",
+              d["panel"] == "done" and (d["key"] or "").startswith("atk_"),
+              "%s after %.0fs %s" % (d["panel"], time.time() - t0, (d["msg"] or "")[:60]))
+
+        # ---- 11. the two hosts that have no answer for /claim ----
+        # An origin serving the page with no API behind it at all, and a real ATONAL server with
+        # billing switched off -- the default state of every deployment before the keys are set.
+        d = land("_ptxn=txn_first", host=T)
+        check("served from a host with no API the page fails rather than spinning",
+              d["panel"] == "fail", d["panel"])
+        # Skipped rather than faked when the machine running this has real Paddle keys in its
+        # environment: the point is the UNCONFIGURED server, and pointing a live one at a made-up
+        # transaction id would be a request to Paddle that this file has no business making.
+        live = json.loads(urllib.request.urlopen(
+            "http://127.0.0.1:%d/credits" % PORT, timeout=5).read().decode())
+        if live.get("ready"):
+            check("and against a server with billing off it says so", True,
+                  "(skipped: the server on %d has billing configured)" % PORT)
+        else:
+            d = land("_ptxn=txn_first", host="http://127.0.0.1:%d" % PORT)
+            check("and against a server with billing off it says so",
+                  d["panel"] == "fail" and "configured" in (d["msg"] or ""),
+                  "%s %s" % (d["panel"], (d["msg"] or "")[:60]))
+    finally:
+        for p_ in (stub, static):
+            try:
+                p_.terminate()
+                p_.wait(timeout=5)
+            except Exception:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
+    if fails:
+        raise AssertionError("claim failures: " + ", ".join(fails))
+
+
 # ------------------------------------------------------------------ the motion guarantees
 # WHY THIS EXISTS. viewer.html states two guarantees about the drawn rotation, in a comment at
 # SYNC.spinSwing: the bar swing returns to zero on every downbeat, and THE RATE NEVER GOES
@@ -1645,6 +1868,7 @@ def main():
                         ("motion", bench_motion, ""),
                         ("quality", bench_quality, ""),
                         ("site", bench_site, ""),
+                        ("claim", bench_claim, ""),
                         ("shape", bench_shape, ""),
                         ("export", bench_export, ""),
                         ("director", bench_director, "")):

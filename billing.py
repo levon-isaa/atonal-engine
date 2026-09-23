@@ -555,7 +555,15 @@ def claim(session_id: str, have_key: str = None) -> dict:
     # `completed` is the terminal paid state. `paid` can appear first on some
     # payment methods, and both mean the money is ours.
     if txn.get("status") not in ("completed", "paid"):
-        return {"error": "not paid"}
+        # PENDING IS NOT REFUSED, IT IS UNFINISHED, and the two need telling apart by something
+        # better than the wording. Paddle returns the browser to the success page the moment the
+        # checkout is done with it and settles the transaction on its own schedule -- instantly
+        # for a card that authorises, seconds later through 3-D Secure, longer still for a bank
+        # transfer. So this state is what a REAL payment looks like for a moment, and the page
+        # that receives it has to keep asking rather than tell someone who has just paid that
+        # something is wrong. The flag is what it keys on; the string stays for a human reading
+        # a log. Everything else /claim can answer with is final and is retried by nobody.
+        return {"error": "not paid", "pending": True}
     return _finish(_grant_for_session(txn), have_key)
 
 
