@@ -444,9 +444,23 @@
          (STEP.shaN) for measuring. -->
     <div class="row"><label>Quality</label>
       <div class="seg">
-        <button id="qPreview" class="mini" title="Fast — half shadow samples, coarser march. For scrubbing and setup.">Preview</button>
-        <button id="qHigh" class="mini on" title="Full shadows, surface detail, render scale adapting between 0.82x and 1.45x to hold frame rate">High</button>
-        <button id="qUltra" class="mini" title="Supersampled, 200 shadow samples, finest march — adapts between 1.00x and 1.60x to stay usable">Ultra</button></div></div>
+        <!-- THE TOOLTIPS NAME WHAT THE TIERS ACTUALLY CARRY. All three had drifted: Preview
+             claimed half the shadow samples when it has the same 48 as High and buys its speed
+             in pixels instead, and both ceilings were still the pre-2.00 numbers. A tooltip
+             that misstates the tier is worse than none -- it is the only place most people
+             will ever read what they are choosing between. -->
+        <button id="qPreview" class="mini" title="Fast — a 0.72 canvas over a 0.60 render-scale floor, about a quarter of the pixels, and never above native. For scrubbing and setup.">Preview</button>
+        <button id="qHigh" class="mini on" title="Full shadows and surface detail, render scale adapting between 0.82x and 2.00x to hold frame rate">High</button>
+        <button id="qUltra" class="mini" title="Never below native: adapts between 1.00x and 2.00x, with 64 shadow samples against High's 48">Ultra</button></div></div>
+    <!-- LOOK. The five families in ROLL_RECIPES were reachable only by rolling until one came
+         up: ~1700 combinations of filter, material, finish, palette and scene, five of them
+         known to hold together, and no way to ASK for one. The options are filled from
+         ROLL_RECIPES itself so a new family cannot be added without appearing here.
+         Custom is a state and not a destination -- it means the controls no longer match any
+         family, and selecting it does nothing. -->
+    <div class="row"><label>Look</label>
+      <select id="selLook" title="Apply one of the coherent families. Custom means the controls have been changed by hand and no longer match one.">
+        <option value="custom" selected>Custom</option></select></div>
     <!-- ROLL. See rollAll() for why this picks a recipe first rather than each control
          independently, and why every roll prints a seed. -->
     <div class="row"><label>Random</label>
@@ -4470,7 +4484,7 @@ const TIERS={
               levels and losing 15% of its silhouette to afford it -- the tier that exists to
               look better was measurably softer than the one below it. */
            dpr:1.00, ss:1.45, shaN:64, sss:1, near:1.45, far:1.75, shutter:0,
-           note:'Ultra — native floor, adapts up to 1.60x when the frame allows'},
+           note:'Ultra — native floor, adapts up to 2.00x when the frame allows'},
 };
 /* THE IBL RIG. These three apply ONLY when a prefiltered HDRI is lighting the scene; the
    analytic room is left exactly as it was tuned, and reads 1.0/1.0/1.0.
@@ -11691,12 +11705,32 @@ const ROLL_RECIPES=[
 ];
 function pick(r,a){ return a[Math.min(a.length-1, Math.floor(r()*a.length))]; }
 function rollAll(seedStr){
+  /* TWO FORMS, ONE STREAM. `a3f9` draws the family from the seed, which is what every token
+     saved before the Look picker existed looks like -- those still replay exactly. `print:a3f9`
+     names the family instead. The draw is CONSUMED either way, deliberately: it keeps the two
+     forms on the same position in the random stream, so the same seed under a different family
+     keeps its shape, segments, palette and fold and changes only what the recipe itself sets.
+     Switching Look is then a comparison rather than a new roll.
+     THE ROUTING DOES RE-ROLL, because it is drawn after rec.f(r) and a recipe consumes a
+     different number of draws. Moving it earlier would make the two forms match completely and
+     would also change what every token saved so far replays to, which is the trade this does
+     not take -- a seed that no longer reproduces its picture is worse than an asymmetry.
+     An unknown family name is left as part of the seed: still deterministic, still replayable,
+     and not worth an error path in the render loop. */
+  let want=null;
+  const cut = seedStr ? seedStr.indexOf(':') : -1;
+  if(cut>0){
+    const fam=seedStr.slice(0,cut).toLowerCase();
+    want=ROLL_RECIPES.find(x=>x.name.toLowerCase()===fam)||null;
+    if(want) seedStr=seedStr.slice(cut+1);
+  }
   const seed = seedStr || (Math.random().toString(36).slice(2,8));
   const r = mulberry32(seedOf(seed));
   // ---- the family
   const tot=ROLL_RECIPES.reduce((a,x)=>a+x.w,0);
   let k=r()*tot, rec=ROLL_RECIPES[0];
   for(const x of ROLL_RECIPES){ if((k-=x.w)<=0){ rec=x; break; } }
+  if(want) rec=want;                     // the draw above is spent either way; see the note
   // ---- things every family gets, rolled BEFORE the recipe so the recipe can override them
   setCtl('selPal', pick(r,['auto','auto','auto','blood','acid','ultra','cyber','solar','mono']));
   /* SHAPE AND SEGMENTS TOGETHER. Segments is a radial repeat count on p2Rotor, a tooth count
@@ -11737,11 +11771,44 @@ function rollAll(seedStr){
     MODB.push({t, s:pick(r,srcs), a:+(((r()<0.22)?-1:1)*(0.18+r()*0.42)).toFixed(2)});
   }
   // routing is derived from the track; the roll has nothing to set here
-  $('rollSeed').textContent=seed;
-  showStat('Roll · '+rec.name+' · '+seed); hideStat(2200);
-  return seed;
+  /* THE TOKEN IS WHAT REPLAYS, so it carries the family whenever the family was asked for
+     rather than drawn. A random roll still prints the bare seed it always did. */
+  const token=(want?rec.name.toLowerCase()+':':'')+seed;
+  $('rollSeed').textContent=token;
+  const look=$('selLook'); if(look) look.value=rec.name.toLowerCase();
+  showStat((want?'Look · ':'Roll · ')+rec.name+' · '+seed); hideStat(2200);
+  return token;
 }
 window.ROLL=rollAll;
+/* FILLED FROM THE RECIPES, not typed out beside them. A family added to ROLL_RECIPES and not to
+   the markup would be a family nobody could pick, which is the state this control exists to end. */
+(function(){
+  const sel=$('selLook'); if(!sel) return;
+  for(const x of ROLL_RECIPES){
+    const o=document.createElement('option');
+    o.value=x.name.toLowerCase(); o.textContent=x.name; sel.appendChild(o);
+  }
+  sel.addEventListener('change',e=>{
+    if(e.target.value==='custom') return;         // a state, not a destination
+    rollAll(e.target.value+':'+Math.random().toString(36).slice(2,8));
+  });
+  /* AND THE LABEL HAS TO STAY TRUE. Change a material by hand and the picture is no longer the
+     family the box names. setCtl dispatches a synthetic event and a person dispatches a trusted
+     one, so isTrusted separates "the roll set this" from "somebody set this" without the roll
+     having to raise a flag and remember to lower it.
+     THE GUARD IS NOT LOAD-BEARING TODAY and is noted as such rather than left looking it:
+     rollAll writes the label LAST, after every setCtl, so dropping isTrusted would change
+     nothing on any path the roll currently takes -- mutating it out passes the whole arm. It
+     earns its place the moment anything sets a control after the label, which is a one-line
+     change somebody will eventually make. */
+  const owned=['selShape','pSeg','pEdge','pMass','pDepth','selKal','selFilt','filtCell',
+               'filtAmt','selScene','selMat','selFinish','selPal','colA','colB'];
+  const toCustom=e=>{ if(e.isTrusted) sel.value='custom'; };
+  for(const id of owned){
+    const el=$(id); if(!el) continue;
+    el.addEventListener('change',toCustom); el.addEventListener('input',toCustom);
+  }
+})();
 $('roll').addEventListener('click',()=>rollAll());
 { const q=new URLSearchParams(location.search).get('roll'); if(q) setTimeout(()=>rollAll(q),60); }
 $('selScene').addEventListener('change',e=>{ scene=(e.target.value==='studio')?1:0; });

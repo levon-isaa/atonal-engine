@@ -12,6 +12,7 @@
     python tests/render_bench.py director  # the Director's timing rules, asserted
     python tests/render_bench.py site      # the purchase pages, in three configurations
     python tests/render_bench.py claim     # the success page, in every state /claim can reach
+    python tests/render_bench.py roll      # the Look picker, and that saved seeds still replay
     python tests/render_bench.py all
 
 `site` AND `claim` ARE THE ODD ONES and do not touch the renderer at all. They are here rather
@@ -934,6 +935,178 @@ def bench_site(c, url):
         shutil.rmtree(tmp, ignore_errors=True)
     if fails:
         raise AssertionError("site failures: " + ", ".join(fails))
+
+
+# ------------------------------------------------------------------ the look picker
+# WHY THIS EXISTS. ROLL_RECIPES is a vocabulary -- five families that each set filter, material,
+# finish, palette and scene to a combination known to hold together -- and the Look picker is the
+# only way to ASK for one. Everything about it is a contract that is invisible when it breaks:
+#
+#   A SEED IS A PROMISE. window.ROLL('a3f9') and ?roll=a3f9 are how a good roll is kept, and
+#   tokens have been printed and saved since before the picker existed. If the family draw ever
+#   moves, every one of those replays to a different picture and nothing says so.
+#   THE TWO FORMS SHARE A STREAM. `print:a3f9` spends the family draw it does not use, so the
+#   same seed under another family keeps its shape, segments and fold and changes only what the
+#   recipe sets. That is what makes switching Look a comparison rather than a new roll, and it
+#   is one deleted line away from not being true.
+#   THE LABEL IS A CLAIM. The box names the family the picture is in, so a control changed by
+#   hand has to drop it to Custom -- and a control the ROLL itself sets must not.
+#
+# The golden below is a recorded fixture, which this file argues against everywhere else. The
+# argument does not apply here: elsewhere a fixture would assert that today's measurement
+# matches yesterday's, mistakes included, whereas a seed's picture IS the thing being promised
+# to whoever saved it. Recording it is the point, not a proxy for it.
+_ROLL_GOLDEN = {}          # filled on first run by --bless; see _roll_golden_path
+
+_ROLL_IDS = ['selShape', 'pSeg', 'pEdge', 'pMass', 'pDepth', 'selKal', 'selFilt', 'filtCell',
+             'filtAmt', 'selScene', 'selMat', 'selFinish', 'selPal']
+_ROLL_SEEDS = ["a3f9", "zzz1", "0000", "hello", "b4k9x2"]
+
+_ROLL_JS = """
+  const ids=%s;
+  const snap=()=>{const v={};for(const id of ids){const e=document.getElementById(id);v[id]=e?e.value:null;}
+                  v._mod=JSON.stringify(window.MODB||[]); return v;};
+  const sel=document.getElementById('selLook');
+  const out={options:[...sel.options].map(o=>o.value), initial:sel.value, golden:{}, named:{},
+             stream:{}, determinism:{}, tokens:{}, spent:{}};
+  for(const s of %s){
+    const t=ROLL(s);
+    out.golden[s]=snap(); out.tokens[s]={token:t, box:document.getElementById('rollSeed').textContent,
+                                         look:sel.value};
+    const again=(ROLL(s), snap());
+    out.determinism[s]=JSON.stringify(out.golden[s])===JSON.stringify(again);
+    /* ASKING FOR THE FAMILY YOU JUST DREW MUST CHANGE NOTHING. This is the check that pins the
+       family draw being SPENT when a family is named: skip it and both `sculpture:a3f9` and
+       `poster:a3f9` shift by one draw together, so comparing them to each other still passes
+       while every token saved before the picker replays to a different picture. Comparing
+       against the bare seed is the only version that notices. */
+    ROLL(out.tokens[s].look+':'+s);
+    out.spent[s]=JSON.stringify(out.golden[s])===JSON.stringify(snap());
+  }
+  // the same seed under two families
+  ROLL('sculpture:a3f9'); const a=snap(); const la=sel.value;
+  ROLL('poster:a3f9');    const b=snap(); const lb=sel.value;
+  const shared=['selShape','pSeg','pEdge','pMass','pDepth','selKal'];
+  out.stream={shape:a.selShape, seg:a.pSeg, shared:shared.every(k=>a[k]===b[k]),
+              differs:(a.selFilt!==b.selFilt)||(a.selMat!==b.selMat)||(a.selPal!==b.selPal),
+              labels:[la,lb]};
+  // every family is reachable BY NAME and says so
+  for(const o of [...sel.options]){
+    if(o.value==='custom') continue;
+    const t=ROLL(o.value+':a3f9');
+    out.named[o.value]={look:sel.value, token:t};
+  }
+  return JSON.stringify(out);
+"""
+
+
+def _roll_golden_path():
+    return os.path.join(HERE, "roll_golden.json")
+
+
+def bench_roll(c, url):
+    """The Look picker and the seed contract under it."""
+    fails = []
+
+    def check(name, ok, detail=""):
+        print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, ("   " + detail) if detail else ""))
+        if not ok:
+            fails.append(name)
+
+    d = json.loads(c.js(_ROLL_JS % (json.dumps(_ROLL_IDS), json.dumps(_ROLL_SEEDS))))
+
+    check("the picker offers every recipe and nothing else",
+          d["options"][0] == "custom" and len(d["options"]) > 1, "%s" % d["options"])
+    check("and opens on Custom rather than claiming a family it is not in",
+          d["initial"] == "custom", d["initial"])
+
+    check("a seed replays to the same picture twice running",
+          all(d["determinism"].values()),
+          "%s" % [k for k, v in d["determinism"].items() if not v])
+
+    # A BARE SEED STILL PRINTS BARE. The token is what gets copied out of the panel, so a roll
+    # that started printing `sculpture:a3f9` would quietly change what people paste back in.
+    check("naming the family a seed already drew changes nothing",
+          all(d["spent"].values()),
+          "%s differ" % [k for k, v in d["spent"].items() if not v] if not all(d["spent"].values())
+          else "%d seeds, so the family draw is spent either way" % len(d["spent"]))
+
+    check("a bare seed prints a bare token",
+          all(v["token"] == k and v["box"] == k for k, v in d["tokens"].items()),
+          "%s" % {k: v["token"] for k, v in d["tokens"].items() if v["token"] != k})
+    check("and the box names the family it drew",
+          all(v["look"] != "custom" for v in d["tokens"].values()),
+          "%s" % {k: v["look"] for k, v in d["tokens"].items()})
+
+    a_shape, a_seg = d["stream"]["shape"], d["stream"]["seg"]
+    named = d["named"]
+    check("every family can be asked for by name",
+          all(k == v["look"] for k, v in named.items()),
+          "%s" % {k: v["look"] for k, v in named.items() if k != v["look"]})
+    check("and its token carries the family, so the pick replays too",
+          all(v["token"] == k + ":a3f9" for k, v in named.items()),
+          "%s" % {k: v["token"] for k, v in named.items() if v["token"] != k + ":a3f9"})
+
+    check("one seed under two families keeps the shape, segments and fold",
+          d["stream"]["shared"],
+          "shape %s, segments %s" % (a_shape, a_seg) if d["stream"]["shared"]
+          else "the shared block moved, so the family draw is no longer being spent")
+    check("and changes what the recipe owns", d["stream"]["differs"])
+    check("and each labels itself", d["stream"]["labels"] == ["sculpture", "poster"],
+          "%s" % d["stream"]["labels"])
+
+    # ---- the label, against a REAL keystroke ----
+    # The only part of this that JS cannot test itself: a synthetic event carries
+    # isTrusted === false, which is exactly the thing being discriminated on, so a check driven
+    # from inside the page can only ever exercise the half that must NOT fire. CDP dispatches a
+    # real one. Arrow-right on a focused range is the smallest trusted edit there is.
+    c.js("document.querySelectorAll('details').forEach(d=>d.open=true);"
+         "ROLL('print:a3f9'); document.getElementById('pEdge').focus(); return 1;")
+    st0 = json.loads(c.js("return JSON.stringify({look:document.getElementById('selLook').value,"
+                          "edge:document.getElementById('pEdge').value,"
+                          "foc:document.activeElement.id});"))
+    for t in ("rawKeyDown", "keyUp"):
+        c.send("Input.dispatchKeyEvent", {"type": t, "key": "ArrowRight", "code": "ArrowRight",
+                                          "windowsVirtualKeyCode": 39, "nativeVirtualKeyCode": 39})
+    time.sleep(0.3)
+    st1 = json.loads(c.js("return JSON.stringify({look:document.getElementById('selLook').value,"
+                          "edge:document.getElementById('pEdge').value});"))
+    check("the roll's own writes leave the label naming the family",
+          st0["look"] == "print" and st0["foc"] == "pEdge",
+          "label %r, focus %r" % (st0["look"], st0["foc"]))
+    check("and one real keystroke on a control the family owns drops it to Custom",
+          st1["look"] == "custom" and st1["edge"] != st0["edge"],
+          "%s -> %s, edge %s -> %s" % (st0["look"], st1["look"], st0["edge"], st1["edge"]))
+
+    # ---- the golden ----
+    # BLESSED FROM THE BUILD THAT INTRODUCED THE PICKER, which is only sound because that build
+    # was first compared against the one before it: ten seeds, every control and every routing
+    # row identical. Without that step this file would be recording the new behaviour and
+    # calling it the promise.
+    gp = _roll_golden_path()
+    if "--bless" in sys.argv:
+        with open(gp, "w") as f:
+            json.dump(d["golden"], f, indent=1, sort_keys=True)
+        print("  ..   wrote %s -- re-run without --bless" % os.path.basename(gp))
+        return
+    if not os.path.exists(gp):
+        check("saved seeds still replay to the same picture", False,
+              "no %s; create it once with:  python tests/render_bench.py roll --bless"
+              % os.path.basename(gp))
+    else:
+        with open(gp) as f:
+            want = json.load(f)
+        drift = {s: {k: (want[s].get(k), d["golden"][s].get(k))
+                     for k in set(want.get(s, {})) | set(d["golden"][s])
+                     if want.get(s, {}).get(k) != d["golden"][s].get(k)}
+                 for s in want if s in d["golden"]}
+        drift = {s: v for s, v in drift.items() if v}
+        check("saved seeds still replay to the same picture", not drift,
+              ("%d of %d seeds moved: %s" % (len(drift), len(want), str(drift)[:200]))
+              if drift else "%d seeds, every control and every routing row" % len(want))
+
+    if fails:
+        raise AssertionError("roll failures: " + ", ".join(fails))
 
 
 # ------------------------------------------------------------------ the success page
@@ -1878,6 +2051,7 @@ def main():
                         ("quality", bench_quality, ""),
                         ("site", bench_site, ""),
                         ("claim", bench_claim, ""),
+                        ("roll", bench_roll, ""),
                         ("shape", bench_shape, ""),
                         ("export", bench_export, ""),
                         ("director", bench_director, "")):
