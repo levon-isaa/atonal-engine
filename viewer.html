@@ -551,6 +551,15 @@
    point it somewhere else would be a link that hands a customer's key to whoever wrote it. */
 const SERVER = (location.protocol.startsWith('http') && location.hostname)
   ? location.origin : 'http://127.0.0.1:8770';
+/* WHAT TO SAY WHEN IT IS NOT ANSWERING depends on who is reading. On a loopback address it is
+   the person running the server, and the useful sentence is the command -- WITH the port, since
+   `python server.py` starts on 8770 and does not bring back a page served from anywhere else.
+   The message used to name the address and give the default command, which on any other port
+   is advice that cannot work. Anywhere that is not loopback the reader is a customer, and "run
+   python server.py" is an instruction about a machine they do not own. */
+const API_LOCAL = /^(127\.0\.0\.1|localhost|\[::1\])$/.test(new URL(SERVER).hostname);
+const RUN_CMD = (()=>{ const p=new URL(SERVER).port;
+  return (p && p!=='8770') ? 'ATONAL_PORT='+p+' python server.py' : 'python server.py'; })();
 
 /* ---- THE RENDER KEY ----
    A credit buys one ANALYSIS, which is the only thing on the server side that
@@ -7729,7 +7738,9 @@ async function loadFile(file){
     showStat(!unreachable ? e.message
       : FILE_MODE ? 'Opened from file:// — the browser is blocking this, not the server. '
                    +'Open http://127.0.0.1:8770/viewer.html'
-      : 'Server unreachable — run: python server.py  ('+SERVER+')', true);
+      : API_LOCAL ? 'Server unreachable — run: '+RUN_CMD+'  ('+SERVER+')'
+      : 'Can\u2019t reach the ATONAL server. Check your connection and try again in a minute.',
+      true);
     hideStat(FILE_MODE?12000:6000); return;
   }
   if(poll) clearInterval(poll);
