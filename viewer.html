@@ -779,6 +779,7 @@ uniform int u_shaN;
 uniform float u_kalSkip;               // 0 = always evaluate the unfolded field. window.KALSKIP, A/B
 uniform float u_shaSkip;               // 0 = evaluate every shadow sample. window.SHASKIP, A/B only
 uniform float u_shaMode;          // <0 = shadows use the blend; else the one profile to march
+uniform float u_aoSingle;         // 1 = AO takes the single profile too (the pre-fix path; A/B only)
 uniform float u_diag;                // 0 off; 2 geometric normal; 8 AO; 9 AO contoured
 uniform float u_svgOn,u_svgDepth,u_svgBevel;
 uniform float u_valence,u_warmth,u_epic;
@@ -2135,6 +2136,22 @@ vec3 calcN(vec3 p){vec2 e=vec2(1.,-1.)*u_nEps;
    the blend advance unevenly (see the lurch at 4c90428). Restored after, so nothing else in the
    frame inherits the override. */
 float mapD(vec3 p){ gShaMode=u_shaMode; float d=map(p).x*2.0; gShaMode=-1.0; return d; }
+/* THE BLENDED FIELD, FOR THE ONE SHADING TERM THAT CANNOT DO WITHOUT IT. mapD marches a single
+   profile mid-transition and switches at mix 0.5 -- see gShaMode -- and for the shadow that is
+   invisible. For AMBIENT OCCLUSION it is the pop that was reported as "a sudden pop mid-change":
+   every crevice on the form redrew itself for the new shape in one frame, halfway through a
+   transition whose surface was still between the two. MEASURED, 41 steps across mix 0.40..0.60
+   on all 72 pairs, pixels moving more than 24 levels on the step that crosses 0.5 against the
+   median of the other steps: 18 of 72 pairs popped by 5x or more with the switch, 0 of 72 with
+   the shading on the blend. Then each layer off in turn over those 18 -- shadow off: still 9
+   popping; subsurface off: still 10; AO off: 0, median 1.2x. So it is the AO alone, and AO is
+   the cheap layer: four taps a pixel against the shadow's 48, which is why this costs a small
+   fraction of what blending everything did (+19 to +32 ms at rscale 3.4, in the note at gShaMode)
+   and the shadow keeps the single profile it was measured to be fine on.
+   gShaMode is -1 everywhere outside mapD, so map() here IS the blend the surface is drawn from:
+   no third evalMode call site, the constraint noted at evalForm. */
+float mapB(vec3 p){ gShaMode=(u_aoSingle>0.5)?u_shaMode:-1.0;   // AOSINGLE: the old path, for A/B
+                    float d=map(p).x*2.0; gShaMode=-1.0; return d; }
 // ambient occlusion — crevices darken, gives the form real volume (4 extra taps)
 /* THE KERNEL IS A FRACTION OF THE FORM, NOT A LENGTH IN WORLD UNITS, and it was a length.
    formScale() rides the section energy and the motion patch, so the form's radius moves over
@@ -2154,7 +2171,7 @@ float mapD(vec3 p){ gShaMode=u_shaMode; float d=map(p).x*2.0; gShaMode=-1.0; ret
    invariant, since d_S(S*q) = S*d_1(q) makes every term in the sum scale by precisely S. */
 float calcAO(vec3 p,vec3 n){ float S=formScale(), s=0., w=1.;
   for(int i=1;i<=4;i++){ float h=0.04*float(i)*float(i)*S;
-    s+=(h-mapD(p+n*h))*w; w*=0.65; }
+    s+=(h-mapB(p+n*h))*w; w*=0.65; }     // the blend, not mapD: see mapB
   return clamp(1.0-1.6*s/S,0.,1.); }
 // short-range soft shadow — self-shadowing is what separates 'rendered' from 'flat'
 // Soft shadow. The old version capped each step at 0.18 over 20 iterations, so it could only
@@ -10130,6 +10147,9 @@ function frame(){
   // baseline alone moved 98.0ms to 70.8ms on this machine, which swamps the effect entirely.
   gl.uniform1f(US('u_shaMode'),
     (phase===1 && !window.SHABLEND) ? ((mix<0.5)?mode:mode2) : -1);
+  // window.AOSINGLE=1 puts AO back on the single profile, so the midpoint pop and its cost can be
+  // compared in ONE page load -- see mapB.
+  gl.uniform1f(US('u_aoSingle'), window.AOSINGLE?1:0);
   gl.uniform1f(US('u_kalSkip'),(window.KALSKIP!==undefined)?window.KALSKIP:1.0);
   gl.uniform1f(US('u_shaSkip'),(window.SHASKIP!==undefined)?window.SHASKIP:1.0);
   gl.uniform1f(US('u_shaJit'), (window.SHAJIT!==undefined)?window.SHAJIT:1.0);

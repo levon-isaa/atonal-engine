@@ -428,6 +428,48 @@ def bench_morph(c, url, modes=9, n=21):
           "structure at mid-morph is %.3f of the endpoints' (0.427 shipped, 0.341 at the "
           "previous table, 0.207 at the old melt)" % med)
 
+    # ---- NO POP AT THE MIDPOINT
+    # Reported as "a sudden pop mid-change", after the transition had been lengthened twice and
+    # still read as quick. It was the shading, not the blend: mapD marches ONE profile
+    # mid-transition and switches at mix 0.5, and ambient occlusion rode along, so every crevice
+    # redrew itself for the new shape in a single frame. Invisible to every measure above,
+    # because they average over the frame and a crevice is small. What catches it is LOCAL:
+    # pixels moving more than 24 levels on the step that crosses 0.5, against the median step
+    # either side, in 0.01 steps so the steps around it are small. Before the fix 10-18 of 72
+    # pairs popped by 5x or more (two page loads); after, 0 of 72, and the midpoint step is the
+    # CALMEST in the window, which is what the easing is for. Counted in the page so each pair
+    # returns twenty numbers rather than twenty frames -- the frame-returning version is ten
+    # minutes, this is a fraction of that.
+    c.js(r"""window.__popsweep=async function(a,b){
+      const LO=0.40, HI=0.60, N=21; window.PAIRPIN=[a,b]; window.MIXPIN=LO;
+      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+      let prev=null; const n24=[];
+      for(let i=0;i<N;i++){ window.MIXPIN=LO+(HI-LO)*i/(N-1);
+        await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+        const f=window.__grab();
+        if(prev){ let k=0; for(let j=0;j<f.length;j++) if(Math.abs(f[j]-prev[j])>24) k++; n24.push(k); }
+        prev=f; }
+      return n24; }; return 1;""")
+    c.js("window.MORPHPIN=null; kalAmt=0; kalTS=0; return 1;")
+    popped, worst = [], (0.0, None)
+    for a in range(modes):
+        for b in range(modes):
+            if a == b:
+                continue
+            c.js("kalAmt=0; kalTS=0; return 1;")
+            n24 = np.array(c.js("return await window.__popsweep(%d,%d);" % (a, b), timeout=120), float)
+            k = 9                                            # the step from 0.49 to 0.50
+            r = (n24[k] + 1) / (np.median(np.delete(n24, k)) + 1)
+            if r >= 5:
+                popped.append("%d->%d" % (a, b))
+            if r > worst[0]:
+                worst = (float(r), "%d->%d" % (a, b))
+    c.js("window.PAIRPIN=null; window.MIXPIN=null; return 1;")
+    check("no pair pops at the midpoint of its transition", not popped,
+          ("%d of %d pairs pop by 5x or more (first: %s)" % (len(popped), modes * (modes - 1), popped[0]))
+          if popped else "worst midpoint step %.1fx its neighbours (%s); 10-18 of 72 popped before"
+          % worst)
+
     if fails:
         raise AssertionError("morph: " + ", ".join(fails))
     return res
