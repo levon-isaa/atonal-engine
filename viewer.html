@@ -6903,7 +6903,8 @@ const REFORM_MIN_SECS=14;
    A transition of four or five seconds is already gentle; what "too quick" is describing is how
    OFTEN, so that is the only thing this moves. Longer gaps, same gentleness, and the form holds
    still for more of the track rather than less. MORPH_SECS keeps its own range and is a separate
-   setting for whoever wants the melt itself slower.
+   setting for whoever wants the melt itself slower -- which is what the third report asked for;
+   see the note there for why the objection above no longer applies at the pace that shipped.
 
    MEASURED on the 176bpm upload the report came from, 250s of playback each:
 
@@ -7005,7 +7006,23 @@ let lastReformSec=-1e9;
    a morph that accelerates and decelerates as the curve moves under it is exactly the fault
    this file has removed four times (see RATE_TARGETS). Latched, the rate is a constant per
    transition -- a different constant each time, which is the whole idea. */
-const MORPH_SECS={fast:2.2, slow:6.0};      // the ends of the range, before bar quantisation
+/* TWICE AS LONG, AND THIS TIME IT IS THE LENGTH THAT WAS ASKED ABOUT. "Too quick" had been
+   reported twice before and read both times as too OFTEN -- which is what SHAPE_PACE answers, and
+   the note there argues against lengthening the transition because the form would then be
+   mid-change a larger share of the time. That argument was measured at pace 1.0, where the form
+   was mid-change 13.4% of playback. The pace has shipped at 2.5 since, and there it is 6.5%: the
+   budget it was protecting now exists. The third report named the transition itself.
+   MEASURED before changing anything, so the length was known to be the fault and not a proxy:
+     - what runs is what is latched. Playback at 120bpm ran 4.00s and 3.99s against 4.00s
+       latched; at 176bpm 5.45s against 5.45s. Nothing clips or rushes a transition.
+     - the visible change is not bunched. Over all 72 pairs, pose frozen and the fold pinned, the
+       middle 80% of the picture's change takes 76% of the transition's time (even is 80%) and
+       the middle half takes 44% (even is 50%). The easing below already does its job.
+   So it is simply short: 2.4-4.0s for an energetic passage at 90-176bpm, which is the kind people
+   watch. This range puts that at 5.3-7.2s and the whole span at 4.5-12.0s. The longest
+   transition is under the tightest spacing the Director allows (35s at pace 2.5, halved at a
+   section boundary to 17.5s), so a change can still never be asked for while one is running. */
+const MORPH_SECS={fast:4.4, slow:11.0};     // the ends of the range, before bar quantisation
 let morphB=8;        // this transition's length in beats, latched
 /* ...AND ITS LENGTH IN SECONDS, LATCHED WITH IT, because the transition must not inherit the
    audio clock's staircase. mix used to advance by dBeats, which comes off ctx.currentTime -- and
@@ -7052,12 +7069,16 @@ function morphBeatsFor(rung){
      That is the "changes quick" report, in the one place the design says it should not be.
      So options below the floor are not candidates. If a tempo is so quick that none qualify,
      the longest is taken, which is the direction that errs toward the settled end. */
+  /* SIX AND EIGHT BARS, because the slow end has to be reachable at a quick tempo: at 176bpm four
+     bars is 5.45s, so with 16 beats as the longest option an 11-second transition could not
+     exist and every quiet passage would have collapsed onto the same 5.45. Still whole bars, so
+     a change that starts on a phrase boundary still lands on a downbeat. */
   let best=-1, err=1e9;
-  for(const b of [4,8,12,16]){
+  for(const b of [4,8,12,16,24,32]){
     const sec=b*60/bpm;
     if(sec < MORPH_SECS.fast-1e-6) continue;
     const e=Math.abs(sec-want); if(e<err){ err=e; best=b; } }
-  return (best<0) ? 16 : best;
+  return (best<0) ? 32 : best;
 }
 function morphBeats(){ return morphB; }
 
