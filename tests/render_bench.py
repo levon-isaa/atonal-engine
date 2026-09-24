@@ -1298,7 +1298,28 @@ def bench_claim(c, url):
               d["panel"] == "done" and (d["key"] or "").startswith("atk_"),
               "%s after %.0fs %s" % (d["panel"], time.time() - t0, (d["msg"] or "")[:60]))
 
-        # ---- 11. the two hosts that have no answer for /claim ----
+        settled_key = d["stored"]
+
+        # ---- 11. the renderer, on the origin that issued the key ----
+        # The success page's promise is "open the renderer, the key is already saved", which is
+        # two claims: the renderer finds it, and sends it to the server that issued it. The second
+        # was false on any port but 8770 -- the viewer forced that port onto its own host -- and
+        # this stub is not on 8770, which is the only reason it can tell. Its ledger is the only
+        # one that knows this key, so a renderer asking anywhere else is refused.
+        _goto(c, S + "/viewer.html", settle=3.5)
+        v = json.loads(c.js("""
+          const held=(()=>{try{return localStorage.getItem('atonal.key')}catch(e){return null}})();
+          const known=await fetch(SERVER+'/credits?key='+encodeURIComponent(held||''))
+                        .then(r=>r.json()).then(j=>j.known, ()=>null);
+          return JSON.stringify({api: SERVER, origin: location.origin, held: held, known: known});"""))
+        check("the renderer on the same origin finds the key the success page saved",
+              bool(settled_key) and v["held"] == settled_key,
+              "held " + ("the same key" if v["held"] == settled_key else repr(v["held"])[:20]))
+        check("and sends it to the server that issued it, not to a fixed port",
+              v["api"] == v["origin"] and v["known"] is True,
+              "api %s, origin %s, known there: %s" % (v["api"], v["origin"], v["known"]))
+
+        # ---- 12. the two hosts that have no answer for /claim ----
         # An origin serving the page with no API behind it at all, and a real ATONAL server with
         # billing switched off -- the default state of every deployment before the keys are set.
         d = land("_ptxn=txn_first", host=T)

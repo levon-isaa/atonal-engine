@@ -538,8 +538,19 @@
 })();
 </script>
 <script>
-const SERVER = location.hostname && location.protocol.startsWith('http')
-  ? location.origin.replace(/:\d+$/, ':8770') : 'http://127.0.0.1:8770';
+/* THE API IS WHEREVER THE PAGE CAME FROM. This used to be the page's host with the port forced
+   to 8770 -- there since the first commit, with no reason recorded -- and every documented way to
+   open the viewer is from server.py itself or through deploy/nginx.conf, which proxies every path
+   to it. So the rewrite served no route anyone is told to take, and it broke one: ATONAL_PORT is
+   a real setting, and a server started on 9000 served a viewer that sent its uploads, its key
+   checks and its progress polls to 8770. Found by starting a second server on 8795 and watching
+   the key field ask the wrong ledger. The site pages and this file's own build check already
+   assumed the same origin; this was the one place that did not.
+   A page opened from disk has no origin to use and keeps the old default. There is deliberately
+   NO query-string override: uploads send X-Render-Key to this address, and a link that could
+   point it somewhere else would be a link that hands a customer's key to whoever wrote it. */
+const SERVER = (location.protocol.startsWith('http') && location.hostname)
+  ? location.origin : 'http://127.0.0.1:8770';
 
 /* ---- THE RENDER KEY ----
    A credit buys one ANALYSIS, which is the only thing on the server side that
