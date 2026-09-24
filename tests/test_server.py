@@ -21,6 +21,7 @@ An undecodable body is used rather than a mocked failure, because the mapping fr
 no" to a 500 that reads `could not decode audio` is part of what is being asserted. It costs
 about a tenth of a second: ffmpeg rejects the bytes without librosa ever being imported.
 """
+import io
 import json
 import os
 import sys
@@ -31,7 +32,8 @@ import time
 import urllib.error
 import urllib.request
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 TMP = tempfile.mkdtemp(prefix="atonal-server-")
 os.environ["ATONAL_DB"] = os.path.join(TMP, "billing.db")
@@ -540,13 +542,94 @@ def test_static_allowlist():
               "%s is a directory the allowlist refuses, with no 301 first (%s %r)" % (path, st, loc))
 
 
+def _nginx():
+    """deploy/nginx.conf, parsed just far enough to answer two questions: which location serves a
+    path, and what rate limit it carries. Exact (`=`) locations first, then the longest prefix --
+    nginx's own order for a config with no regex locations, which this one has none of. Only the
+    TLS server block counts; the port-80 block does nothing but redirect."""
+    import re
+    txt = io.open(os.path.join(ROOT, "deploy", "nginx.conf"), encoding="utf-8").read()
+    txt = re.sub(r"#[^\n]*", "", txt)
+    zones = {}
+    for name, n, unit in re.findall(r"limit_req_zone\s+\S+\s+zone=(\w+):\S+\s+rate=(\d+)r/([sm])", txt):
+        zones[name] = float(n) / (60.0 if unit == "m" else 1.0)
+    tls = txt[txt.index("listen 443"):]
+    locs = []
+    for mod, path, body in re.findall(r"location\s+(=\s*)?(\S+)\s*\{([^}]*)\}", tls):
+        m = re.search(r"limit_req\s+zone=(\w+)(?:\s+burst=(\d+))?", body)
+        locs.append({"exact": bool(mod), "path": path,
+                     "zone": m.group(1) if m else None,
+                     "burst": int(m.group(2)) if (m and m.group(2)) else 0})
+    return zones, locs
+
+
+def _serving(locs, path):
+    for L in locs:
+        if L["exact"] and L["path"] == path:
+            return L
+    pre = [L for L in locs if not L["exact"] and path.startswith(L["path"])]
+    return max(pre, key=lambda L: len(L["path"])) if pre else None
+
+
+def test_nginx_config():
+    """The proxy config is part of the product and nothing had ever read it.
+
+    Two mistakes shipped in it, both invisible until production: a `location /webhook` for a
+    route that is actually /paddle/webhook -- so it never matched, and Paddle's posts fell into
+    the general per-IP limit the block existed to keep them out of -- and that general limit,
+    120 requests a minute with a burst of 40, sitting under the viewer's own progress poll. The
+    poll runs every 300ms, one request in flight, which MEASURED at 3.4 requests a second on the
+    real server whether the job was running or queued. Through nginx's limit_req algorithm on
+    that trace, the first refusal lands 30.5 seconds into any wait and 39% of polls are refused
+    after it -- silently, because a dropped poll must never fail an analysis, so what the
+    customer sees is a progress bar that stops during exactly the waits long enough to need one.
+    """
+    import re
+    print("\nnginx config")
+    zones, locs = _nginx()
+
+    # EVERY NAMED LOCATION HAS TO BE A ROUTE. A location for a path the server does not serve is
+    # dead config that looks like policy. "Serves" means some method gets something other than
+    # the generic 404 -- a POST with no body to /paddle/webhook is a 400, which is a route.
+    def exists(path):
+        st_post, body = post_json(path, None, raw=b"")
+        st_get, _ = get(path)
+        generic = (st_post == 404 and (body or {}).get("error") == "not found")
+        return (not generic) or (st_get not in (404, None))
+    named = [L["path"] for L in locs if L["path"] != "/"]
+    dead = [p for p in named if not exists(p)]
+    check(not dead, "every location nginx names is a route the server has (dead: %s)" % dead)
+
+    # THE PROVIDER IS NOT A CLIENT. Paddle posts from a handful of addresses and retries in bulk
+    # after an outage; the signature check is what protects the endpoint, not a per-IP budget
+    # sized for browsers.
+    wh = _serving(locs, "/paddle/webhook")
+    check(wh is not None and wh["path"] != "/" and wh["zone"] is None,
+          "Paddle's webhook has its own location, outside the browser rate limit (served by %r, "
+          "zone %r)" % ((wh or {}).get("path"), (wh or {}).get("zone")))
+
+    # THE POLL HAS TO FIT, WITH ROOM FOR A SECOND PAGE. Read from the viewer rather than
+    # restated here, so changing the interval there without changing the zone fails here.
+    v = io.open(os.path.join(ROOT, "viewer.html"), encoding="utf-8").read()
+    at = v.find("'/progress?job='")
+    m = re.search(r"\},\s*(\d+)\s*\);", v[at:at + 6000]) if at >= 0 else None
+    check(m is not None, "found the viewer's progress poll interval")
+    if m:
+        per_s = 1000.0 / int(m.group(1))
+        pl = _serving(locs, "/progress")
+        rate = zones.get(pl["zone"], float("inf")) if (pl and pl["zone"]) else float("inf")
+        check(rate >= 2 * per_s,
+              "/progress admits two pages polling every %sms (%.2f/s each) -- zone %s allows %.2f/s"
+              % (m.group(1), per_s, pl and pl["zone"], rate))
+
+
 if __name__ == "__main__":
     print("server tests — throwaway db and cache under %s" % TMP)
     for fn in (test_bad_requests_are_free, test_bad_key_is_rejected_before_charging,
                test_failed_analysis_refunds_a_credit, test_failed_analysis_refunds_the_free_tier,
                test_failure_leaves_nothing_behind, test_cache_hit_is_free,
                test_stale_entry_is_not_charged_again, test_redeem_endpoint,
-               test_static_allowlist, test_truncated_upload):
+               test_static_allowlist, test_truncated_upload, test_nginx_config):
         fn()
     print()
     if FAILURES:

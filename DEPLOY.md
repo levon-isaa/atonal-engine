@@ -158,6 +158,13 @@ curl -sS https://atonal.example/health   # {"ok": true, ...}
 - [ ] `journalctl -u atonal` preflight shows CORS locked and the proxy identity you intended
 - [ ] a real purchase in Paddle/Gumroad **sandbox** grants credits end to end
 - [ ] the webhook secret is set — without it the webhook refuses everything, silently
+- [ ] a sandbox purchase shows the webhook delivery as **200** in Paddle's dashboard. A
+      config that proxies the wrong path still grants through the success page, so a
+      purchase "working" does not prove the webhook does — only the delivery log does
+- [ ] `python tests/run.py` passes on the box — `test_server` reads `deploy/nginx.conf` and
+      fails on a location naming a route the server does not have, or a `/progress` zone
+      too tight for the viewer's own poll. Edit the copy in `/etc/nginx` and it no longer
+      does, so keep that copy in step with this one
 - [ ] `curl -X POST https://atonal.example/analyze` with no body returns JSON, not nginx HTML
 - [ ] an oversize upload returns the JSON 413, not nginx's page (means the two caps agree)
 - [ ] the ledger backup has run once and you have restored it somewhere as a test
