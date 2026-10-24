@@ -760,6 +760,7 @@ uniform float u_twoTone;                               // colourway separation a
 uniform vec3 u_bgA,u_bgB; uniform float u_bgAuto,u_groundY,u_scene;
 uniform float u_fig;      // figure-ground: darkens the backdrop behind the subject, see bg()
 uniform float u_colorama,u_cBands,u_cPhase;   // backdrop palette cycling, see bg()
+uniform float u_sheen,u_sheenSlope;           // backdrop specular, see bg()
 // per-band sound reaction: hits (transient) + levels (sustained), one per frequency band
 /* THREE OF THE FIVE BANDS ARE NOT HERE ANY MORE. sub, low and mid reach the shader through
    the LIGHT RIG instead -- u_ambPulse, u_keyPulse and u_fillPulse, each computed in JS from its
@@ -2639,7 +2640,8 @@ vec3 bg(vec3 rd, vec2 sv){
      hand -- no fbm, and this function runs for every pixel in the frame. */
   float cyc=fract(rt*u_cBands+u_cPhase);
   float tri=1.0-abs(2.0*cyc-1.0);
-  vec3 ink=ramp4(c0,c1,c2,c3,mix(rt,tri,u_colorama));
+  float band=mix(rt,tri,u_colorama);
+  vec3 ink=ramp4(c0,c1,c2,c3,band);
   // The sweep used to be ~86% white — a product-shot cyclorama. That white was the real ceiling
   // on colour here: whatever the ramp produced could only ever tint it pale. Pulled down so the
   // backdrop is a colourway in its own right and the ramp reads as colour rather than as a wash.
@@ -2655,6 +2657,55 @@ vec3 bg(vec3 rd, vec2 sv){
   // default curves (arousal .3, tension .2) the emotion terms contribute almost nothing, so a
   // mix driven purely by them reads as no effect at all until a track is actually playing.
   col=mix(col, ink, (0.70+u_tension*0.24+u_epic*0.16)*(0.50+0.50*f));
+  /* LIQUID SHEEN -- the band field lit as a SURFACE rather than printed as colour.
+     Colour cycling alone gives a banded gradient, which is a flat thing with stripes on it. What
+     makes the reference read as molten glass is that its bright streaks sit where the surface
+     turns: the highlight follows the slope, so the eye reconstructs a shape the flat version
+     never had. Colour says what it is made of; the sheen is what says it is a surface.
+
+     THE SLOPE IS FREE HERE. The honest normal needs the field sampled either side of the pixel,
+     which is two more fbm calls on a full-screen pass -- the same bill that made the first
+     dispersion attempt unaffordable. But the GPU already has those neighbours: it shades in 2x2
+     quads, so dFdx/dFdy hand back the screen-space derivative of a value in hand for no extra
+     sampling. The branch is keyed on u_scene, a uniform, so the quad is never split across it
+     and the derivative is well defined.
+
+     Scaled by u_res.y because a derivative is per PIXEL: unscaled, the sheen would strengthen
+     every time the governor dropped the resolution, so the backdrop would change character
+     exactly when the frame got expensive. Per screen height instead, and it holds.
+
+     The creases earn their keep a second time here. At a triangle turning point the derivative
+     reverses, so the normal swings through the light and leaves a bright rim along every band
+     boundary -- the specular edge that reads as the lip of a fold. That is the one place a
+     sawtooth would have been actively wrong: its wrap is a discontinuity, and a derivative
+     across a discontinuity is a single blown pixel, not a rim. */
+  vec2 gr=vec2(dFdx(band),dFdy(band))*u_res.y*u_sheenSlope;
+  /* A RIM ON THE SLOPE, NOT A PHONG LOBE ON THE NORMAL. The first version built a normal from
+     this gradient and raised dot(n,L) to the 30th, which is the textbook move and gives nothing
+     here. Measured: at the slope scale it shipped with, the median gradient rendered as 1 of 255
+     and the lower quartile as 0 -- the surface is essentially flat almost everywhere, so the
+     normal never leaves the zenith, dot(n,L) never leaves its value at normal incidence, and a
+     30th power of a constant is a constant. The two screenshots either side of it were identical.
+
+     The field is not a surface with gentle relief. It is flat over most of its area with a thin
+     set of steep creases at the band turning points, and those creases are the whole structure
+     worth lighting. So light the slope MAGNITUDE and let a saturating response separate them:
+     gm*gm/(1+gm*gm) is near zero across the flat majority and approaches one on the creases, with
+     the knee at gm=1 and no threshold to hand-tune. Calibrated, not guessed -- the typical field
+     gradient measures about 1.0 at unit scale, so 0.10 keeps the flat field far below the
+     knee and lets only the creases climb it. Tuned from there by eye: 0.25 lit too much of the
+     field and the highlights went broad and milky, which costs the colourway its saturation at
+     exactly its brightest points.
+
+     The direction term picks a side. Without it both walls of a crease light equally and the
+     result reads as an outline drawn on the field rather than as light falling across it. */
+  float gm=length(gr);
+  float side=0.5+0.5*dot(gr/max(gm,1e-5), vec2(0.80,0.60));
+  float sp=(gm*gm/(1.0+gm*gm))*side;
+  // Tinted slightly cool and added, not mixed: a highlight is light arriving on top of the
+  // colour underneath it, and mixing toward white would wash the colourway out at exactly the
+  // points meant to be its brightest.
+  col+=vec3(0.92,0.96,1.0)*sp*u_sheen;
   // AURA — a pool of the section's own mood sitting directly behind the subject, breathing on
   // the low band. This is the piece that makes the backdrop read as belonging to the FORM: it
   // is anchored to where the form actually is on screen, not to the frame, and it carries the
@@ -4308,6 +4359,10 @@ const FIG_GROUND=0.26;
    for everything in this function is that it must never be the fastest thing in the frame.
    window.CRAMA / CBANDS override them live for A/B. */
 const COLORAMA=0.55, C_BANDS=2.2, C_PHASE_RATE=0.013;
+/* Backdrop specular -- the band field lit as a surface, see the note in bg(). SHEEN is how bright
+   the highlight is; SLOPE is how steeply the field is read as tilting, which sets how WIDE the
+   streaks are rather than how bright. window.SHEEN / SHEENS override them live for A/B. */
+const SHEEN=0.45, SHEEN_SLOPE=0.10;
 /* MEASURE THIS IN DELTA-E, NOT IN LUMINANCE, AND THE ANSWER CHANGES. The first pass at this
    compared luminance either side of the silhouette and concluded the warm and neutral palettes
    were both near-failures. Half of that was an artefact of the metric. Lattice in pearl, mean
@@ -10267,6 +10322,8 @@ function frame(){
   // Phase off the SAME clock the field drifts on, so freezing time freezes the bands too --
   // TFREEZE has to pin every moving thing in the frame or an A/B compares two different scenes.
   gl.uniform1f(US('u_cPhase'), time*C_PHASE_RATE);
+  gl.uniform1f(US('u_sheen'),      (window.SHEEN!==undefined)?window.SHEEN:SHEEN);
+  gl.uniform1f(US('u_sheenSlope'), (window.SHEENS!==undefined)?window.SHEENS:SHEEN_SLOPE);
   gl.uniform1f(US('u_groundY'),groundY);
   // brighter, more positive sections separate further into two colourways
   gl.uniform1f(US('u_twoTone'), 0.30+valence*0.45+epic*0.15);
