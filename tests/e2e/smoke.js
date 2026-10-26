@@ -67,7 +67,9 @@ const check = (name, ok, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} 
     const d = await page({ viewport: { width: 1440, height: 900 } });
     await d.goto(BASE + '/desk/'); await d.waitForSelector('#li-email');
     await d.fill('#li-email', OWNER[0]); await d.fill('#li-pw', 'nope'); await d.click('#li-go');
-    await d.waitForFunction(() => /match/.test(document.querySelector('#li-err')?.textContent || ''));
+    // Wait with locators, not waitForFunction: older Playwright evaluates its predicate with eval(),
+    // which the desk's Content-Security-Policy rightly refuses.
+    await d.locator('#li-err', { hasText: 'match' }).waitFor();
     check('a wrong password keeps the email filled in', (await d.$eval('#li-email', e => e.value)) === OWNER[0]);
     await d.fill('#li-pw', OWNER[1]); await d.click('#li-go'); await d.waitForSelector('.cal-col');
     await d.click('#nav-reminders'); await d.click('#rr-week'); await d.waitForSelector('.rem-row');
@@ -76,7 +78,7 @@ const check = (name, ok, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} 
     // ---- client cancels, desk is told
     await other.click('#bk-mine'); await other.waitForSelector('[data-act="cancel"]');
     await other.click('[data-act="cancel"]'); await other.click('#cancel-yes');
-    await d.waitForFunction(() => /cancelled their/.test(document.querySelector('#toasts')?.textContent || ''), null, { timeout: 10000 }).then(() => check('the desk hears about an online cancellation', true), () => check('the desk hears about an online cancellation', false));
+    await d.locator('#toasts', { hasText: 'cancelled their' }).waitFor({ timeout: 10000 }).then(() => check('the desk hears about an online cancellation', true), () => check('the desk hears about an online cancellation', false));
     await d.click('#logout'); await d.waitForSelector('#li-email');
     check('signing out returns to the sign-in form', true);
   } catch (e) {
