@@ -1,105 +1,115 @@
 # Going live
 
-Two ways. Pick one.
+You need a domain, a small Ubuntu server and about 30 minutes. One command sets the server up;
+Caddy gets HTTPS certificates for the sales site and for every studio's address by itself.
 
-- **Your own server** (a small VM): Rota runs under systemd on 127.0.0.1, nginx in front does TLS
-  and request limits. Same shape as most single-box Python apps.
-- **A container platform** (Fly.io, Render, Railway, or Docker on a VM): the `Dockerfile` runs Rota
-  on port 8780 and the platform does TLS.
+## 1. A server
 
-Either way, the whole studio lives in one SQLite file. **Put it on persistent storage and back it up.**
+Any provider's smallest Ubuntu 24.04 machine is enough to start: 1 vCPU, 1–2 GB of memory, 20 GB
+of disk. That is about €5 a month at Hetzner or DigitalOcean.
 
-## What one studio needs
+Rota stores salons' client names and phone numbers, so where the server sits matters under
+Armenia's personal data law. Ask your lawyer about the country before you rent one (the go-to-market
+plan has the details).
 
-Very little. One process, a few threads, SQLite. The smallest VM any provider sells is enough:
-1 vCPU, 512 MB RAM, a few hundred MB of disk. Python 3.10+, no packages to install.
+## 2. DNS
 
-## Option A: your own server
+At the company where you bought the domain, add two records pointing to the server's IP address:
 
-**1. User and code**
+| Name | Type | Value |
+|---|---|---|
+| `rota.am` (often written `@`) | A | your server's IPv4 address |
+| `*.rota.am` (often written `*`) | A | the same address |
 
-```bash
-sudo adduser --system --group --home /srv/rota rota
-sudo -u rota git clone <your remote> /srv/rota       # the rota branch, or its own repo
-sudo -u rota mkdir -p /srv/rota/data
-```
+The `*` record is what makes every studio's address (`nairi.rota.am`) work without touching DNS
+again. If your registrar's DNS can't do `*` records, move the domain's DNS to Cloudflare (free) and
+add them there, with the proxy (orange cloud) switched off.
 
-**2. Settings, outside the repo**
+## 3. Set it up
 
-```bash
-sudo install -d -m 0750 /etc/rota
-sudo install -m 0600 /dev/null /etc/rota/rota.env
-```
-
-`/etc/rota/rota.env`:
-
-```ini
-ROTA_ORIGIN=https://book.example.am
-ROTA_TRUST_PROXY=1
-ROTA_SECRET=<output of: python3 -c "import secrets; print(secrets.token_urlsafe(32))">
-```
-
-`ROTA_TRUST_PROXY=1` is required behind nginx; without it every client looks like 127.0.0.1 and
-they all share one rate limit. Never set it when nothing sits in front of the app: anyone could
-then claim any address.
-
-**3. First staff account**
+Copy the code to the server and run the setup script:
 
 ```bash
-cd /srv/rota && sudo -u rota python3 manage.py create-user you@studio.am --role owner
+ssh root@YOUR_SERVER
+git clone --branch rota --single-branch https://github.com/levon-isaa/atonal-engine.git rota
+cd rota
+sudo deploy/setup.sh rota.am you@example.com
 ```
 
-Then either `seed-sample` to explore, or nothing, and set the studio up in the desk.
+If the repository is private, either add a [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+and clone over SSH, or copy the folder from your computer: `scp -r rota-app root@YOUR_SERVER:rota`.
 
-**4. systemd**
+The script installs Python and Caddy, creates a `rota` user, copies the code to `/srv/rota/app`,
+writes `/etc/rota/rota.env` with a new secret, starts the server, a nightly backup and an hourly
+demo reset, and configures Caddy. Then:
 
 ```bash
-sudo cp deploy/rota.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now rota
-curl -s http://127.0.0.1:8780/api/health
+sudo rota create-admin you@example.com     # your account for https://rota.am/admin/
+sudo nano /etc/rota/rota.env               # fill in ROTA_CONTACT_PHONE and ROTA_CONTACT_EMAIL, in quotes
+sudo systemctl restart rota
 ```
 
-**5. nginx and a certificate**
+Open `https://rota.am`, `https://demo.rota.am` and `https://rota.am/admin/`. The first visit to
+each address takes a few seconds while its certificate is issued.
+
+## Updating
 
 ```bash
-sudo cp deploy/nginx.conf /etc/nginx/sites-available/rota     # change book.example.am to your domain
-sudo ln -s /etc/nginx/sites-available/rota /etc/nginx/sites-enabled/
-sudo certbot certonly --webroot -w /var/www/certbot -d book.example.am
-sudo nginx -t && sudo systemctl reload nginx
+cd ~/rota && git pull && sudo deploy/setup.sh rota.am you@example.com
 ```
 
-**6. Backups**
+The script replaces the code and keeps the settings, the secret and every studio's data.
 
-The database is `data/rota.db`. Copy it safely while the server runs:
+## Backups
+
+Every night at 03:30 the server copies every database to `/var/backups/rota/<date>/` and keeps 14
+days. **That is on the same machine: copy it somewhere else too.** Your provider's automatic server
+backups (about 20% extra a month) are the easiest way; `rclone` to any cloud storage also works.
+
+Keep a copy of `/etc/rota/rota.env` with the backups. Without its `ROTA_SECRET`, clients' existing
+booking links stop working (the bookings themselves are fine).
+
+To restore: `sudo systemctl stop rota`, copy `platform.db` and the `studios/` folder from a backup
+into `/srv/rota/data/`, `sudo chown -R rota:rota /srv/rota/data`, `sudo systemctl start rota`.
+Try this once before you have real customers.
+
+## Keeping an eye on it
+
+- `systemctl status rota` and `journalctl -u rota -f` show the server and its requests.
+- Point a free uptime monitor (UptimeRobot, Better Stack) at `https://rota.am/api/health`, so you
+  hear about an outage before your studios do.
+- `sudo rota list-studios` lists every company from the command line; the admin page shows more.
+
+## Day-to-day commands
 
 ```bash
-sudo -u rota python3 /srv/rota/manage.py backup /srv/rota/data/backup-$(date +%F).db
+sudo rota set-password --studio nairi anna@nairi.am    # an owner forgot their password
+sudo rota set-status nairi paused                      # stop a studio's online booking
+sudo rota set-status nairi active                      # a paying customer
+sudo rota delete-studio nairi --yes                    # remove a company (a copy stays in data/deleted/)
 ```
 
-Run that from cron daily and copy the file off the machine. Keep the `ROTA_SECRET` with the
-backups: without it, clients' existing booking links stop working (the bookings themselves are fine).
+## Limits to know
+
+- **One server.** Rate limits live in memory and the data on one disk, so run a single copy.
+  One small server handles hundreds of studios.
+- **New studio certificates.** Let's Encrypt issues at most 50 certificates a week for one domain,
+  so at most about 50 new studios a week can get their address working. Past that, switch Caddy to
+  one wildcard certificate for `*.rota.am`; that needs your DNS provider's API.
+- **Email.** Rota sends none: no sign-up confirmations, no password-reset emails.
 
 ## Option B: a container
+
+The `Dockerfile` runs Rota on port 8780 with its data in `/data`:
 
 ```bash
 docker build -t rota .
 docker run -d --name rota -p 127.0.0.1:8780:8780 -v rota-data:/data \
-  -e ROTA_ORIGIN=https://book.example.am -e ROTA_SECRET=<secret> rota
-docker exec -it rota python manage.py create-user you@studio.am --role owner
+  -e ROTA_PUBLIC_URL=https://rota.am -e ROTA_SECRET=<a long random string> rota
+docker exec -it rota python manage.py create-admin you@example.com
+docker exec rota python manage.py reset-demo
 ```
 
-On Fly.io, Render or Railway: deploy from this repo's Dockerfile, attach a persistent volume at
-`/data`, set `ROTA_ORIGIN` and `ROTA_SECRET`, and run the `create-user` command once from the
-platform's console. The image already sets `ROTA_TRUST_PROXY=1`, so check that your platform puts
-the real client address in `X-Real-IP`; if it uses another header, rate limits will be shared.
-
-Run **one** instance. Rota keeps rate limits in memory and SQLite on one disk; two copies would
-each have their own.
-
-## After launch
-
-- Share `https://book.example.am/` with clients: on Instagram, Google Maps, WhatsApp Business.
-- Staff sign in at `/desk/`. Add people with `manage.py create-user`; only owners change settings,
-  the team and services.
-- Have a native speaker read the Armenian and Russian text (`web/book/i18n.js` and the reminder
-  templates in Settings) before you announce it.
+In front of it you need a proxy that serves HTTPS for `rota.am` and `*.rota.am` and passes the
+client's address as `X-Real-IP`. `deploy/Caddyfile` does exactly that. A hosting platform has to
+support wildcard domains to do the same. Run one instance, on a persistent volume.

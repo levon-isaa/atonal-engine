@@ -37,7 +37,7 @@
 @media (max-width: 979px) { .hero { padding: 18px; } .hero h1 { font-size: 26px; } .hero dl { display: none; } }
 
 .tabs { display: flex; gap: 4px; padding: 5px; border-radius: 999px; background: var(--card); box-shadow: var(--shadow); position: sticky; top: 8px; z-index: 20; }
-.tabs button { flex: 1 1 0; min-width: 0; border: 0; background: none; min-height: 44px; padding: 0 10px; border-radius: 999px; font-weight: 800; font-size: 15px; color: var(--ink-2); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tabs button { flex: 1 1 auto; min-width: 0; border: 0; background: none; min-height: 44px; padding: 0 10px; border-radius: 999px; font-weight: 800; font-size: 15px; color: var(--ink-2); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tabs button:hover { color: var(--ink); }
 .tabs button[aria-current="page"] { background: var(--accent); color: var(--accent-ink); }
 .count { font-size: 12px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); display: inline-grid; place-items: center; }
@@ -190,3 +190,9 @@
 .member small { color: var(--ink-3); }
 .member p { margin: 4px 0 0; color: var(--ink-2); font-size: 14.5px; }
 .foot { text-align: center; color: var(--ink-3); font-size: 13px; margin: 8px 0 0; }
+
+/* a studio whose online booking is paused */
+.main.paused { max-width: 560px; margin: 32px auto; padding: 0 16px; }
+.main.paused .card { gap: 12px; }
+.main.paused h1 { margin: 0; font-size: 22px; }
+.foot a { color: inherit; font-weight: 700; }

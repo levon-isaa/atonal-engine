@@ -1,0 +1,44 @@
+# Caddy in front of Rota: HTTPS for the sales site and for every studio's own address.
+# deploy/setup.sh fills in __DOMAIN__ and __EMAIL__ and installs this as /etc/caddy/Caddyfile.
+#
+# Each studio gets its own certificate the first time someone opens its address ("on demand").
+# Caddy asks Rota first, so certificates are only requested for studios that exist.
+{
+	email __EMAIL__
+	on_demand_tls {
+		ask http://127.0.0.1:8780/api/tls-check
+	}
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 20s
+			write 60s
+			idle 2m
+		}
+	}
+}
+
+(rota) {
+	request_body {
+		max_size 64KB
+	}
+	encode gzip
+	reverse_proxy 127.0.0.1:8780 {
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+__DOMAIN__ {
+	import rota
+}
+
+www.__DOMAIN__ {
+	redir https://__DOMAIN__{uri} permanent
+}
+
+*.__DOMAIN__ {
+	tls {
+		on_demand
+	}
+	import rota
+}

@@ -1,6 +1,9 @@
 .git
+.github
 data
 *.db*
 node_modules
 tests
+tools
+deploy
 __pycache__

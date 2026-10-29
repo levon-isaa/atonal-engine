@@ -50,7 +50,7 @@ def check_login(row, password: str) -> bool:
     return verify_password(password, row["pw"])
 
 
-def _token_hash(token: str) -> str:
+def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -60,7 +60,7 @@ def create_session(c, user_id: int) -> str:
     c.execute("DELETE FROM sessions WHERE expires < ?", (now,))
     c.execute(
         "INSERT INTO sessions (token_hash, user_id, created, expires) VALUES (?, ?, ?, ?)",
-        (_token_hash(token), user_id, now, now + SESSION_DAYS * 86400),
+        (token_hash(token), user_id, now, now + SESSION_DAYS * 86400),
     )
     return token
 
@@ -70,19 +70,19 @@ def session_user(c, token: str | None):
         return None
     row = c.execute(
         "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires > ?",
-        (_token_hash(token), time.time()),
+        (token_hash(token), time.time()),
     ).fetchone()
     return row
 
 
 def end_session(c, token: str | None) -> None:
     if token:
-        c.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
+        c.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash(token),))
 
 
 class RateLimiter:
-    """Sliding-window counters kept in memory. One process serves the app, so this is enough;
-    nginx limits sit in front of it as well (deploy/nginx.conf)."""
+    """Sliding-window counters kept in memory. One process serves every studio, so this is enough;
+    Caddy in front caps request sizes and slow clients (deploy/Caddyfile)."""
 
     def __init__(self):
         self._hits: dict[str, list[float]] = {}

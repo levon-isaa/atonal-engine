@@ -130,7 +130,7 @@ h1, h2, h3 { text-wrap: balance; }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; border: 0; margin: 0; padding: 0; }
 .field > label, .field > legend, .lbl { font-size: 12px; font-weight: 600; color: var(--ink-2); letter-spacing: .02em; padding: 0; }
 .field small { color: var(--ink-3); font-size: 12px; }
-input[type="text"], input[type="tel"], input[type="email"], input[type="date"], input[type="search"], input:not([type]), select, textarea {
+input[type="text"], input[type="tel"], input[type="email"], input[type="password"], input[type="date"], input[type="search"], input:not([type]), select, textarea {
   height: 38px; width: 100%; min-width: 0; border: 1.5px solid var(--rule-strong); border-radius: 14px; background: var(--field); padding: 0 12px; color: var(--ink);
 }
 textarea { height: auto; padding: 8px 10px; resize: vertical; line-height: 1.45; }
@@ -234,6 +234,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .appt.past { opacity: .72; }
 .appt.past:hover { opacity: 1; }
 .appt.s-arrived:not(.paid) { background: var(--k-solid); border-color: var(--k-solid); color: var(--on-solid); opacity: 1; }
+.appt.s-arrived:not(.paid) .t, .appt.s-arrived:not(.paid) .a2 { opacity: 1; } /* full-strength text on the solid fill keeps it above 4.5:1 */
 .appt.s-noshow { opacity: .55; border-style: dashed; }
 .appt.s-noshow b { text-decoration: line-through; }
 .appt.dragging { z-index: 20; box-shadow: var(--shadow); cursor: grabbing; opacity: .95; }
@@ -429,3 +430,27 @@ details.tr { border: 1px solid var(--rule); border-radius: 16px; padding: 10px 1
 details.tr summary { cursor: pointer; font-weight: 700; color: var(--ink-2); }
 details.tr[open] summary { margin-bottom: 10px; }
 details.tr .tr-grid { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- new studios: getting started, demo, team access ---- */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.banner.info { background: var(--pen-soft); color: var(--ink); }
+.banner.info .ic { color: var(--pen); }
+.banner a { color: inherit; font-weight: 700; }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; max-width: 720px; }
+.steps li { display: flex; gap: 14px; align-items: flex-start; background: var(--sheet); border: 1px solid var(--rule); border-radius: 20px; padding: 16px 18px; }
+.steps li > div { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 0; flex: 1; }
+.steps h2 { margin: 0; font: 700 16px/1.3 var(--f-display); }
+.steps p { margin: 0; color: var(--ink-2); max-width: 60ch; }
+.steps .tick { flex: none; width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--rule-strong); display: grid; place-items: center; margin-top: 1px; }
+.steps li.done .tick { background: var(--ok); border-color: var(--ok); color: var(--sheet); }
+.steps li.done h2 { color: var(--ink-2); }
+.linkbox { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 100%; }
+.linkbox code { font: 600 13px/1.3 var(--f-body); background: var(--sheet-2); border: 1px solid var(--rule); border-radius: 10px; padding: 7px 10px; overflow-wrap: anywhere; }
+.demo-box { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 18px; background: var(--pen-soft); }
+.demo-box p { color: var(--ink); }
+.users { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.users li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--rule); flex-wrap: wrap; }
+.users li:first-child { border-top: 0; }
+.users li > div:first-child { display: flex; flex-direction: column; min-width: 0; }
+.users small { color: var(--ink-3); overflow-wrap: anywhere; }
+.users .acts { display: flex; gap: 6px; }

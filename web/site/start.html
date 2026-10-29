@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="hy">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title data-t="t_start">Սկսեք անվճար փորձարկումը · Rota</title>
+<meta name="description" data-t-attr="content:st_sub" content="Երկու րոպե։ Դուք կհայտնվեք ձեր սրահի վահանակում՝ պատրաստ աշխատանքի։">
+<meta name="theme-color" content="#f6f3f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151219" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Armenian:wght@400;600;700;800&family=Nunito:wght@400;600;700;800&display=swap">
+<link rel="stylesheet" href="/assets/shared/theme.css?v=1.1.0">
+<link rel="stylesheet" href="/assets/site/site.css?v=1.1.0">
+</head>
+<body data-title="t_start">
+<a class="skip" href="#main" data-t="skip">Անցնել բովանդակությանը</a>
+<header class="top">
+  <div class="wrap top-in">
+    <a class="logo" href="/" aria-label="Rota"><span class="mark" aria-hidden="true">R</span><b>Rota</b></a>
+    <div class="top-acts">
+      <div class="langs" role="group" data-t-attr="aria-label:lang_label" aria-label="Լեզու">
+        <button type="button" data-lang="hy" lang="hy" aria-pressed="true" aria-label="Հայերեն">ՀԱՅ</button><button type="button" data-lang="ru" lang="ru" aria-pressed="false" aria-label="Русский">РУС</button><button type="button" data-lang="en" lang="en" aria-pressed="false" aria-label="English">ENG</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="wrap start" tabindex="-1">
+  <div class="card form-card">
+    <h1 data-t="st_title">Սկսեք անվճար փորձարկումը</h1>
+    <p class="lead" data-t="st_sub">Երկու րոպե։ Դուք կհայտնվեք ձեր սրահի վահանակում՝ պատրաստ աշխատանքի։</p>
+    <form id="signup" novalidate>
+      <div class="field">
+        <label for="su-business" data-t="st_business">Սրահի անվանումը</label>
+        <input id="su-business" name="business" autocomplete="organization" maxlength="80" data-t-attr="placeholder:st_business_ph" placeholder="օրինակ՝ Ատելիե Նաիրի" aria-describedby="err-business">
+        <p class="field-err" id="err-business"></p>
+      </div>
+      <div class="field">
+        <label for="su-slug" data-t="st_slug">Ձեր ամրագրման էջի հասցեն</label>
+        <div class="addr"><input id="su-slug" name="slug" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="30" aria-describedby="slug-help slug-status err-slug"><span class="suffix" data-domain></span></div>
+        <small id="slug-help" data-t="st_slug_help">Լատինատառ, թվեր և գծիկներ։ Այն կտեսնեն հաճախորդները։</small>
+        <p id="slug-status" class="slug-status" aria-live="polite"></p>
+        <p class="field-err" id="err-slug"></p>
+      </div>
+      <fieldset class="field">
+        <legend data-t="st_kind">Ի՞նչ սրահ է</legend>
+        <div class="kinds">
+          <label><input type="radio" name="kind" value="hair"><span data-t="k_hair">Վարսավիրանոց</span></label>
+          <label><input type="radio" name="kind" value="barber"><span data-t="k_barber">Բարբերշոփ</span></label>
+          <label><input type="radio" name="kind" value="nails"><span data-t="k_nails">Եղունգներ</span></label>
+          <label><input type="radio" name="kind" value="brows"><span data-t="k_brows">Հոնքեր և թարթիչներ</span></label>
+          <label><input type="radio" name="kind" value="skin"><span data-t="k_skin">Կոսմետոլոգիա</span></label>
+          <label><input type="radio" name="kind" value="massage"><span data-t="k_massage">Մերսում</span></label>
+          <label><input type="radio" name="kind" value="other"><span data-t="k_other">Այլ</span></label>
+        </div>
+        <small data-t="st_kind_help">Կավելացնենք նախնական ծառայություններ, որոնք կարող եք փոխել։</small>
+      </fieldset>
+      <div class="row2">
+        <div class="field">
+          <label for="su-name" data-t="st_name">Ձեր անունը</label>
+          <input id="su-name" name="name" autocomplete="name" maxlength="80" aria-describedby="err-name">
+          <p class="field-err" id="err-name"></p>
+        </div>
+        <div class="field">
+          <label for="su-phone" data-t="st_phone">Հեռախոս</label>
+          <input id="su-phone" name="phone" type="tel" autocomplete="tel" maxlength="30" placeholder="+374 91 234 567" aria-describedby="phone-help err-phone">
+          <small id="phone-help" data-t="st_phone_help">Կզանգենք կամ կգրենք WhatsApp-ով՝ կարգավորելու հարցում օգնելու համար։</small>
+          <p class="field-err" id="err-phone"></p>
+        </div>
+      </div>
+      <div class="field">
+        <label for="su-email" data-t="st_email">Էլ. փոստ</label>
+        <input id="su-email" name="email" type="email" autocomplete="email" maxlength="200" aria-describedby="email-help err-email">
+        <small id="email-help" data-t="st_email_help">Դրանով եք մուտք գործելու։</small>
+        <p class="field-err" id="err-email"></p>
+      </div>
+      <div class="field">
+        <label for="su-password" data-t="st_password">Գաղտնաբառ</label>
+        <div class="pw"><input id="su-password" name="password" type="password" autocomplete="new-password" maxlength="200" aria-describedby="pw-help err-password"><button type="button" class="btn ghost sm" id="pw-toggle" aria-pressed="false" aria-controls="su-password" data-t="st_show">Ցույց տալ</button></div>
+        <small id="pw-help" data-t="st_password_help">Առնվազն 10 նիշ։</small>
+        <p class="field-err" id="err-password"></p>
+      </div>
+      <div class="field">
+        <label for="su-lang" data-t="st_lang">Ամրագրման էջը բացվում է</label>
+        <select id="su-lang" name="lang"><option value="hy" lang="hy">Հայերեն</option><option value="ru" lang="ru">Русский</option><option value="en" lang="en">English</option></select>
+      </div>
+      <div class="hp" aria-hidden="true"><label for="su-web">Website</label><input id="su-web" name="website" tabindex="-1" autocomplete="off"></div>
+      <p class="form-err" id="form-err" role="alert"></p>
+      <button class="btn primary lg wide" id="su-go" data-t="st_submit">Ստեղծել իմ սրահը</button>
+      <p class="have"><span data-t="st_have">Արդեն ունե՞ք սրահ։</span> <a href="/#signin" data-t="st_signin">Մուտք</a></p>
+    </form>
+  </div>
+  <aside class="next">
+    <h2 data-t="st_next_title">Ինչ է լինելու հետո</h2>
+    <ol>
+      <li data-t="st_next1">Կհայտնվեք ձեր սրահի վահանակում՝ ձեր տեսակի սրահին բնորոշ ծառայություններով։</li>
+      <li data-t="st_next2">Կճշտեք գները և կավելացնեք թիմը՝ մոտ տասը րոպե։</li>
+      <li data-t="st_next3">Կկիսվեք ամրագրման հղումով։ Եթե ցանկանաք, կզանգենք և կօգնենք։</li>
+    </ol>
+  </aside>
+</main>
+<script src="/assets/site/i18n.js?v=1.1.0"></script>
+<script src="/assets/site/site.js?v=1.1.0"></script>
+</body>
+</html>

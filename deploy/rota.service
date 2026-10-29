@@ -1,10 +1,10 @@
-# systemd unit for Rota.
+# systemd unit for Rota. deploy/setup.sh installs it; by hand:
 #
 #   sudo cp deploy/rota.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now rota
 #
-# Loopback only. TLS, request limits and slow-client timeouts belong to nginx in front of it
-# (deploy/nginx.conf, DEPLOY.md). Never set ROTA_HOST to a public address here.
+# Loopback only. TLS, body limits and slow-client timeouts belong to Caddy in front of it
+# (deploy/Caddyfile, DEPLOY.md). Never set ROTA_HOST to a public address here.
 [Unit]
 Description=Rota booking server
 After=network-online.target
@@ -14,16 +14,16 @@ Wants=network-online.target
 Type=simple
 User=rota
 Group=rota
-WorkingDirectory=/srv/rota
-# Settings and the link-signing secret live here, root-owned and 0600, never in the repo.
+WorkingDirectory=/srv/rota/app
+# Settings and the link-signing secret live here, root-owned and 0640, never in the repo.
 EnvironmentFile=/etc/rota/rota.env
-ExecStart=/usr/bin/python3 /srv/rota/server.py
+ExecStart=/usr/bin/python3 /srv/rota/app/server.py
 Restart=always
 RestartSec=3
-# One small process; SQLite and a few threads. 512 MB is generous.
+# One process, a few threads, one SQLite file per studio. 512 MB is generous for hundreds of studios.
 MemoryMax=512M
 
-# --- hardening: read the code, write only the database folder ---
+# --- hardening: read the code, write only the data folder ---
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true

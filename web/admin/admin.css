@@ -1,0 +1,31 @@
+/* Rota's own admin page: the companies that signed up. */
+.wrap { width: min(1180px, 100%); margin: 0 auto; padding: 0 16px; }
+.top { display: flex; align-items: center; gap: 12px; min-height: 64px; flex-wrap: wrap; }
+.logo { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; }
+.mark { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); font-weight: 800; }
+.top .me { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--ink-3); font-weight: 600; font-size: 14px; }
+.signin { max-width: 400px; margin: 10vh auto; padding: 28px; display: flex; flex-direction: column; gap: 14px; }
+.signin h1 { margin: 0; font-size: 24px; font-weight: 800; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 8px 0 20px; }
+.stat { padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
+.stat b { font-size: 26px; font-weight: 800; font-family: var(--f-num); }
+.stat span { color: var(--ink-3); font-size: 13px; font-weight: 700; }
+.bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.bar .filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.bar .filters button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.bar input[type="search"] { max-width: 280px; min-height: 40px; }
+.list { display: flex; flex-direction: column; gap: 12px; padding-bottom: 48px; }
+.studio { padding: 18px 20px; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr); gap: 14px 20px; }
+.studio h2 { margin: 0; font-size: 18px; font-weight: 800; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.studio .sub { color: var(--ink-3); font-size: 13.5px; font-weight: 600; }
+.studio dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; font-size: 14px; }
+.studio dt { color: var(--ink-3); font-weight: 700; }
+.studio dd { margin: 0; overflow-wrap: anywhere; }
+.studio .acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.studio .acts select { min-height: 36px; width: auto; padding: 0 10px; }
+.studio .notes { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; }
+.studio .notes label { font-size: 13px; font-weight: 700; color: var(--ink-3); }
+.studio textarea { min-height: 44px; }
+.warn-txt { color: var(--warn); font-weight: 700; }
+.bad-txt { color: var(--bad); font-weight: 700; }
+@media (max-width: 900px) { .studio { grid-template-columns: minmax(0, 1fr); } }

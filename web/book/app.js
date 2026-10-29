@@ -87,6 +87,7 @@ const P = {
   eye: '<path d="M2.5 12S6 6 12 6s9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/>',
   drop: '<path d="M12 3.5s6 6.4 6 10.8a6 6 0 0 1-12 0C6 9.9 12 3.5 12 3.5z"/>',
   spark: '<path d="M12 3v5M12 16v5M3 12h5M16 12h5M6 6l3 3M15 15l3 3M18 6l-3 3M9 15l-3 3"/>',
+  phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>', x: '<path d="M6 6l12 12M18 6 6 18"/>',
   left: '<path d="m14.5 6-6 6 6 6"/>', right: '<path d="m9.5 6 6 6-6 6"/>', pin: '<path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0 1 13 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
   chat: '<path d="M20.5 11.6a8.4 8.4 0 0 1-12.3 7.4L3.5 20.5l1.5-4.5a8.4 8.4 0 1 1 15.5-4.4z"/>', cal: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
@@ -198,13 +199,17 @@ function view() {
     if (S.fatal) return `<div class="site"><div class="card"><div class="empty"><h2>${t('errGeneric')}</h2><button type="button" class="btn primary" data-act="reload">↻</button></div></div></div>`;
     return `<div class="site"><div class="loading">${t('loading')}</div></div>`;
   }
+  if (S.studio.paused) {
+    const tel = String(S.studio.phone || '').replace(/[^\d+]/g, '');
+    return `<div class="site">${topbar()}<main class="main paused" id="main" tabindex="-1"><section class="card empty" role="status"><h1 id="step-title" tabindex="-1">${esc(tr(S.studio, 'name'))}</h1><p>${t('paused')}</p>${tel ? `<a class="btn primary" href="tel:${esc(tel)}">${icon('phone')}${t('callStudio')} ${esc(S.studio.phone)}</a>` : ''}</section></main></div>`;
+  }
   const bar = S.tab === 'book' ? bookBar() : '';
   const main = S.tab === 'mine' ? mineView() : S.tab === 'info' ? infoView() : bookView();
   return `<div class="site${bar ? ' has-bar' : ''}">
     ${topbar()}
     <div class="layout">
       <aside class="side">${hero()}${S.tab === 'book' ? visitCard('side') : ''}</aside>
-      <main class="main" id="main" tabindex="-1">${tabs()}${main}${S.studio.sample ? `<p class="foot">${t('sample')}</p>` : ''}</main>
+      <main class="main" id="main" tabindex="-1">${tabs()}${main}${S.studio.demo ? `<p class="foot">${t('demo')} <a href="${esc(location.protocol + '//' + location.host.replace(/^demo\./, '') + '/')}">${t('demoLink')}</a></p>` : S.studio.sample ? `<p class="foot">${t('sample')}</p>` : ''}</main>
     </div>
   </div>${bar}`;
 }
@@ -569,6 +574,6 @@ setInterval(() => { if (S.studio && S.tab !== 'book') schedule(); }, 60000);
   } catch (e) { S.fatal = e; }
   applyLang();
   render();
-  if (S.studio) loadMine();
+  if (S.studio && !S.studio.paused) loadMine();
 })();
 })();

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Rota's admin commands on the server, with its settings loaded:
+#   sudo rota create-admin you@example.com
+#   sudo rota list-studios
+#   sudo rota set-status nairi active
+# (see manage.py for the full list). deploy/setup.sh installs this as /usr/local/bin/rota.
+set -eu
+[ "$(id -u)" = 0 ] || { echo "Run it with sudo: sudo rota $*" >&2; exit 1; }
+cd /srv/rota/app
+exec runuser -u rota -- env ROTA_ENV_FILE=/etc/rota/rota.env /usr/bin/python3 manage.py "$@"

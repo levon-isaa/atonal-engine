@@ -1,0 +1,12 @@
+# Copies every Rota database to /var/backups/rota/<date>/ and keeps 14 days. Run by rota-backup.timer.
+# Copy that folder off this server too (DEPLOY.md, "Backups").
+[Unit]
+Description=Back up Rota's databases
+
+[Service]
+Type=oneshot
+User=rota
+Group=rota
+WorkingDirectory=/srv/rota/app
+EnvironmentFile=/etc/rota/rota.env
+ExecStart=/usr/bin/python3 /srv/rota/app/manage.py backup /var/backups/rota --keep 14

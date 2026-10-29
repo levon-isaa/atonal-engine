@@ -79,12 +79,13 @@ const S = {
   settings: null, staff: [], services: [], clients: [], appts: [],
   ready: false, mode: 'connecting', pending: 0,
   user: null, rev: 0, login: { error: '', email: '' },
+  studio: null, paused: '', users: null, userForm: null,
   drawer: null,
   cq: '', cf: 'all', cs: 'last', remRange: 'tomorrow',
   range: 14,
   scrolledFor: null,
 };
-const VIEWS = ['calendar', 'reminders', 'clients', 'services', 'team', 'reports', 'settings'];
+const VIEWS = ['start', 'calendar', 'reminders', 'clients', 'services', 'team', 'reports', 'settings'];
 { const h = (location.hash || '').slice(1); if (VIEWS.includes(h)) S.view = h; }
 
 const cfg = () => ({ ...DEFAULTS, ...(S.settings || {}) });
@@ -207,7 +208,8 @@ async function sync(full = false) {
     if (changed.length) announce(changed);
     if (d.rows.length || first) scheduleRender();
   } catch (e) {
-    if (e.status !== 401 && S.mode !== 'offline') { S.mode = 'offline'; scheduleRender(); }
+    if (e.code === 'paused') { clearInterval(syncTimer); S.user = null; S.paused = e.message; S.mode = 'paused'; render(); }
+    else if (e.status !== 401 && S.mode !== 'offline') { S.mode = 'offline'; scheduleRender(); }
   } finally { syncing = false; }
 }
 function startSync() {
@@ -216,10 +218,31 @@ function startSync() {
   syncTimer = setInterval(() => { if (!document.hidden) sync(); }, 4000);
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
-function signedOut() { clearInterval(syncTimer); S.user = null; S.ready = false; S.mode = 'signedout'; S.drawer = null; closeDrawer(); render(); }
+function signedOut() { clearInterval(syncTimer); S.user = null; S.ready = false; S.mode = 'signedout'; S.drawer = null; S.users = null; closeDrawer(); render(); loadStudio(); }
+async function loadStudio() {
+  if (S.studio) return;
+  try { S.studio = await api('/api/public/studio', { quiet: true }); render(); } catch (e) { /* the sign-in form works without it */ }
+}
+function signedIn(user, view) {
+  S.user = user; S.login.error = ''; S.mode = 'connecting';
+  if (view) { S.view = view; try { history.replaceState(null, '', '#' + view); } catch (e) { /* sandboxed */ } }
+  render(); startSync();
+}
 async function boot() {
+  // A new owner arrives from the sign-up page with a one-time link: #welcome=<ticket>.
+  const ticket = (/^#welcome=([\w-]{20,200})$/.exec(location.hash || '') || [])[1];
+  if (ticket) {
+    try { history.replaceState(null, '', location.pathname); } catch (e) { /* sandboxed */ }
+    try { return signedIn(await api('/api/auth/ticket', { method: 'POST', body: { ticket }, quiet: true }), 'start'); }
+    catch (e) { if (e.status === 401) S.login.error = 'That sign-in link has expired. Sign in with the email and password you chose.'; }
+  }
   try { S.user = await api('/api/auth/me', { quiet: true }); }
-  catch (e) { S.mode = e.status === 401 ? 'signedout' : 'offline'; render(); if (e.status !== 401) setTimeout(boot, 5000); return; }
+  catch (e) {
+    if (e.code === 'paused') { S.paused = e.message; S.mode = 'paused'; render(); return; }
+    S.mode = e.status === 401 ? 'signedout' : 'offline'; render();
+    if (e.status === 401) loadStudio(); else setTimeout(boot, 5000);
+    return;
+  }
   S.mode = 'connecting'; render(); startSync();
 }
 
@@ -273,7 +296,7 @@ function render() {
   if (!signedIn) {
     $('#side').innerHTML = '';
     main.classList.remove('is-cal');
-    preserve(main, 'login', () => { main.innerHTML = S.mode === 'signedout' ? loginHTML() : S.mode === 'offline' ? `<div class="login"><h1>Can't reach the server</h1><p>Retrying every few seconds.</p></div>` : loadingHTML('Opening…'); });
+    preserve(main, 'login', () => { main.innerHTML = S.mode === 'signedout' ? loginHTML() : S.mode === 'paused' ? `<div class="login" role="alert"><h1>This account is paused</h1><p>${esc(S.paused)}</p></div>` : S.mode === 'offline' ? `<div class="login"><h1>Can't reach the server</h1><p>Retrying every few seconds.</p></div>` : loadingHTML('Opening…'); });
     return;
   }
   main.classList.toggle('is-cal', S.view === 'calendar' && S.ready && S.staff.length > 0);
@@ -303,23 +326,34 @@ function viewHTML() {
     case 'reports': return viewReports();
     case 'reminders': return viewReminders();
     case 'settings': return viewSettings();
+    case 'start': return viewStart();
     default: return viewCalendar();
   }
 }
 
+const studioInfo = () => (S.user && S.user.studio) || {};
+const isDemo = () => studioInfo().status === 'demo';
 function bannerHTML() {
   if (S.mode === 'offline') return `<div class="banner" role="note">${icon('spark')}<span>Can't reach the server. Showing what was last loaded; changes may not save until it's back.</span></div>`;
+  const st = studioInfo();
+  if (st.status === 'demo') return `<div class="banner info" role="note">${icon('spark')}<span>This is the demo studio. Try anything: it goes back to the sample every hour. <a href="${esc(st.site)}/start">Start your own studio, free</a></span></div>`;
+  if (st.status === 'pilot' && st.pilotEnds && st.pilotEnds < todayISO()) {
+    const who = [st.contactPhone, st.contactEmail].filter(Boolean).join(' or ');
+    return `<div class="banner info" role="note">${icon('spark')}<span>Your free pilot ended on ${esc(fmtLong(st.pilotEnds))}. Everything keeps working while we agree next steps${who ? `: ${esc(who)}` : ''}.</span></div>`;
+  }
   return '';
 }
 
 function loginHTML() {
   return `<form class="login" data-form="login" novalidate>
     <div class="brand"><span class="mark" aria-hidden="true">R</span><div class="brand-txt"><b>Rota</b><small>Studio desk</small></div></div>
-    <div><h1>Sign in</h1><p>Use the email and password the studio owner set up for you.</p></div>
-    <div class="field"><label for="li-email">Email</label><input id="li-email" name="email" type="email" autocomplete="username" value="${esc(S.login.email || '')}" required${S.login.email ? '' : ' autofocus'}></div>
-    <div class="field"><label for="li-pw">Password</label><input id="li-pw" name="password" type="password" autocomplete="current-password" required${S.login.email ? ' autofocus' : ''}></div>
+    <div><h1>Sign in</h1><p>${S.studio && S.studio.name ? `To ${esc(trIn(S.studio, 'name', 'en'))}. ` : ''}Use the email and password the studio owner set up for you.</p></div>
+    ${S.studio && S.studio.demo ? `<div class="demo-box"><p>This is Rota's demo studio, with sample clients and bookings. It goes back to the sample every hour.</p><button type="button" class="btn primary" id="demo-go" data-act="demo">Open the demo desk</button></div>` : ''}
+    <div class="field"><label for="li-email">Email</label><input id="li-email" name="email" type="email" autocomplete="username" data-sticky value="${esc(S.login.email || '')}" required${S.login.email ? '' : ' autofocus'}></div>
+    <div class="field"><label for="li-pw">Password</label><input id="li-pw" name="password" type="password" autocomplete="current-password" data-sticky required${S.login.email ? ' autofocus' : ''}></div>
     <p class="form-err" id="li-err" role="alert">${esc(S.login.error)}</p>
-    <button class="btn primary" id="li-go" style="height:46px">Sign in</button>
+    <button class="btn${S.studio && S.studio.demo ? '' : ' primary'}" id="li-go" style="height:46px">Sign in</button>
+    <p class="hint">Forgot your password? The studio owner can set a new one in Settings.</p>
   </form>`;
 }
 
@@ -328,7 +362,9 @@ const loadingHTML = msg => `<div class="loading">${esc(msg)}</div>`;
 function sideHTML() {
   const c = cfg(); const t = todayISO();
   const todayN = S.appts.filter(a => a.date === t && a.status !== 'cancelled').length;
+  const left = startLeft();
   const items = [
+    ...(showStart() ? [['start', 'check', 'Get started', S.ready && left ? left : '']] : []),
     ['calendar', 'cal', 'Calendar', S.ready ? todayN : ''],
     ['reminders', 'chat', 'Reminders', S.ready ? (dueReminders() || '') : ''],
     ['clients', 'users', 'Clients', S.ready ? S.clients.length : ''],
@@ -344,8 +380,38 @@ function sideHTML() {
   }[S.mode] || ['', ''];
   return `<div class="brand"><span class="mark" aria-hidden="true">R</span><div class="brand-txt"><b>Rota</b><small>${esc(c.name)}</small></div></div>
   <nav class="nav" aria-label="Sections">${items.map(([v, ic, label, n]) => `<button type="button" id="nav-${v}" data-act="nav" data-view="${v}"${S.view === v ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${n !== '' ? `<span class="count">${n}</span>` : ''}</button>`).join('')}<a href="/" target="_blank" rel="noopener" id="nav-site">${icon('globe')}<span>Booking site</span></a></nav>
-  <div class="side-foot"><span class="sync ${sync[0]}"><i></i>${sync[1]}</span>${c.sample ? '<span class="chip">Sample data</span>' : ''}
+  <div class="side-foot"><span class="sync ${sync[0]}"><i></i>${sync[1]}</span>${c.sample ? '<span class="chip">Sample data</span>' : ''}${pilotChip()}
     <div class="me-row"><b title="${esc(S.user.email)}">${esc(S.user.name || S.user.email)}</b><button type="button" class="btn ghost sm" id="logout" data-act="logout">Sign out</button></div></div>`;
+}
+
+/* ================= getting started ================= */
+const SETUP_KEY = () => `rota-setup-${studioInfo().slug || ''}`;
+function setupDone() { try { return JSON.parse(localStorage.getItem(SETUP_KEY()) || '{}'); } catch (e) { return {}; } }
+function markSetup(k) { const d = setupDone(); if (d[k]) return; d[k] = Date.now(); try { localStorage.setItem(SETUP_KEY(), JSON.stringify(d)); } catch (e) { /* private mode */ } }
+function startSteps() {
+  const d = setupDone(), c = cfg(), st = studioInfo();
+  return [
+    { k: 'services', done: !!d.services, title: 'Check your services and prices', text: 'We added a starter list for your kind of studio. Change names, prices and lengths, and add Armenian and Russian names.', act: `<button type="button" class="btn sm" data-act="nav" data-view="services">Open services</button>` },
+    { k: 'team', done: !!d.team || S.staff.length > 1, title: 'Add your team and their hours', text: 'Each specialist gets a column in the calendar, and clients see only the times they work.', act: `<button type="button" class="btn sm" data-act="nav" data-view="team">Open team</button>` },
+    { k: 'details', done: !!(c.address && c.phone), title: 'Add your address and phone', text: 'They show on the booking page and in reminders.', act: `<button type="button" class="btn sm" data-act="nav" data-view="settings">Open settings</button>` },
+    { k: 'share', done: !!d.share, title: 'Share your booking link', text: 'Put it in your Instagram bio, on Google Maps and in WhatsApp Business.', act: `<div class="linkbox"><code id="booking-url">${esc(st.bookingUrl || location.origin)}/</code><button type="button" class="btn sm" data-act="copy-link">${icon('copy')}Copy</button><a class="btn sm ghost" href="/" target="_blank" rel="noopener" data-act="open-site">Open</a></div>` },
+    { k: 'test', done: S.appts.some(a => a.source === 'online'), title: 'Make a test booking', text: 'Book yourself on your booking page, then watch it appear in the calendar.' },
+  ];
+}
+const showStart = () => S.user && S.user.role === 'owner' && !isDemo() && !setupDone().hidden && (S.view === 'start' || startLeft() > 0);
+const startLeft = () => S.ready ? startSteps().filter(x => !x.done).length : 0;
+function pilotChip() {
+  const st = studioInfo();
+  return st.status === 'pilot' && st.pilotEnds && st.pilotEnds >= todayISO() ? `<span class="chip">Free pilot until ${esc(fmtShort(st.pilotEnds))}</span>` : '';
+}
+function viewStart() {
+  if (!S.ready) return loadingHTML('Setting up…');
+  const steps = startSteps(), left = steps.filter(x => !x.done).length;
+  return `<div class="page start">
+    <div class="pagehead"><div><h1>${left ? 'Welcome to Rota' : 'You\'re all set'}</h1><p>${left ? `${steps.length - left} of ${steps.length} done. These take about ten minutes.` : 'Your booking page is live. New online bookings appear in the calendar with a notice.'}</p></div>
+      <div class="acts"><button type="button" class="btn ghost sm" data-act="start-hide">Hide this page</button></div></div>
+    <ol class="steps">${steps.map(x => `<li class="${x.done ? 'done' : ''}"><span class="tick" aria-hidden="true">${x.done ? icon('check') : ''}</span><div><h2>${esc(x.title)}${x.done ? '<span class="sr-only"> (done)</span>' : ''}</h2><p>${esc(x.text)}</p>${x.act || ''}</div></li>`).join('')}</ol>
+  </div>`;
 }
 
 /* ================= calendar ================= */
@@ -767,7 +833,36 @@ function viewSettings() {
     <section class="box" style="max-width:640px"><h2>Your booking page</h2>
       <p style="margin:0;color:var(--ink-2)">Clients book at <b>${esc(location.origin)}/</b> in Armenian, Russian or English. Each booking gets a private link the client uses to change or cancel; reminders include it.</p>
       <div><a class="btn" href="/" target="_blank" rel="noopener">${icon('globe')}Open the booking site</a></div></section>
+    ${S.user.role === 'owner' ? usersHTML() : ''}
+    <form class="box" data-form="password" style="max-width:640px" novalidate><h2>Change your password</h2>
+      <div class="row2"><div class="field"><label for="pw-cur">Current password</label><input id="pw-cur" name="current" type="password" autocomplete="current-password" required></div>
+        <div class="field"><label for="pw-new">New password</label><input id="pw-new" name="password" type="password" autocomplete="new-password" minlength="10" required><small>At least 10 characters.</small></div></div>
+      <p class="form-err" id="pw-err" role="alert"></p>
+      <div><button class="btn">Change password</button></div></form>
+    ${S.user.role === 'owner' && !isDemo() ? `<section class="box" style="max-width:640px"><h2>Your data</h2>
+      <p style="margin:0;color:var(--ink-2)">Download your clients and bookings as spreadsheets (CSV, opens in Excel or Google Sheets). The data is yours: take it with you any time.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn" href="/api/desk/export/clients.csv" download>Download clients</a><a class="btn" href="/api/desk/export/appointments.csv" download>Download bookings</a></div></section>` : ''}
   </div>`;
+}
+function usersHTML() {
+  if (!S.users) { loadUsers(); return `<section class="box" style="max-width:640px"><h2>Who can sign in</h2>${loadingHTML('Loading…')}</section>`; }
+  const f = S.userForm || {};
+  return `<section class="box" style="max-width:640px"><h2>Who can sign in</h2>
+    <p style="margin:0;color:var(--ink-2)">Give each person at the desk their own sign-in. Owners can also change settings, services and the team.</p>
+    <ul class="users">${S.users.map(u => `<li><div><b>${esc(u.name || u.email)}${u.you ? ' (you)' : ''}</b><small>${esc(u.email)} · ${u.role === 'owner' ? 'Owner' : 'Staff'}</small></div>${u.you || isDemo() ? '' : `<div class="acts"><button type="button" class="btn sm ghost" data-act="user-reset" data-id="${u.id}" data-name="${esc(u.name || u.email)}">New password</button><button type="button" class="btn sm ghost danger" data-act="user-remove" data-id="${u.id}" data-name="${esc(u.name || u.email)}">Remove</button></div>`}</li>`).join('')}</ul>
+    ${isDemo() ? '' : `<form data-form="user-add" novalidate style="display:flex;flex-direction:column;gap:12px"><h3 style="margin:4px 0 0;font-size:14px">Add a person</h3>
+      <div class="row2"><div class="field"><label for="ua-name">Name</label><input id="ua-name" name="name" value="${esc(f.name || '')}" autocomplete="off"></div>
+        <div class="field"><label for="ua-email">Email</label><input id="ua-email" name="email" type="email" value="${esc(f.email || '')}" autocomplete="off" required></div></div>
+      <div class="row2"><div class="field"><label for="ua-pw">Password for them</label><input id="ua-pw" name="password" type="text" autocomplete="off" minlength="10" required><small>At least 10 characters. Tell them in person; they can change it in Settings.</small></div>
+        <div class="field"><label for="ua-role">Role</label><select id="ua-role" name="role"><option value="staff">Staff</option><option value="owner"${f.role === 'owner' ? ' selected' : ''}>Owner</option></select></div></div>
+      <p class="form-err" id="ua-err" role="alert">${esc(f.error || '')}</p>
+      <div><button class="btn">${icon('plus')}Add</button></div></form>`}
+  </section>`;
+}
+async function loadUsers() {
+  if (S.usersLoading) return; S.usersLoading = true;
+  try { S.users = (await api('/api/desk/users')).users; } catch (e) { S.users = []; } finally { S.usersLoading = false; }
+  render();
 }
 
 /* ================= drawer ================= */
@@ -1069,6 +1164,7 @@ function copyText(text, label) {
 
 /* ================= actions ================= */
 function go(view) {
+  if (view === 'services' || view === 'team') markSetup(view);
   S.view = view; closeDrawer();
   try { history.replaceState(null, '', '#' + view); } catch (e) { /* sandboxed */ }
   render(); $('#main').scrollTop = 0;
@@ -1136,6 +1232,24 @@ const ACT = {
   'delete-staff': () => { const seed = S.drawer.seed; seed._confirm = S.appts.some(a => a.staffId === seed.id && isUpcoming(a)) ? 'blocked' : 'ask'; renderDrawer(false); },
   'confirm-delete-staff': async () => { const id = S.drawer.seed.id; closeDrawer(); await remove('staff', id, 'Specialist removed'); },
   'report-range': el => { S.range = +el.dataset.n; render(); },
+  demo: async () => {
+    try { signedIn(await api('/api/auth/demo', { method: 'POST', body: {}, quiet: true }), 'calendar'); }
+    catch (e) { S.login.error = e.status === 429 ? 'Too many tries. Wait a few minutes and try again.' : e.message; render(); }
+  },
+  'copy-link': () => { markSetup('share'); copyText(`${studioInfo().bookingUrl || location.origin}/`, 'Booking link'); render(); },
+  'open-site': () => { markSetup('share'); setTimeout(render, 0); },
+  'start-hide': () => { markSetup('hidden'); go('calendar'); },
+  'user-reset': async el => {
+    const pw = prompt(`New password for ${el.dataset.name} (at least 10 characters). Tell them in person.`);
+    if (pw === null) return;
+    try { await api(`/api/desk/users/${el.dataset.id}/password`, { method: 'POST', body: { password: pw } }); toast(`New password set for ${el.dataset.name}. They're signed out everywhere.`); }
+    catch (e) { toast(e.message); }
+  },
+  'user-remove': async el => {
+    if (!confirm(`Remove ${el.dataset.name}'s sign-in? They're signed out at once.`)) return;
+    try { await api(`/api/desk/users/${el.dataset.id}`, { method: 'DELETE' }); S.users = null; render(); toast(`${el.dataset.name} can no longer sign in.`); }
+    catch (e) { toast(e.message); }
+  },
   logout: async () => { try { await api('/api/auth/logout', { method: 'POST', body: {}, quiet: true }); } catch (e) { /* signed out anyway */ } signedOut(); },
 };
 
@@ -1147,9 +1261,9 @@ const FORMS = {
     S.login.email = email;
     if (!email || !password) { S.login.error = 'Enter your email and password.'; render(); $(email ? '#li-pw' : '#li-email')?.focus(); return; }
     try {
-      S.user = await api('/api/auth/login', { method: 'POST', body: { email, password }, quiet: true });
-      S.login.error = ''; S.mode = 'connecting'; render(); startSync();
+      signedIn(await api('/api/auth/login', { method: 'POST', body: { email, password }, quiet: true }));
     } catch (e) {
+      if (e.code === 'paused') { S.paused = e.message; S.mode = 'paused'; render(); return; }
       S.login.error = e.status === 429 ? 'Too many tries. Wait a few minutes and try again.' : e.status === 401 ? "That email and password don't match." : "Can't reach the server. Check your connection.";
       render(); const pw = $('#li-pw'); if (pw) { pw.value = ''; pw.focus(); }
     }
@@ -1200,6 +1314,21 @@ const FORMS = {
     const id = F('tid').value || uid('st_'); const prev = staffById(id);
     const data = { ...(prev || { order: S.staff.length + 1 }), name, role: F('role').value.trim(), bio: F('bio').value.trim(), i18n: readTr(form, ['name', 'role', 'bio']), color: +((form.querySelector('input[name="color"]:checked') || {}).value || 0), hours, services: $$('input[name="svc"]:checked', form).map(i => i.value) };
     if (await save('staff', id, data, prev ? 'Specialist updated' : 'Specialist added')) closeDrawer();
+  },
+  password: async form => {
+    const F = n => form.elements.namedItem(n), err = $('#pw-err');
+    try {
+      await api('/api/auth/password', { method: 'POST', body: { current: F('current').value, password: F('password').value } });
+      form.reset(); err.textContent = ''; toast('Password changed. Other devices will ask you to sign in again.');
+    } catch (e) { err.textContent = e.message; $(e.field === 'current' ? '#pw-cur' : '#pw-new')?.focus(); }
+  },
+  'user-add': async form => {
+    const F = n => form.elements.namedItem(n).value.trim();
+    const body = { name: F('name'), email: F('email'), password: form.elements.namedItem('password').value, role: F('role') };
+    try {
+      await api('/api/desk/users', { method: 'POST', body });
+      S.userForm = null; S.users = null; render(); toast(`${body.name || body.email} can now sign in at ${location.origin}/desk/`);
+    } catch (e) { S.userForm = { ...body, error: e.message }; render(); $(e.field === 'password' ? '#ua-pw' : '#ua-email')?.focus(); }
   },
   settings: async form => {
     const F = n => form.elements.namedItem(n);

@@ -1,5 +1,9 @@
 """SQLite storage.
 
+Every company has its own database file (data/studios/<address>.db), so one studio's records can
+never show up in another's, and a company can be exported, backed up or removed as one file.
+Rota's own records (the list of companies, Rota's admins) live in data/platform.db; see platform.py.
+
 Studio data (settings, staff, services, clients, appointments) lives in one `docs` table as JSON
 documents, each stamped with a revision number from a single counter. The desk syncs by asking for
 everything newer than the last revision it saw, so a deleted document stays behind as a tombstone
@@ -46,10 +50,20 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires);
+-- One-time sign-in links, handed out right after a company signs up on the sales site.
+CREATE TABLE IF NOT EXISTS tickets (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires REAL NOT NULL
+);
 """
 
 
-class Store:
+class Db:
+    """One SQLite file: short-lived connections, WAL, and BEGIN IMMEDIATE write transactions."""
+
+    schema = ""
+
     def __init__(self, path: str):
         self.path = path
         d = os.path.dirname(os.path.abspath(path))
@@ -59,11 +73,13 @@ class Store:
             c = self.connect()
             try:
                 c.execute("PRAGMA journal_mode=WAL")
-                c.executescript(SCHEMA)
-                c.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('rev', '0')")
-                c.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('schema', '1')")
+                c.executescript(self.schema)
+                self.init(c)
             finally:
                 c.close()
+
+    def init(self, c) -> None:
+        pass
 
     def connect(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=15, isolation_level=None)
@@ -104,6 +120,25 @@ class Store:
     @staticmethod
     def meta_set(c, k: str, v: str) -> None:
         c.execute("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", (k, v))
+
+    # ---------------------------------------------------------------- users (studio staff, or Rota's admins in platform.db)
+    @staticmethod
+    def user_by_email(c, email: str):
+        return c.execute("SELECT * FROM users WHERE email = ?", (email.strip(),)).fetchone()
+
+    @staticmethod
+    def user_by_id(c, uid: int):
+        return c.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+
+
+class Store(Db):
+    """One studio's records."""
+
+    schema = SCHEMA
+
+    def init(self, c) -> None:
+        c.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('rev', '0')")
+        c.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('schema', '2')")
 
     @staticmethod
     def _next_rev(c) -> int:
@@ -190,12 +225,3 @@ class Store:
                 "body": None if row["deleted"] else json.loads(row["body"]),
             })
         return rev, rows
-
-    # ---------------------------------------------------------------- users and sessions
-    @staticmethod
-    def user_by_email(c, email: str):
-        return c.execute("SELECT * FROM users WHERE email = ?", (email.strip(),)).fetchone()
-
-    @staticmethod
-    def user_by_id(c, uid: int):
-        return c.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()

@@ -27,5 +27,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - run: node tools/site_text.js --check
       - run: npm install --no-save playwright@1.48.2 && npx playwright install --with-deps chromium
       - run: node tests/e2e/smoke.js

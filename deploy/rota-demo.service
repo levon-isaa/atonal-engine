@@ -1,0 +1,11 @@
+# Puts the public demo studio (demo.<domain>) back to the sample. Run by rota-demo.timer.
+[Unit]
+Description=Reset Rota's demo studio
+
+[Service]
+Type=oneshot
+User=rota
+Group=rota
+WorkingDirectory=/srv/rota/app
+EnvironmentFile=/etc/rota/rota.env
+ExecStart=/usr/bin/python3 /srv/rota/app/manage.py reset-demo
